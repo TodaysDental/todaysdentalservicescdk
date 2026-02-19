@@ -612,6 +612,13 @@
        }
       },
       {
+       "Action": "dynamodb:GetItem",
+       "Effect": "Allow",
+       "Resource": {
+        "Fn::ImportValue": "TodaysDentalInsightsAiAgentsN1:ExportsOutputFnGetAttVoiceAgentConfigTable219D9D06ArnCD546AF3"
+       }
+      },
+      {
        "Action": [
         "dynamodb:GetItem",
         "dynamodb:PutItem",
@@ -662,7 +669,7 @@
    "Properties": {
     "Code": {
      "S3Bucket": "cdk-tdi3-assets-851620242036-us-east-1",
-     "S3Key": "24c13b44781afec7515a4e70f1dc593036236a08117d301bc0c38d5021de3dbc.zip"
+     "S3Key": "c981ce802d1eb4a21d0e041754c93893c2890b5f472b7df087a7d0de76b2fba2.zip"
     },
     "Environment": {
      "Variables": {
@@ -672,11 +679,14 @@
       "SESSIONS_TABLE": {
        "Fn::ImportValue": "TodaysDentalInsightsAiAgentsN1:ExportsOutputRefAiAgentSessionsTableFD40A5D862A0DEC9"
       },
+      "VOICE_CONFIG_TABLE": {
+       "Fn::ImportValue": "TodaysDentalInsightsAiAgentsN1:ExportsOutputRefVoiceAgentConfigTable219D9D0641F83326"
+      },
       "CALL_ANALYTICS_TABLE": "TodaysDentalInsightsAnalyticsN1-CallAnalyticsN1",
       "TRANSCRIPT_BUFFER_TABLE_NAME": {
        "Fn::ImportValue": "TodaysDentalInsightsAnalyticsN1:ExportsOutputRefTranscriptBufferTable6B54052467630EA1"
       },
-      "AI_PHONE_NUMBERS_JSON": "{\"+14439272295\":\"dentistingreenville\",\"+17377074552\":\"dentistinaustin\"}",
+      "AI_PHONE_NUMBERS_JSON": "{\"+14439272295\":\"dentistinedgewater\",\"+17377074552\":\"dentistinaustin\"}",
       "DEFAULT_CLINIC_ID": "dentistingreenville",
       "CONNECT_BEDROCK_TIMEOUT_MS": "6500",
       "HOLD_MUSIC_BUCKET": "",
@@ -733,7 +743,7 @@
    ],
    "Metadata": {
     "aws:cdk:path": "TodaysDentalInsightsConnectLexAiN1/LexBedrockHookFn/Resource",
-    "aws:asset:path": "asset.24c13b44781afec7515a4e70f1dc593036236a08117d301bc0c38d5021de3dbc",
+    "aws:asset:path": "asset.c981ce802d1eb4a21d0e041754c93893c2890b5f472b7df087a7d0de76b2fba2",
     "aws:asset:is-bundled": true,
     "aws:asset:property": "Code"
    }
@@ -1151,7 +1161,7 @@
    "Properties": {
     "Code": {
      "S3Bucket": "cdk-tdi3-assets-851620242036-us-east-1",
-     "S3Key": "77ee37d8e916f6330a7e3c9110eb85905ee4c0e73bb97b060e11789b63c85a34.zip"
+     "S3Key": "0a2e57e66a04b9c65ad9fdb87961000862d640fdf963bb500e4b0add0c525fa1.zip"
     },
     "Environment": {
      "Variables": {
@@ -1164,7 +1174,7 @@
       "SESSIONS_TABLE": {
        "Fn::ImportValue": "TodaysDentalInsightsAiAgentsN1:ExportsOutputRefAiAgentSessionsTableFD40A5D862A0DEC9"
       },
-      "AI_PHONE_NUMBERS_JSON": "{\"+14439272295\":\"dentistingreenville\",\"+17377074552\":\"dentistinaustin\"}",
+      "AI_PHONE_NUMBERS_JSON": "{\"+14439272295\":\"dentistinedgewater\",\"+17377074552\":\"dentistinaustin\"}",
       "DEFAULT_CLINIC_ID": "dentistingreenville"
      }
     },
@@ -1204,7 +1214,7 @@
    ],
    "Metadata": {
     "aws:cdk:path": "TodaysDentalInsightsConnectLexAiN1/AsyncBedrockLambda/Resource",
-    "aws:asset:path": "asset.77ee37d8e916f6330a7e3c9110eb85905ee4c0e73bb97b060e11789b63c85a34",
+    "aws:asset:path": "asset.0a2e57e66a04b9c65ad9fdb87961000862d640fdf963bb500e4b0add0c525fa1",
     "aws:asset:is-bundled": true,
     "aws:asset:property": "Code"
    }
@@ -1309,7 +1319,7 @@
    "Properties": {
     "Code": {
      "S3Bucket": "cdk-tdi3-assets-851620242036-us-east-1",
-     "S3Key": "94c559b41981d115f64326c1f278175fb5d6cb54ed0a45a1e8aacceb3acc719b.zip"
+     "S3Key": "919d3fa49c47ed94e49823b7c9545f1f3f59f220e46d816c9c8f77b53232295f.zip"
     },
     "FunctionName": "TodaysDentalInsightsConnectLexAiN1-LexTranscriptCapture",
     "Handler": "index.handler",
@@ -1346,7 +1356,7 @@
    ],
    "Metadata": {
     "aws:cdk:path": "TodaysDentalInsightsConnectLexAiN1/LexTranscriptCaptureFn/Resource",
-    "aws:asset:path": "asset.94c559b41981d115f64326c1f278175fb5d6cb54ed0a45a1e8aacceb3acc719b",
+    "aws:asset:path": "asset.919d3fa49c47ed94e49823b7c9545f1f3f59f220e46d816c9c8f77b53232295f",
     "aws:asset:is-bundled": true,
     "aws:asset:property": "Code"
    }
@@ -1489,6 +1499,13 @@
        "Resource": {
         "Fn::ImportValue": "TodaysDentalInsightsAnalyticsN1:ExportsOutputFnGetAttTranscriptBufferTable6B540524Arn0067ECB2"
        }
+      },
+      {
+       "Action": "dynamodb:UpdateItem",
+       "Effect": "Allow",
+       "Resource": {
+        "Fn::ImportValue": "TodaysDentalInsightsAiAgentsN1:ExportsOutputFnGetAttScheduledCallsTable4DB0837CArn8EA796E1"
+       }
       }
      ],
      "Version": "2012-10-17"
@@ -1509,7 +1526,7 @@
    "Properties": {
     "Code": {
      "S3Bucket": "cdk-tdi3-assets-851620242036-us-east-1",
-     "S3Key": "a64bbf61f31c42d7d17eed0725ef19762e9cfbdd5ca0d6ea505916e625628c84.zip"
+     "S3Key": "5a9e019d50171cf97821f2bc460b83676ccdd874a03470c8663170d5ed2fd34f.zip"
     },
     "Environment": {
      "Variables": {
@@ -1519,6 +1536,9 @@
       "CALL_ANALYTICS_TABLE": "TodaysDentalInsightsAnalyticsN1-CallAnalyticsN1",
       "TRANSCRIPT_BUFFER_TABLE_NAME": {
        "Fn::ImportValue": "TodaysDentalInsightsAnalyticsN1:ExportsOutputRefTranscriptBufferTable6B54052467630EA1"
+      },
+      "SCHEDULED_CALLS_TABLE": {
+       "Fn::ImportValue": "TodaysDentalInsightsAiAgentsN1:ExportsOutputRefScheduledCallsTable4DB0837CDA091291"
       }
      }
     },
@@ -1558,7 +1578,7 @@
    ],
    "Metadata": {
     "aws:cdk:path": "TodaysDentalInsightsConnectLexAiN1/ConnectFinalizerFn/Resource",
-    "aws:asset:path": "asset.a64bbf61f31c42d7d17eed0725ef19762e9cfbdd5ca0d6ea505916e625628c84",
+    "aws:asset:path": "asset.5a9e019d50171cf97821f2bc460b83676ccdd874a03470c8663170d5ed2fd34f",
     "aws:asset:is-bundled": true,
     "aws:asset:property": "Code"
    }
@@ -2562,7 +2582,7 @@
      "cdk-tdi3-assets-851620242036-us-east-1"
     ],
     "SourceObjectKeys": [
-     "b4484d1c6c13044738290d37c79eed8f055f4f171869b4507c10838bb7ca8642.zip"
+     "223602430b629d2f78c4f9483000ead45fddece825f62a4a2c1ead599d5eddd6.zip"
     ],
     "DestinationBucketName": {
      "Ref": "ConnectPromptsBucket375524D4"
@@ -2991,7 +3011,7 @@
          "Arn"
         ]
        },
-       "\",\"InvocationTimeLimitSeconds\":\"8\"},\"Transitions\":{\"NextAction\":\"disconnect-action\",\"Errors\":[{\"NextAction\":\"disconnect-action\",\"ErrorType\":\"NoMatchingError\"}]}},{\"Identifier\":\"disconnect-action\",\"Type\":\"DisconnectParticipant\",\"Parameters\":{},\"Transitions\":{}}]}"
+       "\",\"InvocationTimeLimitSeconds\":\"8\",\"LambdaInvocationAttributes\":{\"disconnectReason\":\"$.DisconnectReason\"}},\"Transitions\":{\"NextAction\":\"disconnect-action\",\"Errors\":[{\"NextAction\":\"disconnect-action\",\"ErrorType\":\"NoMatchingError\"}]}},{\"Identifier\":\"disconnect-action\",\"Type\":\"DisconnectParticipant\",\"Parameters\":{},\"Transitions\":{}}]}"
       ]
      ]
     },
@@ -3109,7 +3129,7 @@
    "Properties": {
     "Code": {
      "S3Bucket": "cdk-tdi3-assets-851620242036-us-east-1",
-     "S3Key": "2c220d5be41ad457d45c7f9aa7ad9b42e17a1bbcc0a268054153df601365b94d.zip"
+     "S3Key": "3185a911b006a0178e8f560c3ce52e82e434e6c6ceb57e2a6982cf28c764ecb8.zip"
     },
     "FunctionName": "TodaysDentalInsightsConnectLexAiN1-CreateContactFlow",
     "Handler": "index.handler",
@@ -3147,7 +3167,7 @@
    ],
    "Metadata": {
     "aws:cdk:path": "TodaysDentalInsightsConnectLexAiN1/CreateContactFlowFn/Resource",
-    "aws:asset:path": "asset.2c220d5be41ad457d45c7f9aa7ad9b42e17a1bbcc0a268054153df601365b94d",
+    "aws:asset:path": "asset.3185a911b006a0178e8f560c3ce52e82e434e6c6ceb57e2a6982cf28c764ecb8",
     "aws:asset:is-bundled": true,
     "aws:asset:property": "Code"
    }
@@ -3455,7 +3475,7 @@
          "ContactFlowArn"
         ]
        },
-       "|v8"
+       "|v11"
       ]
      ]
     }
@@ -3561,7 +3581,7 @@
    "Properties": {
     "Code": {
      "S3Bucket": "cdk-tdi3-assets-851620242036-us-east-1",
-     "S3Key": "243b957055739598e557aca060c2c0ab17cebc2ffdcf6253eca27315d053cd92.zip"
+     "S3Key": "abd05f24c9e0b2542fb99ab69cb001e01eacdc1b9eacfc465fe49b2ce53f8809.zip"
     },
     "FunctionName": "TodaysDentalInsightsConnectLexAiN1-CreateAsyncContactFlow",
     "Handler": "index.handler",
@@ -3599,7 +3619,7 @@
    ],
    "Metadata": {
     "aws:cdk:path": "TodaysDentalInsightsConnectLexAiN1/CreateAsyncContactFlowFn/Resource",
-    "aws:asset:path": "asset.243b957055739598e557aca060c2c0ab17cebc2ffdcf6253eca27315d053cd92",
+    "aws:asset:path": "asset.abd05f24c9e0b2542fb99ab69cb001e01eacdc1b9eacfc465fe49b2ce53f8809",
     "aws:asset:is-bundled": true,
     "aws:asset:property": "Code"
    }
@@ -3850,6 +3870,12 @@
       ]
      ]
     },
+    "VoiceConfigLambdaArn": {
+     "Fn::GetAtt": [
+      "LexBedrockHookFn6C573C2E",
+      "Arn"
+     ]
+    },
     "AsyncLambdaArn": {
      "Fn::GetAtt": [
       "AsyncBedrockLambda37463299",
@@ -3890,6 +3916,13 @@
        "|",
        {
         "Fn::GetAtt": [
+         "LexBedrockHookFn6C573C2E",
+         "Arn"
+        ]
+       },
+       "|",
+       {
+        "Fn::GetAtt": [
          "AsyncBedrockLambda37463299",
          "Arn"
         ]
@@ -3908,7 +3941,7 @@
          "ContactFlowArn"
         ]
        },
-       "|25|v3"
+       "|25|v7"
       ]
      ]
     }
@@ -3916,6 +3949,8 @@
    "DependsOn": [
     "AsyncLambdaIntegrationCustomResourcePolicy26AF62E6",
     "AsyncLambdaIntegration1818B300",
+    "ConnectLexHookIntegrationCustomResourcePolicyD466AED8",
+    "ConnectLexHookIntegration82325C3F",
     "ConnectLexIntegrationCustomResourcePolicy90990747",
     "ConnectLexIntegration8F6C281F",
     "DisconnectFlow",
@@ -4373,7 +4408,7 @@
    "Properties": {
     "Code": {
      "S3Bucket": "cdk-tdi3-assets-851620242036-us-east-1",
-     "S3Key": "3174aed053428efaeab84e468ddcbc85fdf0c2f2bda5e2d1c7fdf97911ad309f.zip"
+     "S3Key": "683f6d380af73cff638c803f683d5f2864aead95f9eeac6e690114b52121f94b.zip"
     },
     "FunctionName": "TodaysDentalInsightsConnectLexAiN1-CreateOutboundContactFlow",
     "Handler": "index.handler",
@@ -4411,7 +4446,7 @@
    ],
    "Metadata": {
     "aws:cdk:path": "TodaysDentalInsightsConnectLexAiN1/CreateOutboundContactFlowFn/Resource",
-    "aws:asset:path": "asset.3174aed053428efaeab84e468ddcbc85fdf0c2f2bda5e2d1c7fdf97911ad309f",
+    "aws:asset:path": "asset.683f6d380af73cff638c803f683d5f2864aead95f9eeac6e690114b52121f94b",
     "aws:asset:is-bundled": true,
     "aws:asset:property": "Code"
    }
@@ -4719,7 +4754,7 @@
          "ContactFlowArn"
         ]
        },
-       "|v1"
+       "|v4"
       ]
      ]
     }

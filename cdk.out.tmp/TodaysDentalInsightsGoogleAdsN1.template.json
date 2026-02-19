@@ -15501,7 +15501,7 @@
    "Properties": {
     "Code": {
      "S3Bucket": "cdk-tdi3-assets-851620242036-us-east-1",
-     "S3Key": "29bf58bb94a6ed86a673c3497c97cd6d65d550063886e628084bec1c9e0d445f.zip"
+     "S3Key": "5cdc735fb97c5dc10a80c091911d3c04ab346cc1d1043566d0eda274efea2e46.zip"
     },
     "Environment": {
      "Variables": {
@@ -15547,7 +15547,7 @@
    ],
    "Metadata": {
     "aws:cdk:path": "TodaysDentalInsightsGoogleAdsN1/CampaignsFn/Resource",
-    "aws:asset:path": "asset.29bf58bb94a6ed86a673c3497c97cd6d65d550063886e628084bec1c9e0d445f",
+    "aws:asset:path": "asset.5cdc735fb97c5dc10a80c091911d3c04ab346cc1d1043566d0eda274efea2e46",
     "aws:asset:is-bundled": true,
     "aws:asset:property": "Code"
    }
@@ -15699,7 +15699,7 @@
    "Properties": {
     "Code": {
      "S3Bucket": "cdk-tdi3-assets-851620242036-us-east-1",
-     "S3Key": "30f97a2817ffc8be331da0f5e2afcc246da04a4914e35a90c0c256750ab9fd63.zip"
+     "S3Key": "d5c1659d1a83224bf41219693c97eda25e5c3dc372021a4ca3f2ec0527ba1a7b.zip"
     },
     "Environment": {
      "Variables": {
@@ -15745,7 +15745,7 @@
    ],
    "Metadata": {
     "aws:cdk:path": "TodaysDentalInsightsGoogleAdsN1/KeywordsFn/Resource",
-    "aws:asset:path": "asset.30f97a2817ffc8be331da0f5e2afcc246da04a4914e35a90c0c256750ab9fd63",
+    "aws:asset:path": "asset.d5c1659d1a83224bf41219693c97eda25e5c3dc372021a4ca3f2ec0527ba1a7b",
     "aws:asset:is-bundled": true,
     "aws:asset:property": "Code"
    }
@@ -15897,7 +15897,7 @@
    "Properties": {
     "Code": {
      "S3Bucket": "cdk-tdi3-assets-851620242036-us-east-1",
-     "S3Key": "e5478739057bd7b766410fc12fac47f9ea783b7403e9790fc9e7a03e826f79ad.zip"
+     "S3Key": "c9399db8d74dad80094f563020551a694cb04a84dd25d36bfd5f15b725f2d936.zip"
     },
     "Environment": {
      "Variables": {
@@ -15943,7 +15943,7 @@
    ],
    "Metadata": {
     "aws:cdk:path": "TodaysDentalInsightsGoogleAdsN1/SearchQueriesFn/Resource",
-    "aws:asset:path": "asset.e5478739057bd7b766410fc12fac47f9ea783b7403e9790fc9e7a03e826f79ad",
+    "aws:asset:path": "asset.c9399db8d74dad80094f563020551a694cb04a84dd25d36bfd5f15b725f2d936",
     "aws:asset:is-bundled": true,
     "aws:asset:property": "Code"
    }
@@ -16134,7 +16134,7 @@
    "Properties": {
     "Code": {
      "S3Bucket": "cdk-tdi3-assets-851620242036-us-east-1",
-     "S3Key": "a420067161012fe6c228df4236ff59f41684872e7757002adba8cd8e03ac44b4.zip"
+     "S3Key": "be9c1841e5ea68a728fb947c0c4ead76d7fcad50f5fcb9f877e1e522afb0082c.zip"
     },
     "Environment": {
      "Variables": {
@@ -16180,7 +16180,7 @@
    ],
    "Metadata": {
     "aws:cdk:path": "TodaysDentalInsightsGoogleAdsN1/BulkFn/Resource",
-    "aws:asset:path": "asset.a420067161012fe6c228df4236ff59f41684872e7757002adba8cd8e03ac44b4",
+    "aws:asset:path": "asset.be9c1841e5ea68a728fb947c0c4ead76d7fcad50f5fcb9f877e1e522afb0082c",
     "aws:asset:is-bundled": true,
     "aws:asset:property": "Code"
    }
@@ -16301,7 +16301,7 @@
    "Properties": {
     "Code": {
      "S3Bucket": "cdk-tdi3-assets-851620242036-us-east-1",
-     "S3Key": "964e2847e2c4994a4cfe81751cb993a33f63cce98e660af6597eab6ecc06716d.zip"
+     "S3Key": "01521ddc5d2b2298be54846b5213173151baa05e6ce5f038f88a2031f0ee03ff.zip"
     },
     "Environment": {
      "Variables": {
@@ -16347,7 +16347,7 @@
    ],
    "Metadata": {
     "aws:cdk:path": "TodaysDentalInsightsGoogleAdsN1/AiFn/Resource",
-    "aws:asset:path": "asset.964e2847e2c4994a4cfe81751cb993a33f63cce98e660af6597eab6ecc06716d",
+    "aws:asset:path": "asset.01521ddc5d2b2298be54846b5213173151baa05e6ce5f038f88a2031f0ee03ff",
     "aws:asset:is-bundled": true,
     "aws:asset:property": "Code"
    }
@@ -16460,7 +16460,7 @@
    "Properties": {
     "Code": {
      "S3Bucket": "cdk-tdi3-assets-851620242036-us-east-1",
-     "S3Key": "61826f3143b953048b783b2fd41f286d9867f8009114a578563adc2c36d6531f.zip"
+     "S3Key": "68760edfc8f6ce01c26d360106b66b35d72389435085bcd124b070f902329f06.zip"
     },
     "Environment": {
      "Variables": {
@@ -16506,7 +16506,7 @@
    ],
    "Metadata": {
     "aws:cdk:path": "TodaysDentalInsightsGoogleAdsN1/AdsFn/Resource",
-    "aws:asset:path": "asset.61826f3143b953048b783b2fd41f286d9867f8009114a578563adc2c36d6531f",
+    "aws:asset:path": "asset.68760edfc8f6ce01c26d360106b66b35d72389435085bcd124b070f902329f06",
     "aws:asset:is-bundled": true,
     "aws:asset:property": "Code"
    }
@@ -16619,7 +16619,7 @@
    "Properties": {
     "Code": {
      "S3Bucket": "cdk-tdi3-assets-851620242036-us-east-1",
-     "S3Key": "40139218735609412d63c35f7d1ebe7cbd30fdba83fb8013b5fdaecfdbdb1be3.zip"
+     "S3Key": "b63a87df338827b423e27bfabf90c37ab5282da9368aed13e9132992e7ccc74d.zip"
     },
     "Environment": {
      "Variables": {
@@ -16665,7 +16665,7 @@
    ],
    "Metadata": {
     "aws:cdk:path": "TodaysDentalInsightsGoogleAdsN1/TargetingFn/Resource",
-    "aws:asset:path": "asset.40139218735609412d63c35f7d1ebe7cbd30fdba83fb8013b5fdaecfdbdb1be3",
+    "aws:asset:path": "asset.b63a87df338827b423e27bfabf90c37ab5282da9368aed13e9132992e7ccc74d",
     "aws:asset:is-bundled": true,
     "aws:asset:property": "Code"
    }
@@ -16778,7 +16778,7 @@
    "Properties": {
     "Code": {
      "S3Bucket": "cdk-tdi3-assets-851620242036-us-east-1",
-     "S3Key": "7967449a4d324557656e95c335c6729effd7ac6756bb2b749d9dfe39faf5b031.zip"
+     "S3Key": "8d747ec1e421767bd0be2c735dfa397d4e5d9a97bcdca7393abb5fd7123ac987.zip"
     },
     "Environment": {
      "Variables": {
@@ -16824,7 +16824,7 @@
    ],
    "Metadata": {
     "aws:cdk:path": "TodaysDentalInsightsGoogleAdsN1/ConversionsFn/Resource",
-    "aws:asset:path": "asset.7967449a4d324557656e95c335c6729effd7ac6756bb2b749d9dfe39faf5b031",
+    "aws:asset:path": "asset.8d747ec1e421767bd0be2c735dfa397d4e5d9a97bcdca7393abb5fd7123ac987",
     "aws:asset:is-bundled": true,
     "aws:asset:property": "Code"
    }
@@ -16937,7 +16937,7 @@
    "Properties": {
     "Code": {
      "S3Bucket": "cdk-tdi3-assets-851620242036-us-east-1",
-     "S3Key": "2c0e5e0dce6bb1b0a69c477e755d867c3d0ef7c8a7ee8d95cd5ca6089dc8091a.zip"
+     "S3Key": "79e19a857a1c63e1f62ef9cdf04a83a9b027f0c08ea3a9f23c611f3429412846.zip"
     },
     "Environment": {
      "Variables": {
@@ -16983,7 +16983,7 @@
    ],
    "Metadata": {
     "aws:cdk:path": "TodaysDentalInsightsGoogleAdsN1/ReportsFn/Resource",
-    "aws:asset:path": "asset.2c0e5e0dce6bb1b0a69c477e755d867c3d0ef7c8a7ee8d95cd5ca6089dc8091a",
+    "aws:asset:path": "asset.79e19a857a1c63e1f62ef9cdf04a83a9b027f0c08ea3a9f23c611f3429412846",
     "aws:asset:is-bundled": true,
     "aws:asset:property": "Code"
    }
@@ -17096,7 +17096,7 @@
    "Properties": {
     "Code": {
      "S3Bucket": "cdk-tdi3-assets-851620242036-us-east-1",
-     "S3Key": "4eece828c086c0194c8e6632885fb8cbe4287466ce0799ea7e0b473f5c078358.zip"
+     "S3Key": "395ee2bb43d698c22551d7769a7e8547a69f5265d63b0705a1ece1b05f7ec9cd.zip"
     },
     "Environment": {
      "Variables": {
@@ -17142,7 +17142,7 @@
    ],
    "Metadata": {
     "aws:cdk:path": "TodaysDentalInsightsGoogleAdsN1/PMaxFn/Resource",
-    "aws:asset:path": "asset.4eece828c086c0194c8e6632885fb8cbe4287466ce0799ea7e0b473f5c078358",
+    "aws:asset:path": "asset.395ee2bb43d698c22551d7769a7e8547a69f5265d63b0705a1ece1b05f7ec9cd",
     "aws:asset:is-bundled": true,
     "aws:asset:property": "Code"
    }
@@ -17255,7 +17255,7 @@
    "Properties": {
     "Code": {
      "S3Bucket": "cdk-tdi3-assets-851620242036-us-east-1",
-     "S3Key": "c1709180a307da68b16e6782fa2cf69aa77add5e1c380de0ac5fb5aa675dce76.zip"
+     "S3Key": "53561e6bcb037633217c37d93441ff43d4a52c5190eefdd2fd6f5ad4a0968bd5.zip"
     },
     "Environment": {
      "Variables": {
@@ -17301,7 +17301,7 @@
    ],
    "Metadata": {
     "aws:cdk:path": "TodaysDentalInsightsGoogleAdsN1/AccountFn/Resource",
-    "aws:asset:path": "asset.c1709180a307da68b16e6782fa2cf69aa77add5e1c380de0ac5fb5aa675dce76",
+    "aws:asset:path": "asset.53561e6bcb037633217c37d93441ff43d4a52c5190eefdd2fd6f5ad4a0968bd5",
     "aws:asset:is-bundled": true,
     "aws:asset:property": "Code"
    }

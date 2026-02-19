@@ -434,36 +434,63 @@ async function getNegativeKeywords(
 ): Promise<APIGatewayProxyResult> {
   const customerId = event.queryStringParameters?.customerId;
   const adGroupResourceName = event.queryStringParameters?.adGroupResourceName;
+  const campaignResourceName = event.queryStringParameters?.campaignResourceName;
 
-  if (!customerId || !adGroupResourceName) {
+  if (!customerId || (!adGroupResourceName && !campaignResourceName)) {
     return {
       statusCode: 400,
       headers: corsHeaders,
-      body: JSON.stringify({ error: 'customerId and adGroupResourceName are required' }),
+      body: JSON.stringify({ error: 'customerId and either adGroupResourceName or campaignResourceName are required' }),
     };
   }
 
   try {
-    const query = `
-      SELECT
-        ad_group_criterion.resource_name,
-        ad_group_criterion.keyword.text,
-        ad_group_criterion.keyword.match_type,
-        ad_group_criterion.negative
-      FROM ad_group_criterion
-      WHERE ad_group_criterion.ad_group = '${adGroupResourceName}'
-        AND ad_group_criterion.type = 'KEYWORD'
-        AND ad_group_criterion.negative = TRUE
-        AND ad_group_criterion.status != 'REMOVED'
-    `;
+    let formattedKeywords: any[] = [];
 
-    const negativeKeywords = await executeGoogleAdsQuery(customerId, query);
+    if (campaignResourceName) {
+      // Campaign-level negative keywords use campaign_criterion
+      const query = `
+        SELECT
+          campaign_criterion.resource_name,
+          campaign_criterion.keyword.text,
+          campaign_criterion.keyword.match_type,
+          campaign_criterion.negative
+        FROM campaign_criterion
+        WHERE campaign_criterion.campaign = '${campaignResourceName}'
+          AND campaign_criterion.type = 'KEYWORD'
+          AND campaign_criterion.negative = TRUE
+      `;
 
-    const formattedKeywords = negativeKeywords.map(nk => ({
-      resourceName: nk.ad_group_criterion?.resource_name,
-      text: nk.ad_group_criterion?.keyword?.text,
-      matchType: nk.ad_group_criterion?.keyword?.match_type,
-    }));
+      const negativeKeywords = await executeGoogleAdsQuery(customerId, query);
+
+      formattedKeywords = negativeKeywords.map(nk => ({
+        resourceName: nk.campaign_criterion?.resource_name,
+        text: nk.campaign_criterion?.keyword?.text,
+        matchType: nk.campaign_criterion?.keyword?.match_type,
+      }));
+    } else {
+      // Ad group-level negative keywords use ad_group_criterion
+      const query = `
+        SELECT
+          ad_group_criterion.resource_name,
+          ad_group_criterion.keyword.text,
+          ad_group_criterion.keyword.match_type,
+          ad_group_criterion.negative
+        FROM ad_group_criterion
+        WHERE ad_group_criterion.ad_group = '${adGroupResourceName}'
+          AND ad_group_criterion.type = 'KEYWORD'
+          AND ad_group_criterion.negative = TRUE
+          AND ad_group_criterion.status != 'REMOVED'
+      `;
+
+      const negativeKeywords = await executeGoogleAdsQuery(customerId, query);
+
+      formattedKeywords = negativeKeywords.map(nk => ({
+        resourceName: nk.ad_group_criterion?.resource_name,
+        text: nk.ad_group_criterion?.keyword?.text,
+        matchType: nk.ad_group_criterion?.keyword?.match_type,
+      }));
+    }
 
     return {
       statusCode: 200,
@@ -526,7 +553,7 @@ async function addNegativeKeywords(
       // Ad group level negative keywords
       await addNegativeKeywordsToGoogle(customerId, adGroupResourceName!, keywords);
     } else {
-      // Campaign level negative keywords
+      // Campaign level negative keywords use CampaignCriterionService
       const client = await getGoogleAdsClient(customerId);
 
       const operations = keywords.map(kw => ({
@@ -535,11 +562,12 @@ async function addNegativeKeywords(
           negative: true,
           keyword: {
             text: kw.text.trim(),
-            match_type: kw.matchType || 'PHRASE',
+            match_type: kw.matchType ? (kw.matchType === 'EXACT' ? 2 : kw.matchType === 'PHRASE' ? 3 : 4) : 3,
           },
         },
       }));
 
+      console.log('[GoogleAdsKeywords] Campaign-level negative keyword operations:', JSON.stringify(operations));
       await (client as any).campaignCriteria.create(operations);
     }
 

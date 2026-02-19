@@ -233,7 +233,7 @@
    "Properties": {
     "Code": {
      "S3Bucket": "cdk-tdi3-assets-851620242036-us-east-1",
-     "S3Key": "c8ec611f89482bda74477d5c56eca7fdc637784bc11ea6708a31460c47a75ab2.zip"
+     "S3Key": "46c146be8c45372ed2e5e2be01c0975762f4e1b1c2e877348e927e7cf2bf78f9.zip"
     },
     "Environment": {
      "Variables": {
@@ -283,7 +283,7 @@
    ],
    "Metadata": {
     "aws:cdk:path": "TodaysDentalInsightsChatbotN1/WebSocketConnectHandler/Resource",
-    "aws:asset:path": "asset.c8ec611f89482bda74477d5c56eca7fdc637784bc11ea6708a31460c47a75ab2",
+    "aws:asset:path": "asset.46c146be8c45372ed2e5e2be01c0975762f4e1b1c2e877348e927e7cf2bf78f9",
     "aws:asset:is-bundled": true,
     "aws:asset:property": "Code"
    }
@@ -403,7 +403,7 @@
    "Properties": {
     "Code": {
      "S3Bucket": "cdk-tdi3-assets-851620242036-us-east-1",
-     "S3Key": "e0808818e50fb520a5c99247865bef88fb6b8f3bbd281e925d89b493b49c39fa.zip"
+     "S3Key": "f6814dce499179812c4cc2aa5b83965b71dbd15d4feba6d5252703aed2d5c425.zip"
     },
     "Environment": {
      "Variables": {
@@ -452,7 +452,7 @@
    ],
    "Metadata": {
     "aws:cdk:path": "TodaysDentalInsightsChatbotN1/WebSocketDisconnectHandler/Resource",
-    "aws:asset:path": "asset.e0808818e50fb520a5c99247865bef88fb6b8f3bbd281e925d89b493b49c39fa",
+    "aws:asset:path": "asset.f6814dce499179812c4cc2aa5b83965b71dbd15d4feba6d5252703aed2d5c425",
     "aws:asset:is-bundled": true,
     "aws:asset:property": "Code"
    }
@@ -797,7 +797,7 @@
    "Properties": {
     "Code": {
      "S3Bucket": "cdk-tdi3-assets-851620242036-us-east-1",
-     "S3Key": "acbe5c5dd72027696dfd8f4f45a8098896fdaa54efa10a9835a6b31773f7256f.zip"
+     "S3Key": "3f794c1f2b50792b9b2f5ad59a4cabeb066c71419fee2d84ff0bcf04f627d78e.zip"
     },
     "Environment": {
      "Variables": {
@@ -854,7 +854,7 @@
    ],
    "Metadata": {
     "aws:cdk:path": "TodaysDentalInsightsChatbotN1/WebSocketMessageHandler/Resource",
-    "aws:asset:path": "asset.acbe5c5dd72027696dfd8f4f45a8098896fdaa54efa10a9835a6b31773f7256f",
+    "aws:asset:path": "asset.3f794c1f2b50792b9b2f5ad59a4cabeb066c71419fee2d84ff0bcf04f627d78e",
     "aws:asset:is-bundled": true,
     "aws:asset:property": "Code"
    }
@@ -970,7 +970,7 @@
    "Properties": {
     "Code": {
      "S3Bucket": "cdk-tdi3-assets-851620242036-us-east-1",
-     "S3Key": "e62d64151cf5ebc29a687877c2b0b67d1c7f3a51432d63804149253b51cbc1c1.zip"
+     "S3Key": "7226e96312342c087fd142e62e6c3232761ca3cbfb4396e67b4487511a313d95.zip"
     },
     "Environment": {
      "Variables": {
@@ -1020,7 +1020,7 @@
    ],
    "Metadata": {
     "aws:cdk:path": "TodaysDentalInsightsChatbotN1/ChatHistoryHandler/Resource",
-    "aws:asset:path": "asset.e62d64151cf5ebc29a687877c2b0b67d1c7f3a51432d63804149253b51cbc1c1",
+    "aws:asset:path": "asset.7226e96312342c087fd142e62e6c3232761ca3cbfb4396e67b4487511a313d95",
     "aws:asset:is-bundled": true,
     "aws:asset:property": "Code"
    }

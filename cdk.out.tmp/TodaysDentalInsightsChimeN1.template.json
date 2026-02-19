@@ -179,7 +179,7 @@
        {
         "Ref": "ClinicsTable4477ED9E"
        },
-       "\":[{\"PutRequest\":{\"Item\":{\"clinicId\":{\"S\":\"dentistinnewbritain\"},\"phoneNumber\":{\"S\":\"+18602612866\"},\"clinicName\":{\"S\":\"Dentist in New Britain\"},\"aiPhoneNumber\":{\"S\":\"\"},\"timezone\":{\"S\":\"America/New_York\"},\"clinicAddress\":{\"S\":\"446 S Main St, New Britain CT 06051-3516, USA\"},\"clinicCity\":{\"S\":\"New Britain\"},\"clinicState\":{\"S\":\"Connecticut\"},\"clinicZipCode\":{\"S\":\"29607\"},\"clinicPhone\":{\"S\":\"860-259-4141\"},\"clinicEmail\":{\"S\":\"dentalcare@dentistinnewbritain.com\"},\"websiteLink\":{\"S\":\"https://dentistinnewbritain.com\"},\"logoUrl\":{\"S\":\"https://dentistinnewbritain.com/logo.png\"},\"mapsUrl\":{\"S\":\"https://maps.app.goo.gl/1wKzE8B2jbxQJaHB8\"},\"scheduleUrl\":{\"S\":\"https://dentistinnewbritain.com/patient-portal\"}}}},{\"PutRequest\":{\"Item\":{\"clinicId\":{\"S\":\"dentistingreenville\"},\"phoneNumber\":{\"S\":\"+18643192704\"},\"clinicName\":{\"S\":\"Dentist in Greenville\"},\"aiPhoneNumber\":{\"S\":\"+14439272295\"},\"timezone\":{\"S\":\"America/New_York\"},\"clinicAddress\":{\"S\":\"4 Market Point Drive Suite E, Greenville SC 29607\"},\"clinicCity\":{\"S\":\"Greenville\"},\"clinicState\":{\"S\":\"South Carolina\"},\"clinicZipCode\":{\"S\":\"06051-3516\"},\"clinicPhone\":{\"S\":\"864-284-0066\"},\"clinicEmail\":{\"S\":\"dentalcare@dentistingreenville.com\"},\"websiteLink\":{\"S\":\"https://dentistingreenville.com\"},\"logoUrl\":{\"S\":\"https://dentistingreenville.com/logo.png\"},\"mapsUrl\":{\"S\":\"https://maps.app.goo.gl/TP79MgS1EcycndPy8\"},\"scheduleUrl\":{\"S\":\"https://dentistingreenville.com/patient-portal\"}}}},{\"PutRequest\":{\"Item\":{\"clinicId\":{\"S\":\"todaysdentalcayce\"},\"phoneNumber\":{\"S\":\"+18033027525\"},\"clinicName\":{\"S\":\"Todays Dental Cayce\"},\"aiPhoneNumber\":{\"S\":\"\"},\"timezone\":{\"S\":\"America/New_York\"},\"clinicAddress\":{\"S\":\"1305 Knox Abbott Dr suite 101, Cayce, SC 29033, United States\"},\"clinicCity\":{\"S\":\"Cayce\"},\"clinicState\":{\"S\":\"South Carolina\"},\"clinicZipCode\":{\"S\":\"29033\"},\"clinicPhone\":{\"S\":\"803-233-6141\"},\"clinicEmail\":{\"S\":\"Dentist@TodaysDentalCayce.com\"},\"websiteLink\":{\"S\":\"https://todaysdentalcayce.com\"},\"logoUrl\":{\"S\":\"https://todaysdentalcayce.com/logo.png\"},\"mapsUrl\":{\"S\":\"https://maps.app.goo.gl/eU4TuxoySfuqfwib7\"},\"scheduleUrl\":{\"S\":\"https://todaysdentalcayce.com/patient-portal\"}}}},{\"PutRequest\":{\"Item\":{\"clinicId\":{\"S\":\"creekcrossingdentalcare\"},\"phoneNumber\":{\"S\":\"+14692250064\"},\"clinicName\":{\"S\":\"Creek Crossing Dental Care\"},\"aiPhoneNumber\":{\"S\":\"\"},\"timezone\":{\"S\":\"America/Chicago\"},\"clinicAddress\":{\"S\":\"1927 FAITHON P LUCAS SR BLVD Ste 120 MESQUITE TX 75181-1698\"},\"clinicCity\":{\"S\":\"Mesquite\"},\"clinicState\":{\"S\":\"Texas\"},\"clinicZipCode\":{\"S\":\"75181\"},\"clinicPhone\":{\"S\":\"469-333-6158\"},\"clinicEmail\":{\"S\":\"dentist@creekcrossingdentalcare.com\"},\"websiteLink\":{\"S\":\"https://creekcrossingdentalcare.com\"},\"logoUrl\":{\"S\":\"https://creekcrossingdentalcare.com/logo.png\"},\"mapsUrl\":{\"S\":\"https://maps.app.goo.gl/k9Be93nCmmcaE3CG7\"},\"scheduleUrl\":{\"S\":\"https://creekcrossingdentalcare.com/patient-portal\"}}}},{\"PutRequest\":{\"Item\":{\"clinicId\":{\"S\":\"dentistinwinston-salem\"},\"phoneNumber\":{\"S\":\"+13362836627\"},\"clinicName\":{\"S\":\"Dentist in Winston-Salem\"},\"aiPhoneNumber\":{\"S\":\"\"},\"timezone\":{\"S\":\"America/New_York\"},\"clinicAddress\":{\"S\":\"3210 Silas Creek Pkwy, Suite-4 Winston salem, NC, 27103\"},\"clinicCity\":{\"S\":\"Winston-Salem\"},\"clinicState\":{\"S\":\"North Carolina\"},\"clinicZipCode\":{\"S\":\"27103\"},\"clinicPhone\":{\"S\":\"336-802-1894\"},\"clinicEmail\":{\"S\":\"dentalcare@dentistinwinston-salem.com\"},\"websiteLink\":{\"S\":\"https://dentistinwinston-salem.com\"},\"logoUrl\":{\"S\":\"https://dentistinwinston-salem.com/logo.png\"},\"mapsUrl\":{\"S\":\"https://maps.app.goo.gl/fAV5H59kFt1dfuMW9\"},\"scheduleUrl\":{\"S\":\"https://dentistinwinston-salem.com/patient-portal\"}}}},{\"PutRequest\":{\"Item\":{\"clinicId\":{\"S\":\"dentistincentennial\"},\"phoneNumber\":{\"S\":\"+17207020009\"},\"clinicName\":{\"S\":\"Dentist in centennial\"},\"aiPhoneNumber\":{\"S\":\"\"},\"timezone\":{\"S\":\"America/Denver\"},\"clinicAddress\":{\"S\":\"20269 E Smoky Hill Rd, Centennial, CO 80015, USA\"},\"clinicCity\":{\"S\":\"Centennial\"},\"clinicState\":{\"S\":\"Colorado\"},\"clinicZipCode\":{\"S\":\"80015\"},\"clinicPhone\":{\"S\":\"303-923-9068\"},\"clinicEmail\":{\"S\":\"dentalcare@dentistincentennial.com\"},\"websiteLink\":{\"S\":\"https://dentistincentennial.com\"},\"logoUrl\":{\"S\":\"https://dentistincentennial.com/logo.png\"},\"mapsUrl\":{\"S\":\"https://maps.app.goo.gl/HjGoQovp8s1QbsC66\"},\"scheduleUrl\":{\"S\":\"https://dentistincentennial.com/patient-portal\"}}}},{\"PutRequest\":{\"Item\":{\"clinicId\":{\"S\":\"renodentalcareandorthodontics\"},\"phoneNumber\":{\"S\":\"+17752538664\"},\"clinicName\":{\"S\":\"Reno Dental Care and Orthodontics\"},\"aiPhoneNumber\":{\"S\":\"\"},\"timezone\":{\"S\":\"America/Los_Angeles\"},\"clinicAddress\":{\"S\":\"8040 S VIRGINIA ST STE 1 RENO NV 89511-8939\"},\"clinicCity\":{\"S\":\"Reno\"},\"clinicState\":{\"S\":\"Nevada\"},\"clinicZipCode\":{\"S\":\"89511\"},\"clinicPhone\":{\"S\":\"775-339-9893\"},\"clinicEmail\":{\"S\":\"dentalcare@renodentalcareandorthodontics.com\"},\"websiteLink\":{\"S\":\"https://renodentalcareandorthodontics.com\"},\"logoUrl\":{\"S\":\"https://renodentalcareandorthodontics.com/logo.png\"},\"mapsUrl\":{\"S\":\"https://maps.app.goo.gl/yqVa3N8mNwCgwBGv6\"},\"scheduleUrl\":{\"S\":\"https://renodentalcareandorthodontics.com/patient-portal\"}}}},{\"PutRequest\":{\"Item\":{\"clinicId\":{\"S\":\"todaysdentalalexandria\"},\"phoneNumber\":{\"S\":\"+17036728308\"},\"clinicName\":{\"S\":\"Todays Dental Alexandria\"},\"aiPhoneNumber\":{\"S\":\"\"},\"timezone\":{\"S\":\"America/New_York\"},\"clinicAddress\":{\"S\":\"4601 Pinecrest Office Park Dr D, Alexandria, VA 22312, United States\"},\"clinicCity\":{\"S\":\"Alexandria\"},\"clinicState\":{\"S\":\"Virginia\"},\"clinicZipCode\":{\"S\":\"22312\"},\"clinicPhone\":{\"S\":\"(703) 256-2085\"},\"clinicEmail\":{\"S\":\"Dentist@TodaysDentalAlexandria.com\"},\"websiteLink\":{\"S\":\"https://todaysdentalalexandria.com\"},\"logoUrl\":{\"S\":\"https://todaysdentalalexandria.com/logo.png\"},\"mapsUrl\":{\"S\":\"https://maps.app.goo.gl/vqABURPKCfMrFuuX9\"},\"scheduleUrl\":{\"S\":\"https://todaysdentalalexandria.com/patient-portal\"}}}},{\"PutRequest\":{\"Item\":{\"clinicId\":{\"S\":\"todaysdentalgreenville\"},\"phoneNumber\":{\"S\":\"+18643192662\"},\"clinicName\":{\"S\":\"Todays Dental Greenville\"},\"aiPhoneNumber\":{\"S\":\"\"},\"timezone\":{\"S\":\"America/New_York\"},\"clinicAddress\":{\"S\":\"1530 Poinsett Hwy Greenville, SC 29609, USA\"},\"clinicCity\":{\"S\":\"Greenville\"},\"clinicState\":{\"S\":\"South Carolina\"},\"clinicZipCode\":{\"S\":\"29609\"},\"clinicPhone\":{\"S\":\"(864) 999-9899\"},\"clinicEmail\":{\"S\":\"Dentist@TodaysDentalGreenville.com\"},\"websiteLink\":{\"S\":\"https://todaysdentalgreenville.com\"},\"logoUrl\":{\"S\":\"https://todaysdentalgreenville.com/logo.png\"},\"mapsUrl\":{\"S\":\"https://maps.app.goo.gl/ksQRNsjQsjH7VNUa9\"},\"scheduleUrl\":{\"S\":\"https://todaysdentalgreenville.com/patient-portal\"}}}},{\"PutRequest\":{\"Item\":{\"clinicId\":{\"S\":\"todaysdentalwestcolumbia\"},\"phoneNumber\":{\"S\":\"+18032988480\"},\"clinicName\":{\"S\":\"Todays Dental West Columbia\"},\"aiPhoneNumber\":{\"S\":\"\"},\"timezone\":{\"S\":\"America/New_York\"},\"clinicAddress\":{\"S\":\"115 Medical Cir West Columbia, SC 29169, USA\"},\"clinicCity\":{\"S\":\"West Columbia\"},\"clinicState\":{\"S\":\"South Carolina\"},\"clinicZipCode\":{\"S\":\"29169\"},\"clinicPhone\":{\"S\":\"(803) 233-8177\"},\"clinicEmail\":{\"S\":\"Dentist@TodaysDentalWestColumbia.com\"},\"websiteLink\":{\"S\":\"https://todaysdentalwestcolumbia.com\"},\"logoUrl\":{\"S\":\"https://todaysdentalwestcolumbia.com/logo.png\"},\"mapsUrl\":{\"S\":\"https://maps.app.goo.gl/NfpA3W9nsMdxC2gy5\"},\"scheduleUrl\":{\"S\":\"https://todaysdentalwestcolumbia.com/patient-portal\"}}}},{\"PutRequest\":{\"Item\":{\"clinicId\":{\"S\":\"dentistinconcord\"},\"phoneNumber\":{\"S\":\"+17043682506\"},\"clinicName\":{\"S\":\"Dentist in Concord\"},\"aiPhoneNumber\":{\"S\":\"\"},\"timezone\":{\"S\":\"America/New_York\"},\"clinicAddress\":{\"S\":\"2460 Wonder DR STE C, Kannapolis, NC 28083\"},\"clinicCity\":{\"S\":\"Concord\"},\"clinicState\":{\"S\":\"North Carolina\"},\"clinicZipCode\":{\"S\":\"28083\"},\"clinicPhone\":{\"S\":\"(704) 707-3620\"},\"clinicEmail\":{\"S\":\"DentalCare@DentistinConcord.com\"},\"websiteLink\":{\"S\":\"https://dentistinconcord.com\"},\"logoUrl\":{\"S\":\"https://dentistinconcord.com/logo.png\"},\"mapsUrl\":{\"S\":\"https://maps.app.goo.gl/PRVNRH5U7tnv4erA8\"},\"scheduleUrl\":{\"S\":\"https://dentistinconcord.com/patient-portal\"}}}},{\"PutRequest\":{\"Item\":{\"clinicId\":{\"S\":\"dentistinedgewater\"},\"phoneNumber\":{\"S\":\"+14432038433\"},\"clinicName\":{\"S\":\"Dentist in EdgeWater\"},\"aiPhoneNumber\":{\"S\":\"\"},\"timezone\":{\"S\":\"America/New_York\"},\"clinicAddress\":{\"S\":\"15 Lee Airpark Dr, Suite 100, Edgewater MD 21037\"},\"clinicCity\":{\"S\":\"Edgewater\"},\"clinicState\":{\"S\":\"Maryland\"},\"clinicZipCode\":{\"S\":\"21037\"},\"clinicPhone\":{\"S\":\"(443) 334-6689\"},\"clinicEmail\":{\"S\":\"DentalCare@DentistinEdgewater.com\"},\"websiteLink\":{\"S\":\"https://dentistinedgewatermd.com\"},\"logoUrl\":{\"S\":\"https://dentistinedgewatermd.com/logo.png\"},\"mapsUrl\":{\"S\":\"https://maps.app.goo.gl/x97PmcG9KJH5Rdu16\"},\"scheduleUrl\":{\"S\":\"https://dentistinedgewatermd.com/patient-portal\"}}}},{\"PutRequest\":{\"Item\":{\"clinicId\":{\"S\":\"lawrencevilledentistry\"},\"phoneNumber\":{\"S\":\"+17702840555\"},\"clinicName\":{\"S\":\"Lawrenceville Dentistry\"},\"aiPhoneNumber\":{\"S\":\"\"},\"timezone\":{\"S\":\"America/New_York\"},\"clinicAddress\":{\"S\":\"1455 Pleasant Hill Road, Lawrenceville, Suite 807A, georgia 30044, USA\"},\"clinicCity\":{\"S\":\"Lawrenceville\"},\"clinicState\":{\"S\":\"Georgia\"},\"clinicZipCode\":{\"S\":\"30044\"},\"clinicPhone\":{\"S\":\"(770)-415-0077\"},\"clinicEmail\":{\"S\":\"Dentist@LawrencevilleDentistry.com\"},\"websiteLink\":{\"S\":\"https://lawrencevilledentistry.com\"},\"logoUrl\":{\"S\":\"https://lawrencevilledentistry.com/logo.png\"},\"mapsUrl\":{\"S\":\"https://maps.app.goo.gl/MFnMPmHSsdyHaGZe9\"},\"scheduleUrl\":{\"S\":\"https://lawrencevilledentistry.com/book-appointment\"}}}},{\"PutRequest\":{\"Item\":{\"clinicId\":{\"S\":\"dentistinlouisville\"},\"phoneNumber\":{\"S\":\"+15022158254\"},\"clinicName\":{\"S\":\"Dentist In Louisville\"},\"aiPhoneNumber\":{\"S\":\"\"},\"timezone\":{\"S\":\"America/New_York\"},\"clinicAddress\":{\"S\":\"6826 Bardstown Road, Louisville Kentucky 40291, USA\"},\"clinicCity\":{\"S\":\"Louisville\"},\"clinicState\":{\"S\":\"Kentucky\"},\"clinicZipCode\":{\"S\":\"40291\"},\"clinicPhone\":{\"S\":\"(502)-239-9751\"},\"clinicEmail\":{\"S\":\"dentalcare@dentistinlouisville.com\"},\"websiteLink\":{\"S\":\"https://dentistinlouisville.com\"},\"logoUrl\":{\"S\":\"https://dentistinlouisville.com/logo.png\"},\"mapsUrl\":{\"S\":\"https://maps.app.goo.gl/m76QtysK96poeUWy7\"},\"scheduleUrl\":{\"S\":\"https://dentistinlouisville.com/book-appointment\"}}}},{\"PutRequest\":{\"Item\":{\"clinicId\":{\"S\":\"dentistatsaludapointe\"},\"phoneNumber\":{\"S\":\"+18032919970\"},\"clinicName\":{\"S\":\"Todays Dental Saluda Pointe\"},\"aiPhoneNumber\":{\"S\":\"\"},\"timezone\":{\"S\":\"America/New_York\"},\"clinicAddress\":{\"S\":\"105 Saluda Pointe Ct Suite C, Lexington, SC 29072, USA\"},\"clinicCity\":{\"S\":\"SaludaPointe\"},\"clinicState\":{\"S\":\"South Carolina\"},\"clinicZipCode\":{\"S\":\"29072\"},\"clinicPhone\":{\"S\":\"(803) 399-8236\"},\"clinicEmail\":{\"S\":\"DentalCare@DentistatSaludaPointe.com\"},\"websiteLink\":{\"S\":\"https://dentistatsaludapointe.com\"},\"logoUrl\":{\"S\":\"https://dentistatsaludapointe.com/logo.png\"},\"mapsUrl\":{\"S\":\"https://maps.app.goo.gl/ybcArAkBw4JLHqmY7\"},\"scheduleUrl\":{\"S\":\"https://dentistatsaludapointe.com/book-appointment\"}}}},{\"PutRequest\":{\"Item\":{\"clinicId\":{\"S\":\"dentistinoregonoh\"},\"phoneNumber\":{\"S\":\"+14193183371\"},\"clinicName\":{\"S\":\"Dentist in Oregon\"},\"aiPhoneNumber\":{\"S\":\"\"},\"timezone\":{\"S\":\"America/New_York\"},\"clinicAddress\":{\"S\":\"3555 Navarre Ave Stre 12, Oregon OH 43616\"},\"clinicCity\":{\"S\":\"Oregon\"},\"clinicState\":{\"S\":\"Ohio\"},\"clinicZipCode\":{\"S\":\"43616\"},\"clinicPhone\":{\"S\":\"(419) 690-0320\"},\"clinicEmail\":{\"S\":\"dentalcare@dentistinoregonoh.com\"},\"websiteLink\":{\"S\":\"https://dentistinoregonoh.com\"},\"logoUrl\":{\"S\":\"https://dentistinoregonoh.com/logo.png\"},\"mapsUrl\":{\"S\":\"https://maps.app.goo.gl/dHUuSUYSeot1YxBw5\"},\"scheduleUrl\":{\"S\":\"https://dentistinOregonoh.com/patient-portal\"}}}},{\"PutRequest\":{\"Item\":{\"clinicId\":{\"S\":\"todaysdentallexington\"},\"phoneNumber\":{\"S\":\"+18032210987\"},\"clinicName\":{\"S\":\"Todays Dental Lexington\"},\"aiPhoneNumber\":{\"S\":\"\"},\"timezone\":{\"S\":\"America/New_York\"},\"clinicAddress\":{\"S\":\"458 Old Cherokee Rd Suite 100, Lexington, SC 29072, USA\"},\"clinicCity\":{\"S\":\"Lexington\"},\"clinicState\":{\"S\":\"South Carolina\"},\"clinicZipCode\":{\"S\":\"43616\"},\"clinicPhone\":{\"S\":\"(803) 756-4353\"},\"clinicEmail\":{\"S\":\"Dentist@TodaysDentalLexington.com\"},\"websiteLink\":{\"S\":\"https://todaysdentallexington.com\"},\"logoUrl\":{\"S\":\"https://todaysdentallexington.com/logo.png\"},\"mapsUrl\":{\"S\":\"https://maps.app.goo.gl/nBnxjeHrWU8mxDgV7\"},\"scheduleUrl\":{\"S\":\"https://todaysdentallexington.com/patient-portal\"}}}},{\"PutRequest\":{\"Item\":{\"clinicId\":{\"S\":\"dentistinbowie\"},\"phoneNumber\":{\"S\":\"+13012416572\"},\"clinicName\":{\"S\":\"Dentist in Bowie\"},\"aiPhoneNumber\":{\"S\":\"\"},\"timezone\":{\"S\":\"America/New_York\"},\"clinicAddress\":{\"S\":\"14999 Health Center Dr #110 Bowie, MD 20716, USA\"},\"clinicCity\":{\"S\":\"Bowie\"},\"clinicState\":{\"S\":\"Maryland\"},\"clinicZipCode\":{\"S\":\"20716\"},\"clinicPhone\":{\"S\":\"(301) 880-0504\"},\"clinicEmail\":{\"S\":\"DentalCare@DentistinBowie.com\"},\"websiteLink\":{\"S\":\"https://dentistinbowie.com\"},\"logoUrl\":{\"S\":\"https://dentistinbowie.com/logo.png\"},\"mapsUrl\":{\"S\":\"https://maps.app.goo.gl/Tb2ZSscmYFCkdEsLA\"},\"scheduleUrl\":{\"S\":\"https://dentistinbowie.com/patient-portal\"}}}},{\"PutRequest\":{\"Item\":{\"clinicId\":{\"S\":\"dentistinpowellohio\"},\"phoneNumber\":{\"S\":\"+16144898815\"},\"clinicName\":{\"S\":\"Dentist in Powell\"},\"aiPhoneNumber\":{\"S\":\"\"},\"timezone\":{\"S\":\"America/New_York\"},\"clinicAddress\":{\"S\":\"4091 W Powell Rd#1, Powell, OH 43065\"},\"clinicCity\":{\"S\":\"Powell\"},\"clinicState\":{\"S\":\"Ohio\"},\"clinicZipCode\":{\"S\":\"43065\"},\"clinicPhone\":{\"S\":\"(614) 659-0018\"},\"clinicEmail\":{\"S\":\"DentalCare@DentistinPowellOhio.com\"},\"websiteLink\":{\"S\":\"https://dentistinpowellohio.com\"},\"logoUrl\":{\"S\":\"https://dentistinpowellohio.com/logo.png\"},\"mapsUrl\":{\"S\":\"https://maps.app.goo.gl/eR4MznoQ3gj897NX8\"},\"scheduleUrl\":{\"S\":\"https://dentistinpowellohio.com/patient-portal\"}}}},{\"PutRequest\":{\"Item\":{\"clinicId\":{\"S\":\"dentistinperrysburg\"},\"phoneNumber\":{\"S\":\"+14193183386\"},\"clinicName\":{\"S\":\"Dentist in PerrysBurg\"},\"aiPhoneNumber\":{\"S\":\"\"},\"timezone\":{\"S\":\"America/New_York\"},\"clinicAddress\":{\"S\":\"110 E South Boundary St, Perrysburg, OH 43551, USA\"},\"clinicCity\":{\"S\":\"Perrysburg\"},\"clinicState\":{\"S\":\"Ohio\"},\"clinicZipCode\":{\"S\":\"43551\"},\"clinicPhone\":{\"S\":\"(419) 792-1264\"},\"clinicEmail\":{\"S\":\"Dentalcare@dentistinperrysburg.com\"},\"websiteLink\":{\"S\":\"https://dentistinperrysburg.com\"},\"logoUrl\":{\"S\":\"https://dentistinperrysburg.com/logo.png\"},\"mapsUrl\":{\"S\":\"https://maps.app.goo.gl/aVCiTAY9UvGYXQaR8\"},\"scheduleUrl\":{\"S\":\"https://dentistinperrysburg.com/patient-portal\"}}}},{\"PutRequest\":{\"Item\":{\"clinicId\":{\"S\":\"dentistinaustin\"},\"phoneNumber\":{\"S\":\"+15123095624\"},\"clinicName\":{\"S\":\"Dentist in Austin\"},\"aiPhoneNumber\":{\"S\":\"+17377074552\"},\"timezone\":{\"S\":\"America/Chicago\"},\"clinicAddress\":{\"S\":\"2110 W Slaughter Ln Ste 190 Austin, TX 78748\"},\"clinicCity\":{\"S\":\"Austin\"},\"clinicState\":{\"S\":\"Texas\"},\"clinicZipCode\":{\"S\":\"78748\"},\"clinicPhone\":{\"S\":\"512-430-4472\"},\"clinicEmail\":{\"S\":\"Dentalcare@dentistinaustintx.com\"},\"websiteLink\":{\"S\":\"https://dentistinaustintx.com\"},\"logoUrl\":{\"S\":\"https://dentistinaustintx.com/logo.png\"},\"mapsUrl\":{\"S\":\"https://maps.app.goo.gl/BbvkUzQb14p6YhH77\"},\"scheduleUrl\":{\"S\":\"https://dentistinaustintx.com/patient-portal\"}}}},{\"PutRequest\":{\"Item\":{\"clinicId\":{\"S\":\"therimdentalcare\"},\"phoneNumber\":{\"S\":\"+17262023123\"},\"clinicName\":{\"S\":\"The Rim Dental Care\"},\"aiPhoneNumber\":{\"S\":\"\"},\"timezone\":{\"S\":\"America/Chicago\"},\"clinicAddress\":{\"S\":\"6028 WORTH PKWY STE 101, SAN ANTONIO, TX 78257-5071\"},\"clinicCity\":{\"S\":\"SAN ANTONIO\"},\"clinicState\":{\"S\":\"Texas\"},\"clinicZipCode\":{\"S\":\"78257-5071\"},\"clinicPhone\":{\"S\":\"(726) 215-9920\"},\"clinicEmail\":{\"S\":\"Dentist@therimdentalcare.com\"},\"websiteLink\":{\"S\":\"https://therimdentalcare.com\"},\"logoUrl\":{\"S\":\"https://therimdentalcare.com/logo.png\"},\"mapsUrl\":{\"S\":\"https://maps.app.goo.gl/cabosKW6nqkmPCQs8\"},\"scheduleUrl\":{\"S\":\"https://therimdentalcare.com/patient-portal\"}}}},{\"PutRequest\":{\"Item\":{\"clinicId\":{\"S\":\"dentistinbloomingdale\"},\"phoneNumber\":{\"S\":\"+16302969003\"},\"clinicName\":{\"S\":\"Dentist in Bloomingdale\"},\"aiPhoneNumber\":{\"S\":\"\"},\"timezone\":{\"S\":\"America/Chicago\"},\"clinicAddress\":{\"S\":\"366 W Army Trail Rd #310a, Bloomingdale, IL 60108, USA\"},\"clinicCity\":{\"S\":\"Bloomingdale\"},\"clinicState\":{\"S\":\"Illinois\"},\"clinicZipCode\":{\"S\":\"60108\"},\"clinicPhone\":{\"S\":\"(630) 686-1328\"},\"clinicEmail\":{\"S\":\"Dentalcare@dentistinbloomingdaleil.com\"},\"websiteLink\":{\"S\":\"https://dentistinbloomingdaleil.com\"},\"logoUrl\":{\"S\":\"https://dentistinbloomingdaleil.com/logo.png\"},\"mapsUrl\":{\"S\":\"https://maps.app.goo.gl/e7WeCV2FKXuTbyMA6\"},\"scheduleUrl\":{\"S\":\"https://dentistinbloomingdaleil.com/patient-portal\"}}}},{\"PutRequest\":{\"Item\":{\"clinicId\":{\"S\":\"dentistinvernonhills\"},\"phoneNumber\":{\"S\":\"+18472608875\"},\"clinicName\":{\"S\":\"Dentist in Vernon Hills\"},\"aiPhoneNumber\":{\"S\":\"\"},\"timezone\":{\"S\":\"America/Chicago\"},\"clinicAddress\":{\"S\":\"6826 Bardstown Road, VernonHills, Illinois, 40291, USA\"},\"clinicCity\":{\"S\":\"VernonHills\"},\"clinicState\":{\"S\":\"Illinois\"},\"clinicZipCode\":{\"S\":\"40291\"},\"clinicPhone\":{\"S\":\"(847) 978-4077\"},\"clinicEmail\":{\"S\":\"DentalCare@DentistinVernonHills.com\"},\"websiteLink\":{\"S\":\"https://dentistinvernonhills.com\"},\"logoUrl\":{\"S\":\"https://dentistinvernonhills.com/logo.png\"},\"mapsUrl\":{\"S\":\"https://maps.app.goo.gl/3EJBccxEGW41P8Rh7\"},\"scheduleUrl\":{\"S\":\"https://dentistinvernonhills.com/patient-portal\"}}}},{\"PutRequest\":{\"Item\":{\"clinicId\":{\"S\":\"meadowsdentalcare\"},\"phoneNumber\":{\"S\":\"+17372273831\"},\"clinicName\":{\"S\":\"Meadows Dental Care\"},\"aiPhoneNumber\":{\"S\":\"\"},\"timezone\":{\"S\":\"America/Chicago\"},\"clinicAddress\":{\"S\":\"9600 S I-35 Frontage Rd Bldg S #275, Austin, TX 78748, United States\"},\"clinicCity\":{\"S\":\"Austin\"},\"clinicState\":{\"S\":\"Texas\"},\"clinicZipCode\":{\"S\":\"78748\"},\"clinicPhone\":{\"S\":\"(737) 263-1581\"},\"clinicEmail\":{\"S\":\"dentist@themeadowsdentalcare.com\"},\"websiteLink\":{\"S\":\"https://themeadowsdentalcare.com\"},\"logoUrl\":{\"S\":\"https://themeadowsdentalcare.com/logo.png\"},\"mapsUrl\":{\"S\":\"https://maps.app.goo.gl/Hz4S86nieDoEJyZi6\"},\"scheduleUrl\":{\"S\":\"https://themeadowsdentalcare.com/patient-portal\"}}}}]}},\"physicalResourceId\":{\"id\":\"SeedClinicsBatch0-v3\"}}"
+       "\":[{\"PutRequest\":{\"Item\":{\"clinicId\":{\"S\":\"dentistinnewbritain\"},\"phoneNumber\":{\"S\":\"+18602612866\"},\"clinicName\":{\"S\":\"Dentist in New Britain\"},\"aiPhoneNumber\":{\"S\":\"\"},\"timezone\":{\"S\":\"America/New_York\"},\"clinicAddress\":{\"S\":\"446 S Main St, New Britain CT 06051-3516, USA\"},\"clinicCity\":{\"S\":\"New Britain\"},\"clinicState\":{\"S\":\"Connecticut\"},\"clinicZipCode\":{\"S\":\"29607\"},\"clinicPhone\":{\"S\":\"860-259-4141\"},\"clinicEmail\":{\"S\":\"dentalcare@dentistinnewbritain.com\"},\"websiteLink\":{\"S\":\"https://dentistinnewbritain.com\"},\"logoUrl\":{\"S\":\"https://dentistinnewbritain.com/logo.png\"},\"mapsUrl\":{\"S\":\"https://maps.app.goo.gl/1wKzE8B2jbxQJaHB8\"},\"scheduleUrl\":{\"S\":\"https://dentistinnewbritain.com/patient-portal\"}}}},{\"PutRequest\":{\"Item\":{\"clinicId\":{\"S\":\"dentistingreenville\"},\"phoneNumber\":{\"S\":\"+18643192704\"},\"clinicName\":{\"S\":\"Dentist in Greenville\"},\"aiPhoneNumber\":{\"S\":\"+14439272295\"},\"timezone\":{\"S\":\"America/New_York\"},\"clinicAddress\":{\"S\":\"4 Market Point Drive Suite E, Greenville SC 29607\"},\"clinicCity\":{\"S\":\"Greenville\"},\"clinicState\":{\"S\":\"South Carolina\"},\"clinicZipCode\":{\"S\":\"06051-3516\"},\"clinicPhone\":{\"S\":\"864-284-0066\"},\"clinicEmail\":{\"S\":\"dentalcare@dentistingreenville.com\"},\"websiteLink\":{\"S\":\"https://dentistingreenville.com\"},\"logoUrl\":{\"S\":\"https://dentistingreenville.com/logo.png\"},\"mapsUrl\":{\"S\":\"https://maps.app.goo.gl/TP79MgS1EcycndPy8\"},\"scheduleUrl\":{\"S\":\"https://dentistingreenville.com/patient-portal\"}}}},{\"PutRequest\":{\"Item\":{\"clinicId\":{\"S\":\"todaysdentalcayce\"},\"phoneNumber\":{\"S\":\"+18033027525\"},\"clinicName\":{\"S\":\"Todays Dental Cayce\"},\"aiPhoneNumber\":{\"S\":\"\"},\"timezone\":{\"S\":\"America/New_York\"},\"clinicAddress\":{\"S\":\"1305 Knox Abbott Dr suite 101, Cayce, SC 29033, United States\"},\"clinicCity\":{\"S\":\"Cayce\"},\"clinicState\":{\"S\":\"South Carolina\"},\"clinicZipCode\":{\"S\":\"29033\"},\"clinicPhone\":{\"S\":\"803-233-6141\"},\"clinicEmail\":{\"S\":\"Dentist@TodaysDentalCayce.com\"},\"websiteLink\":{\"S\":\"https://todaysdentalcayce.com\"},\"logoUrl\":{\"S\":\"https://todaysdentalcayce.com/logo.png\"},\"mapsUrl\":{\"S\":\"https://maps.app.goo.gl/eU4TuxoySfuqfwib7\"},\"scheduleUrl\":{\"S\":\"https://todaysdentalcayce.com/patient-portal\"}}}},{\"PutRequest\":{\"Item\":{\"clinicId\":{\"S\":\"creekcrossingdentalcare\"},\"phoneNumber\":{\"S\":\"+14692250064\"},\"clinicName\":{\"S\":\"Creek Crossing Dental Care\"},\"aiPhoneNumber\":{\"S\":\"\"},\"timezone\":{\"S\":\"America/Chicago\"},\"clinicAddress\":{\"S\":\"1927 FAITHON P LUCAS SR BLVD Ste 120 MESQUITE TX 75181-1698\"},\"clinicCity\":{\"S\":\"Mesquite\"},\"clinicState\":{\"S\":\"Texas\"},\"clinicZipCode\":{\"S\":\"75181\"},\"clinicPhone\":{\"S\":\"469-333-6158\"},\"clinicEmail\":{\"S\":\"dentist@creekcrossingdentalcare.com\"},\"websiteLink\":{\"S\":\"https://creekcrossingdentalcare.com\"},\"logoUrl\":{\"S\":\"https://creekcrossingdentalcare.com/logo.png\"},\"mapsUrl\":{\"S\":\"https://maps.app.goo.gl/k9Be93nCmmcaE3CG7\"},\"scheduleUrl\":{\"S\":\"https://creekcrossingdentalcare.com/patient-portal\"}}}},{\"PutRequest\":{\"Item\":{\"clinicId\":{\"S\":\"dentistinwinston-salem\"},\"phoneNumber\":{\"S\":\"+13362836627\"},\"clinicName\":{\"S\":\"Dentist in Winston-Salem\"},\"aiPhoneNumber\":{\"S\":\"\"},\"timezone\":{\"S\":\"America/New_York\"},\"clinicAddress\":{\"S\":\"3210 Silas Creek Pkwy, Suite-4 Winston salem, NC, 27103\"},\"clinicCity\":{\"S\":\"Winston-Salem\"},\"clinicState\":{\"S\":\"North Carolina\"},\"clinicZipCode\":{\"S\":\"27103\"},\"clinicPhone\":{\"S\":\"336-802-1894\"},\"clinicEmail\":{\"S\":\"dentalcare@dentistinwinston-salem.com\"},\"websiteLink\":{\"S\":\"https://dentistinwinston-salem.com\"},\"logoUrl\":{\"S\":\"https://dentistinwinston-salem.com/logo.png\"},\"mapsUrl\":{\"S\":\"https://maps.app.goo.gl/fAV5H59kFt1dfuMW9\"},\"scheduleUrl\":{\"S\":\"https://dentistinwinston-salem.com/patient-portal\"}}}},{\"PutRequest\":{\"Item\":{\"clinicId\":{\"S\":\"dentistincentennial\"},\"phoneNumber\":{\"S\":\"+17207020009\"},\"clinicName\":{\"S\":\"Dentist in centennial\"},\"aiPhoneNumber\":{\"S\":\"\"},\"timezone\":{\"S\":\"America/Denver\"},\"clinicAddress\":{\"S\":\"20269 E Smoky Hill Rd, Centennial, CO 80015, USA\"},\"clinicCity\":{\"S\":\"Centennial\"},\"clinicState\":{\"S\":\"Colorado\"},\"clinicZipCode\":{\"S\":\"80015\"},\"clinicPhone\":{\"S\":\"303-923-9068\"},\"clinicEmail\":{\"S\":\"dentalcare@dentistincentennial.com\"},\"websiteLink\":{\"S\":\"https://dentistincentennial.com\"},\"logoUrl\":{\"S\":\"https://dentistincentennial.com/logo.png\"},\"mapsUrl\":{\"S\":\"https://maps.app.goo.gl/HjGoQovp8s1QbsC66\"},\"scheduleUrl\":{\"S\":\"https://dentistincentennial.com/patient-portal\"}}}},{\"PutRequest\":{\"Item\":{\"clinicId\":{\"S\":\"renodentalcareandorthodontics\"},\"phoneNumber\":{\"S\":\"+17752538664\"},\"clinicName\":{\"S\":\"Reno Dental Care and Orthodontics\"},\"aiPhoneNumber\":{\"S\":\"\"},\"timezone\":{\"S\":\"America/Los_Angeles\"},\"clinicAddress\":{\"S\":\"8040 S VIRGINIA ST STE 1 RENO NV 89511-8939\"},\"clinicCity\":{\"S\":\"Reno\"},\"clinicState\":{\"S\":\"Nevada\"},\"clinicZipCode\":{\"S\":\"89511\"},\"clinicPhone\":{\"S\":\"775-339-9893\"},\"clinicEmail\":{\"S\":\"dentalcare@renodentalcareandorthodontics.com\"},\"websiteLink\":{\"S\":\"https://renodentalcareandorthodontics.com\"},\"logoUrl\":{\"S\":\"https://renodentalcareandorthodontics.com/logo.png\"},\"mapsUrl\":{\"S\":\"https://maps.app.goo.gl/yqVa3N8mNwCgwBGv6\"},\"scheduleUrl\":{\"S\":\"https://renodentalcareandorthodontics.com/patient-portal\"}}}},{\"PutRequest\":{\"Item\":{\"clinicId\":{\"S\":\"todaysdentalalexandria\"},\"phoneNumber\":{\"S\":\"+17036728308\"},\"clinicName\":{\"S\":\"Todays Dental Alexandria\"},\"aiPhoneNumber\":{\"S\":\"\"},\"timezone\":{\"S\":\"America/New_York\"},\"clinicAddress\":{\"S\":\"4601 Pinecrest Office Park Dr D, Alexandria, VA 22312, United States\"},\"clinicCity\":{\"S\":\"Alexandria\"},\"clinicState\":{\"S\":\"Virginia\"},\"clinicZipCode\":{\"S\":\"22312\"},\"clinicPhone\":{\"S\":\"(703) 256-2085\"},\"clinicEmail\":{\"S\":\"Dentist@TodaysDentalAlexandria.com\"},\"websiteLink\":{\"S\":\"https://todaysdentalalexandria.com\"},\"logoUrl\":{\"S\":\"https://todaysdentalalexandria.com/logo.png\"},\"mapsUrl\":{\"S\":\"https://maps.app.goo.gl/vqABURPKCfMrFuuX9\"},\"scheduleUrl\":{\"S\":\"https://todaysdentalalexandria.com/patient-portal\"}}}},{\"PutRequest\":{\"Item\":{\"clinicId\":{\"S\":\"todaysdentalgreenville\"},\"phoneNumber\":{\"S\":\"+18643192662\"},\"clinicName\":{\"S\":\"Todays Dental Greenville\"},\"aiPhoneNumber\":{\"S\":\"\"},\"timezone\":{\"S\":\"America/New_York\"},\"clinicAddress\":{\"S\":\"1530 Poinsett Hwy Greenville, SC 29609, USA\"},\"clinicCity\":{\"S\":\"Greenville\"},\"clinicState\":{\"S\":\"South Carolina\"},\"clinicZipCode\":{\"S\":\"29609\"},\"clinicPhone\":{\"S\":\"(864) 999-9899\"},\"clinicEmail\":{\"S\":\"Dentist@TodaysDentalGreenville.com\"},\"websiteLink\":{\"S\":\"https://todaysdentalgreenville.com\"},\"logoUrl\":{\"S\":\"https://todaysdentalgreenville.com/logo.png\"},\"mapsUrl\":{\"S\":\"https://maps.app.goo.gl/ksQRNsjQsjH7VNUa9\"},\"scheduleUrl\":{\"S\":\"https://todaysdentalgreenville.com/patient-portal\"}}}},{\"PutRequest\":{\"Item\":{\"clinicId\":{\"S\":\"todaysdentalwestcolumbia\"},\"phoneNumber\":{\"S\":\"+18032988480\"},\"clinicName\":{\"S\":\"Todays Dental West Columbia\"},\"aiPhoneNumber\":{\"S\":\"\"},\"timezone\":{\"S\":\"America/New_York\"},\"clinicAddress\":{\"S\":\"115 Medical Cir West Columbia, SC 29169, USA\"},\"clinicCity\":{\"S\":\"West Columbia\"},\"clinicState\":{\"S\":\"South Carolina\"},\"clinicZipCode\":{\"S\":\"29169\"},\"clinicPhone\":{\"S\":\"(803) 233-8177\"},\"clinicEmail\":{\"S\":\"Dentist@TodaysDentalWestColumbia.com\"},\"websiteLink\":{\"S\":\"https://todaysdentalwestcolumbia.com\"},\"logoUrl\":{\"S\":\"https://todaysdentalwestcolumbia.com/logo.png\"},\"mapsUrl\":{\"S\":\"https://maps.app.goo.gl/NfpA3W9nsMdxC2gy5\"},\"scheduleUrl\":{\"S\":\"https://todaysdentalwestcolumbia.com/patient-portal\"}}}},{\"PutRequest\":{\"Item\":{\"clinicId\":{\"S\":\"dentistinconcord\"},\"phoneNumber\":{\"S\":\"+17043682506\"},\"clinicName\":{\"S\":\"Dentist in Concord\"},\"aiPhoneNumber\":{\"S\":\"\"},\"timezone\":{\"S\":\"America/New_York\"},\"clinicAddress\":{\"S\":\"2460 Wonder DR STE C, Kannapolis, NC 28083\"},\"clinicCity\":{\"S\":\"Concord\"},\"clinicState\":{\"S\":\"North Carolina\"},\"clinicZipCode\":{\"S\":\"28083\"},\"clinicPhone\":{\"S\":\"(704) 707-3620\"},\"clinicEmail\":{\"S\":\"DentalCare@DentistinConcord.com\"},\"websiteLink\":{\"S\":\"https://dentistinconcord.com\"},\"logoUrl\":{\"S\":\"https://dentistinconcord.com/logo.png\"},\"mapsUrl\":{\"S\":\"https://maps.app.goo.gl/PRVNRH5U7tnv4erA8\"},\"scheduleUrl\":{\"S\":\"https://dentistinconcord.com/patient-portal\"}}}},{\"PutRequest\":{\"Item\":{\"clinicId\":{\"S\":\"dentistinedgewater\"},\"phoneNumber\":{\"S\":\"+14432038433\"},\"clinicName\":{\"S\":\"Dentist in EdgeWater\"},\"aiPhoneNumber\":{\"S\":\"+14439272295\"},\"timezone\":{\"S\":\"America/New_York\"},\"clinicAddress\":{\"S\":\"15 Lee Airpark Dr, Suite 100, Edgewater MD 21037\"},\"clinicCity\":{\"S\":\"Edgewater\"},\"clinicState\":{\"S\":\"Maryland\"},\"clinicZipCode\":{\"S\":\"21037\"},\"clinicPhone\":{\"S\":\"(443) 334-6689\"},\"clinicEmail\":{\"S\":\"DentalCare@DentistinEdgewater.com\"},\"websiteLink\":{\"S\":\"https://dentistinedgewatermd.com\"},\"logoUrl\":{\"S\":\"https://dentistinedgewatermd.com/logo.png\"},\"mapsUrl\":{\"S\":\"https://maps.app.goo.gl/x97PmcG9KJH5Rdu16\"},\"scheduleUrl\":{\"S\":\"https://dentistinedgewatermd.com/patient-portal\"}}}},{\"PutRequest\":{\"Item\":{\"clinicId\":{\"S\":\"lawrencevilledentistry\"},\"phoneNumber\":{\"S\":\"+17702840555\"},\"clinicName\":{\"S\":\"Lawrenceville Dentistry\"},\"aiPhoneNumber\":{\"S\":\"\"},\"timezone\":{\"S\":\"America/New_York\"},\"clinicAddress\":{\"S\":\"1455 Pleasant Hill Road, Lawrenceville, Suite 807A, georgia 30044, USA\"},\"clinicCity\":{\"S\":\"Lawrenceville\"},\"clinicState\":{\"S\":\"Georgia\"},\"clinicZipCode\":{\"S\":\"30044\"},\"clinicPhone\":{\"S\":\"(770)-415-0077\"},\"clinicEmail\":{\"S\":\"Dentist@LawrencevilleDentistry.com\"},\"websiteLink\":{\"S\":\"https://lawrencevilledentistry.com\"},\"logoUrl\":{\"S\":\"https://lawrencevilledentistry.com/logo.png\"},\"mapsUrl\":{\"S\":\"https://maps.app.goo.gl/MFnMPmHSsdyHaGZe9\"},\"scheduleUrl\":{\"S\":\"https://lawrencevilledentistry.com/book-appointment\"}}}},{\"PutRequest\":{\"Item\":{\"clinicId\":{\"S\":\"dentistinlouisville\"},\"phoneNumber\":{\"S\":\"+15022158254\"},\"clinicName\":{\"S\":\"Dentist In Louisville\"},\"aiPhoneNumber\":{\"S\":\"\"},\"timezone\":{\"S\":\"America/New_York\"},\"clinicAddress\":{\"S\":\"6826 Bardstown Road, Louisville Kentucky 40291, USA\"},\"clinicCity\":{\"S\":\"Louisville\"},\"clinicState\":{\"S\":\"Kentucky\"},\"clinicZipCode\":{\"S\":\"40291\"},\"clinicPhone\":{\"S\":\"(502)-239-9751\"},\"clinicEmail\":{\"S\":\"dentalcare@dentistinlouisville.com\"},\"websiteLink\":{\"S\":\"https://dentistinlouisville.com\"},\"logoUrl\":{\"S\":\"https://dentistinlouisville.com/logo.png\"},\"mapsUrl\":{\"S\":\"https://maps.app.goo.gl/m76QtysK96poeUWy7\"},\"scheduleUrl\":{\"S\":\"https://dentistinlouisville.com/book-appointment\"}}}},{\"PutRequest\":{\"Item\":{\"clinicId\":{\"S\":\"dentistatsaludapointe\"},\"phoneNumber\":{\"S\":\"+18032919970\"},\"clinicName\":{\"S\":\"Todays Dental Saluda Pointe\"},\"aiPhoneNumber\":{\"S\":\"\"},\"timezone\":{\"S\":\"America/New_York\"},\"clinicAddress\":{\"S\":\"105 Saluda Pointe Ct Suite C, Lexington, SC 29072, USA\"},\"clinicCity\":{\"S\":\"SaludaPointe\"},\"clinicState\":{\"S\":\"South Carolina\"},\"clinicZipCode\":{\"S\":\"29072\"},\"clinicPhone\":{\"S\":\"(803) 399-8236\"},\"clinicEmail\":{\"S\":\"DentalCare@DentistatSaludaPointe.com\"},\"websiteLink\":{\"S\":\"https://dentistatsaludapointe.com\"},\"logoUrl\":{\"S\":\"https://dentistatsaludapointe.com/logo.png\"},\"mapsUrl\":{\"S\":\"https://maps.app.goo.gl/ybcArAkBw4JLHqmY7\"},\"scheduleUrl\":{\"S\":\"https://dentistatsaludapointe.com/book-appointment\"}}}},{\"PutRequest\":{\"Item\":{\"clinicId\":{\"S\":\"dentistinoregonoh\"},\"phoneNumber\":{\"S\":\"+14193183371\"},\"clinicName\":{\"S\":\"Dentist in Oregon\"},\"aiPhoneNumber\":{\"S\":\"\"},\"timezone\":{\"S\":\"America/New_York\"},\"clinicAddress\":{\"S\":\"3555 Navarre Ave Stre 12, Oregon OH 43616\"},\"clinicCity\":{\"S\":\"Oregon\"},\"clinicState\":{\"S\":\"Ohio\"},\"clinicZipCode\":{\"S\":\"43616\"},\"clinicPhone\":{\"S\":\"(419) 690-0320\"},\"clinicEmail\":{\"S\":\"dentalcare@dentistinoregonoh.com\"},\"websiteLink\":{\"S\":\"https://dentistinoregonoh.com\"},\"logoUrl\":{\"S\":\"https://dentistinoregonoh.com/logo.png\"},\"mapsUrl\":{\"S\":\"https://maps.app.goo.gl/dHUuSUYSeot1YxBw5\"},\"scheduleUrl\":{\"S\":\"https://dentistinOregonoh.com/patient-portal\"}}}},{\"PutRequest\":{\"Item\":{\"clinicId\":{\"S\":\"todaysdentallexington\"},\"phoneNumber\":{\"S\":\"+18032210987\"},\"clinicName\":{\"S\":\"Todays Dental Lexington\"},\"aiPhoneNumber\":{\"S\":\"\"},\"timezone\":{\"S\":\"America/New_York\"},\"clinicAddress\":{\"S\":\"458 Old Cherokee Rd Suite 100, Lexington, SC 29072, USA\"},\"clinicCity\":{\"S\":\"Lexington\"},\"clinicState\":{\"S\":\"South Carolina\"},\"clinicZipCode\":{\"S\":\"43616\"},\"clinicPhone\":{\"S\":\"(803) 756-4353\"},\"clinicEmail\":{\"S\":\"Dentist@TodaysDentalLexington.com\"},\"websiteLink\":{\"S\":\"https://todaysdentallexington.com\"},\"logoUrl\":{\"S\":\"https://todaysdentallexington.com/logo.png\"},\"mapsUrl\":{\"S\":\"https://maps.app.goo.gl/nBnxjeHrWU8mxDgV7\"},\"scheduleUrl\":{\"S\":\"https://todaysdentallexington.com/patient-portal\"}}}},{\"PutRequest\":{\"Item\":{\"clinicId\":{\"S\":\"dentistinbowie\"},\"phoneNumber\":{\"S\":\"+13012416572\"},\"clinicName\":{\"S\":\"Dentist in Bowie\"},\"aiPhoneNumber\":{\"S\":\"\"},\"timezone\":{\"S\":\"America/New_York\"},\"clinicAddress\":{\"S\":\"14999 Health Center Dr #110 Bowie, MD 20716, USA\"},\"clinicCity\":{\"S\":\"Bowie\"},\"clinicState\":{\"S\":\"Maryland\"},\"clinicZipCode\":{\"S\":\"20716\"},\"clinicPhone\":{\"S\":\"(301) 880-0504\"},\"clinicEmail\":{\"S\":\"DentalCare@DentistinBowie.com\"},\"websiteLink\":{\"S\":\"https://dentistinbowie.com\"},\"logoUrl\":{\"S\":\"https://dentistinbowie.com/logo.png\"},\"mapsUrl\":{\"S\":\"https://maps.app.goo.gl/Tb2ZSscmYFCkdEsLA\"},\"scheduleUrl\":{\"S\":\"https://dentistinbowie.com/patient-portal\"}}}},{\"PutRequest\":{\"Item\":{\"clinicId\":{\"S\":\"dentistinpowellohio\"},\"phoneNumber\":{\"S\":\"+16144898815\"},\"clinicName\":{\"S\":\"Dentist in Powell\"},\"aiPhoneNumber\":{\"S\":\"\"},\"timezone\":{\"S\":\"America/New_York\"},\"clinicAddress\":{\"S\":\"4091 W Powell Rd#1, Powell, OH 43065\"},\"clinicCity\":{\"S\":\"Powell\"},\"clinicState\":{\"S\":\"Ohio\"},\"clinicZipCode\":{\"S\":\"43065\"},\"clinicPhone\":{\"S\":\"(614) 659-0018\"},\"clinicEmail\":{\"S\":\"DentalCare@DentistinPowellOhio.com\"},\"websiteLink\":{\"S\":\"https://dentistinpowellohio.com\"},\"logoUrl\":{\"S\":\"https://dentistinpowellohio.com/logo.png\"},\"mapsUrl\":{\"S\":\"https://maps.app.goo.gl/eR4MznoQ3gj897NX8\"},\"scheduleUrl\":{\"S\":\"https://dentistinpowellohio.com/patient-portal\"}}}},{\"PutRequest\":{\"Item\":{\"clinicId\":{\"S\":\"dentistinperrysburg\"},\"phoneNumber\":{\"S\":\"+14193183386\"},\"clinicName\":{\"S\":\"Dentist in PerrysBurg\"},\"aiPhoneNumber\":{\"S\":\"\"},\"timezone\":{\"S\":\"America/New_York\"},\"clinicAddress\":{\"S\":\"110 E South Boundary St, Perrysburg, OH 43551, USA\"},\"clinicCity\":{\"S\":\"Perrysburg\"},\"clinicState\":{\"S\":\"Ohio\"},\"clinicZipCode\":{\"S\":\"43551\"},\"clinicPhone\":{\"S\":\"(419) 792-1264\"},\"clinicEmail\":{\"S\":\"Dentalcare@dentistinperrysburg.com\"},\"websiteLink\":{\"S\":\"https://dentistinperrysburg.com\"},\"logoUrl\":{\"S\":\"https://dentistinperrysburg.com/logo.png\"},\"mapsUrl\":{\"S\":\"https://maps.app.goo.gl/aVCiTAY9UvGYXQaR8\"},\"scheduleUrl\":{\"S\":\"https://dentistinperrysburg.com/patient-portal\"}}}},{\"PutRequest\":{\"Item\":{\"clinicId\":{\"S\":\"dentistinaustin\"},\"phoneNumber\":{\"S\":\"+15123095624\"},\"clinicName\":{\"S\":\"Dentist in Austin\"},\"aiPhoneNumber\":{\"S\":\"+17377074552\"},\"timezone\":{\"S\":\"America/Chicago\"},\"clinicAddress\":{\"S\":\"2110 W Slaughter Ln Ste 190 Austin, TX 78748\"},\"clinicCity\":{\"S\":\"Austin\"},\"clinicState\":{\"S\":\"Texas\"},\"clinicZipCode\":{\"S\":\"78748\"},\"clinicPhone\":{\"S\":\"512-430-4472\"},\"clinicEmail\":{\"S\":\"Dentalcare@dentistinaustintx.com\"},\"websiteLink\":{\"S\":\"https://dentistinaustintx.com\"},\"logoUrl\":{\"S\":\"https://dentistinaustintx.com/logo.png\"},\"mapsUrl\":{\"S\":\"https://maps.app.goo.gl/BbvkUzQb14p6YhH77\"},\"scheduleUrl\":{\"S\":\"https://dentistinaustintx.com/patient-portal\"}}}},{\"PutRequest\":{\"Item\":{\"clinicId\":{\"S\":\"therimdentalcare\"},\"phoneNumber\":{\"S\":\"+17262023123\"},\"clinicName\":{\"S\":\"The Rim Dental Care\"},\"aiPhoneNumber\":{\"S\":\"\"},\"timezone\":{\"S\":\"America/Chicago\"},\"clinicAddress\":{\"S\":\"6028 WORTH PKWY STE 101, SAN ANTONIO, TX 78257-5071\"},\"clinicCity\":{\"S\":\"SAN ANTONIO\"},\"clinicState\":{\"S\":\"Texas\"},\"clinicZipCode\":{\"S\":\"78257-5071\"},\"clinicPhone\":{\"S\":\"(726) 215-9920\"},\"clinicEmail\":{\"S\":\"Dentist@therimdentalcare.com\"},\"websiteLink\":{\"S\":\"https://therimdentalcare.com\"},\"logoUrl\":{\"S\":\"https://therimdentalcare.com/logo.png\"},\"mapsUrl\":{\"S\":\"https://maps.app.goo.gl/cabosKW6nqkmPCQs8\"},\"scheduleUrl\":{\"S\":\"https://therimdentalcare.com/patient-portal\"}}}},{\"PutRequest\":{\"Item\":{\"clinicId\":{\"S\":\"dentistinbloomingdale\"},\"phoneNumber\":{\"S\":\"+16302969003\"},\"clinicName\":{\"S\":\"Dentist in Bloomingdale\"},\"aiPhoneNumber\":{\"S\":\"\"},\"timezone\":{\"S\":\"America/Chicago\"},\"clinicAddress\":{\"S\":\"366 W Army Trail Rd #310a, Bloomingdale, IL 60108, USA\"},\"clinicCity\":{\"S\":\"Bloomingdale\"},\"clinicState\":{\"S\":\"Illinois\"},\"clinicZipCode\":{\"S\":\"60108\"},\"clinicPhone\":{\"S\":\"(630) 686-1328\"},\"clinicEmail\":{\"S\":\"Dentalcare@dentistinbloomingdaleil.com\"},\"websiteLink\":{\"S\":\"https://dentistinbloomingdaleil.com\"},\"logoUrl\":{\"S\":\"https://dentistinbloomingdaleil.com/logo.png\"},\"mapsUrl\":{\"S\":\"https://maps.app.goo.gl/e7WeCV2FKXuTbyMA6\"},\"scheduleUrl\":{\"S\":\"https://dentistinbloomingdaleil.com/patient-portal\"}}}},{\"PutRequest\":{\"Item\":{\"clinicId\":{\"S\":\"dentistinvernonhills\"},\"phoneNumber\":{\"S\":\"+18472608875\"},\"clinicName\":{\"S\":\"Dentist in Vernon Hills\"},\"aiPhoneNumber\":{\"S\":\"\"},\"timezone\":{\"S\":\"America/Chicago\"},\"clinicAddress\":{\"S\":\"6826 Bardstown Road, VernonHills, Illinois, 40291, USA\"},\"clinicCity\":{\"S\":\"VernonHills\"},\"clinicState\":{\"S\":\"Illinois\"},\"clinicZipCode\":{\"S\":\"40291\"},\"clinicPhone\":{\"S\":\"(847) 978-4077\"},\"clinicEmail\":{\"S\":\"DentalCare@DentistinVernonHills.com\"},\"websiteLink\":{\"S\":\"https://dentistinvernonhills.com\"},\"logoUrl\":{\"S\":\"https://dentistinvernonhills.com/logo.png\"},\"mapsUrl\":{\"S\":\"https://maps.app.goo.gl/3EJBccxEGW41P8Rh7\"},\"scheduleUrl\":{\"S\":\"https://dentistinvernonhills.com/patient-portal\"}}}},{\"PutRequest\":{\"Item\":{\"clinicId\":{\"S\":\"meadowsdentalcare\"},\"phoneNumber\":{\"S\":\"+17372273831\"},\"clinicName\":{\"S\":\"Meadows Dental Care\"},\"aiPhoneNumber\":{\"S\":\"\"},\"timezone\":{\"S\":\"America/Chicago\"},\"clinicAddress\":{\"S\":\"9600 S I-35 Frontage Rd Bldg S #275, Austin, TX 78748, United States\"},\"clinicCity\":{\"S\":\"Austin\"},\"clinicState\":{\"S\":\"Texas\"},\"clinicZipCode\":{\"S\":\"78748\"},\"clinicPhone\":{\"S\":\"(737) 263-1581\"},\"clinicEmail\":{\"S\":\"dentist@themeadowsdentalcare.com\"},\"websiteLink\":{\"S\":\"https://themeadowsdentalcare.com\"},\"logoUrl\":{\"S\":\"https://themeadowsdentalcare.com/logo.png\"},\"mapsUrl\":{\"S\":\"https://maps.app.goo.gl/Hz4S86nieDoEJyZi6\"},\"scheduleUrl\":{\"S\":\"https://themeadowsdentalcare.com/patient-portal\"}}}}]}},\"physicalResourceId\":{\"id\":\"SeedClinicsBatch0-v3\"}}"
       ]
      ]
     },
@@ -191,7 +191,7 @@
        {
         "Ref": "ClinicsTable4477ED9E"
        },
-       "\":[{\"PutRequest\":{\"Item\":{\"clinicId\":{\"S\":\"dentistinnewbritain\"},\"phoneNumber\":{\"S\":\"+18602612866\"},\"clinicName\":{\"S\":\"Dentist in New Britain\"},\"aiPhoneNumber\":{\"S\":\"\"},\"timezone\":{\"S\":\"America/New_York\"},\"clinicAddress\":{\"S\":\"446 S Main St, New Britain CT 06051-3516, USA\"},\"clinicCity\":{\"S\":\"New Britain\"},\"clinicState\":{\"S\":\"Connecticut\"},\"clinicZipCode\":{\"S\":\"29607\"},\"clinicPhone\":{\"S\":\"860-259-4141\"},\"clinicEmail\":{\"S\":\"dentalcare@dentistinnewbritain.com\"},\"websiteLink\":{\"S\":\"https://dentistinnewbritain.com\"},\"logoUrl\":{\"S\":\"https://dentistinnewbritain.com/logo.png\"},\"mapsUrl\":{\"S\":\"https://maps.app.goo.gl/1wKzE8B2jbxQJaHB8\"},\"scheduleUrl\":{\"S\":\"https://dentistinnewbritain.com/patient-portal\"}}}},{\"PutRequest\":{\"Item\":{\"clinicId\":{\"S\":\"dentistingreenville\"},\"phoneNumber\":{\"S\":\"+18643192704\"},\"clinicName\":{\"S\":\"Dentist in Greenville\"},\"aiPhoneNumber\":{\"S\":\"+14439272295\"},\"timezone\":{\"S\":\"America/New_York\"},\"clinicAddress\":{\"S\":\"4 Market Point Drive Suite E, Greenville SC 29607\"},\"clinicCity\":{\"S\":\"Greenville\"},\"clinicState\":{\"S\":\"South Carolina\"},\"clinicZipCode\":{\"S\":\"06051-3516\"},\"clinicPhone\":{\"S\":\"864-284-0066\"},\"clinicEmail\":{\"S\":\"dentalcare@dentistingreenville.com\"},\"websiteLink\":{\"S\":\"https://dentistingreenville.com\"},\"logoUrl\":{\"S\":\"https://dentistingreenville.com/logo.png\"},\"mapsUrl\":{\"S\":\"https://maps.app.goo.gl/TP79MgS1EcycndPy8\"},\"scheduleUrl\":{\"S\":\"https://dentistingreenville.com/patient-portal\"}}}},{\"PutRequest\":{\"Item\":{\"clinicId\":{\"S\":\"todaysdentalcayce\"},\"phoneNumber\":{\"S\":\"+18033027525\"},\"clinicName\":{\"S\":\"Todays Dental Cayce\"},\"aiPhoneNumber\":{\"S\":\"\"},\"timezone\":{\"S\":\"America/New_York\"},\"clinicAddress\":{\"S\":\"1305 Knox Abbott Dr suite 101, Cayce, SC 29033, United States\"},\"clinicCity\":{\"S\":\"Cayce\"},\"clinicState\":{\"S\":\"South Carolina\"},\"clinicZipCode\":{\"S\":\"29033\"},\"clinicPhone\":{\"S\":\"803-233-6141\"},\"clinicEmail\":{\"S\":\"Dentist@TodaysDentalCayce.com\"},\"websiteLink\":{\"S\":\"https://todaysdentalcayce.com\"},\"logoUrl\":{\"S\":\"https://todaysdentalcayce.com/logo.png\"},\"mapsUrl\":{\"S\":\"https://maps.app.goo.gl/eU4TuxoySfuqfwib7\"},\"scheduleUrl\":{\"S\":\"https://todaysdentalcayce.com/patient-portal\"}}}},{\"PutRequest\":{\"Item\":{\"clinicId\":{\"S\":\"creekcrossingdentalcare\"},\"phoneNumber\":{\"S\":\"+14692250064\"},\"clinicName\":{\"S\":\"Creek Crossing Dental Care\"},\"aiPhoneNumber\":{\"S\":\"\"},\"timezone\":{\"S\":\"America/Chicago\"},\"clinicAddress\":{\"S\":\"1927 FAITHON P LUCAS SR BLVD Ste 120 MESQUITE TX 75181-1698\"},\"clinicCity\":{\"S\":\"Mesquite\"},\"clinicState\":{\"S\":\"Texas\"},\"clinicZipCode\":{\"S\":\"75181\"},\"clinicPhone\":{\"S\":\"469-333-6158\"},\"clinicEmail\":{\"S\":\"dentist@creekcrossingdentalcare.com\"},\"websiteLink\":{\"S\":\"https://creekcrossingdentalcare.com\"},\"logoUrl\":{\"S\":\"https://creekcrossingdentalcare.com/logo.png\"},\"mapsUrl\":{\"S\":\"https://maps.app.goo.gl/k9Be93nCmmcaE3CG7\"},\"scheduleUrl\":{\"S\":\"https://creekcrossingdentalcare.com/patient-portal\"}}}},{\"PutRequest\":{\"Item\":{\"clinicId\":{\"S\":\"dentistinwinston-salem\"},\"phoneNumber\":{\"S\":\"+13362836627\"},\"clinicName\":{\"S\":\"Dentist in Winston-Salem\"},\"aiPhoneNumber\":{\"S\":\"\"},\"timezone\":{\"S\":\"America/New_York\"},\"clinicAddress\":{\"S\":\"3210 Silas Creek Pkwy, Suite-4 Winston salem, NC, 27103\"},\"clinicCity\":{\"S\":\"Winston-Salem\"},\"clinicState\":{\"S\":\"North Carolina\"},\"clinicZipCode\":{\"S\":\"27103\"},\"clinicPhone\":{\"S\":\"336-802-1894\"},\"clinicEmail\":{\"S\":\"dentalcare@dentistinwinston-salem.com\"},\"websiteLink\":{\"S\":\"https://dentistinwinston-salem.com\"},\"logoUrl\":{\"S\":\"https://dentistinwinston-salem.com/logo.png\"},\"mapsUrl\":{\"S\":\"https://maps.app.goo.gl/fAV5H59kFt1dfuMW9\"},\"scheduleUrl\":{\"S\":\"https://dentistinwinston-salem.com/patient-portal\"}}}},{\"PutRequest\":{\"Item\":{\"clinicId\":{\"S\":\"dentistincentennial\"},\"phoneNumber\":{\"S\":\"+17207020009\"},\"clinicName\":{\"S\":\"Dentist in centennial\"},\"aiPhoneNumber\":{\"S\":\"\"},\"timezone\":{\"S\":\"America/Denver\"},\"clinicAddress\":{\"S\":\"20269 E Smoky Hill Rd, Centennial, CO 80015, USA\"},\"clinicCity\":{\"S\":\"Centennial\"},\"clinicState\":{\"S\":\"Colorado\"},\"clinicZipCode\":{\"S\":\"80015\"},\"clinicPhone\":{\"S\":\"303-923-9068\"},\"clinicEmail\":{\"S\":\"dentalcare@dentistincentennial.com\"},\"websiteLink\":{\"S\":\"https://dentistincentennial.com\"},\"logoUrl\":{\"S\":\"https://dentistincentennial.com/logo.png\"},\"mapsUrl\":{\"S\":\"https://maps.app.goo.gl/HjGoQovp8s1QbsC66\"},\"scheduleUrl\":{\"S\":\"https://dentistincentennial.com/patient-portal\"}}}},{\"PutRequest\":{\"Item\":{\"clinicId\":{\"S\":\"renodentalcareandorthodontics\"},\"phoneNumber\":{\"S\":\"+17752538664\"},\"clinicName\":{\"S\":\"Reno Dental Care and Orthodontics\"},\"aiPhoneNumber\":{\"S\":\"\"},\"timezone\":{\"S\":\"America/Los_Angeles\"},\"clinicAddress\":{\"S\":\"8040 S VIRGINIA ST STE 1 RENO NV 89511-8939\"},\"clinicCity\":{\"S\":\"Reno\"},\"clinicState\":{\"S\":\"Nevada\"},\"clinicZipCode\":{\"S\":\"89511\"},\"clinicPhone\":{\"S\":\"775-339-9893\"},\"clinicEmail\":{\"S\":\"dentalcare@renodentalcareandorthodontics.com\"},\"websiteLink\":{\"S\":\"https://renodentalcareandorthodontics.com\"},\"logoUrl\":{\"S\":\"https://renodentalcareandorthodontics.com/logo.png\"},\"mapsUrl\":{\"S\":\"https://maps.app.goo.gl/yqVa3N8mNwCgwBGv6\"},\"scheduleUrl\":{\"S\":\"https://renodentalcareandorthodontics.com/patient-portal\"}}}},{\"PutRequest\":{\"Item\":{\"clinicId\":{\"S\":\"todaysdentalalexandria\"},\"phoneNumber\":{\"S\":\"+17036728308\"},\"clinicName\":{\"S\":\"Todays Dental Alexandria\"},\"aiPhoneNumber\":{\"S\":\"\"},\"timezone\":{\"S\":\"America/New_York\"},\"clinicAddress\":{\"S\":\"4601 Pinecrest Office Park Dr D, Alexandria, VA 22312, United States\"},\"clinicCity\":{\"S\":\"Alexandria\"},\"clinicState\":{\"S\":\"Virginia\"},\"clinicZipCode\":{\"S\":\"22312\"},\"clinicPhone\":{\"S\":\"(703) 256-2085\"},\"clinicEmail\":{\"S\":\"Dentist@TodaysDentalAlexandria.com\"},\"websiteLink\":{\"S\":\"https://todaysdentalalexandria.com\"},\"logoUrl\":{\"S\":\"https://todaysdentalalexandria.com/logo.png\"},\"mapsUrl\":{\"S\":\"https://maps.app.goo.gl/vqABURPKCfMrFuuX9\"},\"scheduleUrl\":{\"S\":\"https://todaysdentalalexandria.com/patient-portal\"}}}},{\"PutRequest\":{\"Item\":{\"clinicId\":{\"S\":\"todaysdentalgreenville\"},\"phoneNumber\":{\"S\":\"+18643192662\"},\"clinicName\":{\"S\":\"Todays Dental Greenville\"},\"aiPhoneNumber\":{\"S\":\"\"},\"timezone\":{\"S\":\"America/New_York\"},\"clinicAddress\":{\"S\":\"1530 Poinsett Hwy Greenville, SC 29609, USA\"},\"clinicCity\":{\"S\":\"Greenville\"},\"clinicState\":{\"S\":\"South Carolina\"},\"clinicZipCode\":{\"S\":\"29609\"},\"clinicPhone\":{\"S\":\"(864) 999-9899\"},\"clinicEmail\":{\"S\":\"Dentist@TodaysDentalGreenville.com\"},\"websiteLink\":{\"S\":\"https://todaysdentalgreenville.com\"},\"logoUrl\":{\"S\":\"https://todaysdentalgreenville.com/logo.png\"},\"mapsUrl\":{\"S\":\"https://maps.app.goo.gl/ksQRNsjQsjH7VNUa9\"},\"scheduleUrl\":{\"S\":\"https://todaysdentalgreenville.com/patient-portal\"}}}},{\"PutRequest\":{\"Item\":{\"clinicId\":{\"S\":\"todaysdentalwestcolumbia\"},\"phoneNumber\":{\"S\":\"+18032988480\"},\"clinicName\":{\"S\":\"Todays Dental West Columbia\"},\"aiPhoneNumber\":{\"S\":\"\"},\"timezone\":{\"S\":\"America/New_York\"},\"clinicAddress\":{\"S\":\"115 Medical Cir West Columbia, SC 29169, USA\"},\"clinicCity\":{\"S\":\"West Columbia\"},\"clinicState\":{\"S\":\"South Carolina\"},\"clinicZipCode\":{\"S\":\"29169\"},\"clinicPhone\":{\"S\":\"(803) 233-8177\"},\"clinicEmail\":{\"S\":\"Dentist@TodaysDentalWestColumbia.com\"},\"websiteLink\":{\"S\":\"https://todaysdentalwestcolumbia.com\"},\"logoUrl\":{\"S\":\"https://todaysdentalwestcolumbia.com/logo.png\"},\"mapsUrl\":{\"S\":\"https://maps.app.goo.gl/NfpA3W9nsMdxC2gy5\"},\"scheduleUrl\":{\"S\":\"https://todaysdentalwestcolumbia.com/patient-portal\"}}}},{\"PutRequest\":{\"Item\":{\"clinicId\":{\"S\":\"dentistinconcord\"},\"phoneNumber\":{\"S\":\"+17043682506\"},\"clinicName\":{\"S\":\"Dentist in Concord\"},\"aiPhoneNumber\":{\"S\":\"\"},\"timezone\":{\"S\":\"America/New_York\"},\"clinicAddress\":{\"S\":\"2460 Wonder DR STE C, Kannapolis, NC 28083\"},\"clinicCity\":{\"S\":\"Concord\"},\"clinicState\":{\"S\":\"North Carolina\"},\"clinicZipCode\":{\"S\":\"28083\"},\"clinicPhone\":{\"S\":\"(704) 707-3620\"},\"clinicEmail\":{\"S\":\"DentalCare@DentistinConcord.com\"},\"websiteLink\":{\"S\":\"https://dentistinconcord.com\"},\"logoUrl\":{\"S\":\"https://dentistinconcord.com/logo.png\"},\"mapsUrl\":{\"S\":\"https://maps.app.goo.gl/PRVNRH5U7tnv4erA8\"},\"scheduleUrl\":{\"S\":\"https://dentistinconcord.com/patient-portal\"}}}},{\"PutRequest\":{\"Item\":{\"clinicId\":{\"S\":\"dentistinedgewater\"},\"phoneNumber\":{\"S\":\"+14432038433\"},\"clinicName\":{\"S\":\"Dentist in EdgeWater\"},\"aiPhoneNumber\":{\"S\":\"\"},\"timezone\":{\"S\":\"America/New_York\"},\"clinicAddress\":{\"S\":\"15 Lee Airpark Dr, Suite 100, Edgewater MD 21037\"},\"clinicCity\":{\"S\":\"Edgewater\"},\"clinicState\":{\"S\":\"Maryland\"},\"clinicZipCode\":{\"S\":\"21037\"},\"clinicPhone\":{\"S\":\"(443) 334-6689\"},\"clinicEmail\":{\"S\":\"DentalCare@DentistinEdgewater.com\"},\"websiteLink\":{\"S\":\"https://dentistinedgewatermd.com\"},\"logoUrl\":{\"S\":\"https://dentistinedgewatermd.com/logo.png\"},\"mapsUrl\":{\"S\":\"https://maps.app.goo.gl/x97PmcG9KJH5Rdu16\"},\"scheduleUrl\":{\"S\":\"https://dentistinedgewatermd.com/patient-portal\"}}}},{\"PutRequest\":{\"Item\":{\"clinicId\":{\"S\":\"lawrencevilledentistry\"},\"phoneNumber\":{\"S\":\"+17702840555\"},\"clinicName\":{\"S\":\"Lawrenceville Dentistry\"},\"aiPhoneNumber\":{\"S\":\"\"},\"timezone\":{\"S\":\"America/New_York\"},\"clinicAddress\":{\"S\":\"1455 Pleasant Hill Road, Lawrenceville, Suite 807A, georgia 30044, USA\"},\"clinicCity\":{\"S\":\"Lawrenceville\"},\"clinicState\":{\"S\":\"Georgia\"},\"clinicZipCode\":{\"S\":\"30044\"},\"clinicPhone\":{\"S\":\"(770)-415-0077\"},\"clinicEmail\":{\"S\":\"Dentist@LawrencevilleDentistry.com\"},\"websiteLink\":{\"S\":\"https://lawrencevilledentistry.com\"},\"logoUrl\":{\"S\":\"https://lawrencevilledentistry.com/logo.png\"},\"mapsUrl\":{\"S\":\"https://maps.app.goo.gl/MFnMPmHSsdyHaGZe9\"},\"scheduleUrl\":{\"S\":\"https://lawrencevilledentistry.com/book-appointment\"}}}},{\"PutRequest\":{\"Item\":{\"clinicId\":{\"S\":\"dentistinlouisville\"},\"phoneNumber\":{\"S\":\"+15022158254\"},\"clinicName\":{\"S\":\"Dentist In Louisville\"},\"aiPhoneNumber\":{\"S\":\"\"},\"timezone\":{\"S\":\"America/New_York\"},\"clinicAddress\":{\"S\":\"6826 Bardstown Road, Louisville Kentucky 40291, USA\"},\"clinicCity\":{\"S\":\"Louisville\"},\"clinicState\":{\"S\":\"Kentucky\"},\"clinicZipCode\":{\"S\":\"40291\"},\"clinicPhone\":{\"S\":\"(502)-239-9751\"},\"clinicEmail\":{\"S\":\"dentalcare@dentistinlouisville.com\"},\"websiteLink\":{\"S\":\"https://dentistinlouisville.com\"},\"logoUrl\":{\"S\":\"https://dentistinlouisville.com/logo.png\"},\"mapsUrl\":{\"S\":\"https://maps.app.goo.gl/m76QtysK96poeUWy7\"},\"scheduleUrl\":{\"S\":\"https://dentistinlouisville.com/book-appointment\"}}}},{\"PutRequest\":{\"Item\":{\"clinicId\":{\"S\":\"dentistatsaludapointe\"},\"phoneNumber\":{\"S\":\"+18032919970\"},\"clinicName\":{\"S\":\"Todays Dental Saluda Pointe\"},\"aiPhoneNumber\":{\"S\":\"\"},\"timezone\":{\"S\":\"America/New_York\"},\"clinicAddress\":{\"S\":\"105 Saluda Pointe Ct Suite C, Lexington, SC 29072, USA\"},\"clinicCity\":{\"S\":\"SaludaPointe\"},\"clinicState\":{\"S\":\"South Carolina\"},\"clinicZipCode\":{\"S\":\"29072\"},\"clinicPhone\":{\"S\":\"(803) 399-8236\"},\"clinicEmail\":{\"S\":\"DentalCare@DentistatSaludaPointe.com\"},\"websiteLink\":{\"S\":\"https://dentistatsaludapointe.com\"},\"logoUrl\":{\"S\":\"https://dentistatsaludapointe.com/logo.png\"},\"mapsUrl\":{\"S\":\"https://maps.app.goo.gl/ybcArAkBw4JLHqmY7\"},\"scheduleUrl\":{\"S\":\"https://dentistatsaludapointe.com/book-appointment\"}}}},{\"PutRequest\":{\"Item\":{\"clinicId\":{\"S\":\"dentistinoregonoh\"},\"phoneNumber\":{\"S\":\"+14193183371\"},\"clinicName\":{\"S\":\"Dentist in Oregon\"},\"aiPhoneNumber\":{\"S\":\"\"},\"timezone\":{\"S\":\"America/New_York\"},\"clinicAddress\":{\"S\":\"3555 Navarre Ave Stre 12, Oregon OH 43616\"},\"clinicCity\":{\"S\":\"Oregon\"},\"clinicState\":{\"S\":\"Ohio\"},\"clinicZipCode\":{\"S\":\"43616\"},\"clinicPhone\":{\"S\":\"(419) 690-0320\"},\"clinicEmail\":{\"S\":\"dentalcare@dentistinoregonoh.com\"},\"websiteLink\":{\"S\":\"https://dentistinoregonoh.com\"},\"logoUrl\":{\"S\":\"https://dentistinoregonoh.com/logo.png\"},\"mapsUrl\":{\"S\":\"https://maps.app.goo.gl/dHUuSUYSeot1YxBw5\"},\"scheduleUrl\":{\"S\":\"https://dentistinOregonoh.com/patient-portal\"}}}},{\"PutRequest\":{\"Item\":{\"clinicId\":{\"S\":\"todaysdentallexington\"},\"phoneNumber\":{\"S\":\"+18032210987\"},\"clinicName\":{\"S\":\"Todays Dental Lexington\"},\"aiPhoneNumber\":{\"S\":\"\"},\"timezone\":{\"S\":\"America/New_York\"},\"clinicAddress\":{\"S\":\"458 Old Cherokee Rd Suite 100, Lexington, SC 29072, USA\"},\"clinicCity\":{\"S\":\"Lexington\"},\"clinicState\":{\"S\":\"South Carolina\"},\"clinicZipCode\":{\"S\":\"43616\"},\"clinicPhone\":{\"S\":\"(803) 756-4353\"},\"clinicEmail\":{\"S\":\"Dentist@TodaysDentalLexington.com\"},\"websiteLink\":{\"S\":\"https://todaysdentallexington.com\"},\"logoUrl\":{\"S\":\"https://todaysdentallexington.com/logo.png\"},\"mapsUrl\":{\"S\":\"https://maps.app.goo.gl/nBnxjeHrWU8mxDgV7\"},\"scheduleUrl\":{\"S\":\"https://todaysdentallexington.com/patient-portal\"}}}},{\"PutRequest\":{\"Item\":{\"clinicId\":{\"S\":\"dentistinbowie\"},\"phoneNumber\":{\"S\":\"+13012416572\"},\"clinicName\":{\"S\":\"Dentist in Bowie\"},\"aiPhoneNumber\":{\"S\":\"\"},\"timezone\":{\"S\":\"America/New_York\"},\"clinicAddress\":{\"S\":\"14999 Health Center Dr #110 Bowie, MD 20716, USA\"},\"clinicCity\":{\"S\":\"Bowie\"},\"clinicState\":{\"S\":\"Maryland\"},\"clinicZipCode\":{\"S\":\"20716\"},\"clinicPhone\":{\"S\":\"(301) 880-0504\"},\"clinicEmail\":{\"S\":\"DentalCare@DentistinBowie.com\"},\"websiteLink\":{\"S\":\"https://dentistinbowie.com\"},\"logoUrl\":{\"S\":\"https://dentistinbowie.com/logo.png\"},\"mapsUrl\":{\"S\":\"https://maps.app.goo.gl/Tb2ZSscmYFCkdEsLA\"},\"scheduleUrl\":{\"S\":\"https://dentistinbowie.com/patient-portal\"}}}},{\"PutRequest\":{\"Item\":{\"clinicId\":{\"S\":\"dentistinpowellohio\"},\"phoneNumber\":{\"S\":\"+16144898815\"},\"clinicName\":{\"S\":\"Dentist in Powell\"},\"aiPhoneNumber\":{\"S\":\"\"},\"timezone\":{\"S\":\"America/New_York\"},\"clinicAddress\":{\"S\":\"4091 W Powell Rd#1, Powell, OH 43065\"},\"clinicCity\":{\"S\":\"Powell\"},\"clinicState\":{\"S\":\"Ohio\"},\"clinicZipCode\":{\"S\":\"43065\"},\"clinicPhone\":{\"S\":\"(614) 659-0018\"},\"clinicEmail\":{\"S\":\"DentalCare@DentistinPowellOhio.com\"},\"websiteLink\":{\"S\":\"https://dentistinpowellohio.com\"},\"logoUrl\":{\"S\":\"https://dentistinpowellohio.com/logo.png\"},\"mapsUrl\":{\"S\":\"https://maps.app.goo.gl/eR4MznoQ3gj897NX8\"},\"scheduleUrl\":{\"S\":\"https://dentistinpowellohio.com/patient-portal\"}}}},{\"PutRequest\":{\"Item\":{\"clinicId\":{\"S\":\"dentistinperrysburg\"},\"phoneNumber\":{\"S\":\"+14193183386\"},\"clinicName\":{\"S\":\"Dentist in PerrysBurg\"},\"aiPhoneNumber\":{\"S\":\"\"},\"timezone\":{\"S\":\"America/New_York\"},\"clinicAddress\":{\"S\":\"110 E South Boundary St, Perrysburg, OH 43551, USA\"},\"clinicCity\":{\"S\":\"Perrysburg\"},\"clinicState\":{\"S\":\"Ohio\"},\"clinicZipCode\":{\"S\":\"43551\"},\"clinicPhone\":{\"S\":\"(419) 792-1264\"},\"clinicEmail\":{\"S\":\"Dentalcare@dentistinperrysburg.com\"},\"websiteLink\":{\"S\":\"https://dentistinperrysburg.com\"},\"logoUrl\":{\"S\":\"https://dentistinperrysburg.com/logo.png\"},\"mapsUrl\":{\"S\":\"https://maps.app.goo.gl/aVCiTAY9UvGYXQaR8\"},\"scheduleUrl\":{\"S\":\"https://dentistinperrysburg.com/patient-portal\"}}}},{\"PutRequest\":{\"Item\":{\"clinicId\":{\"S\":\"dentistinaustin\"},\"phoneNumber\":{\"S\":\"+15123095624\"},\"clinicName\":{\"S\":\"Dentist in Austin\"},\"aiPhoneNumber\":{\"S\":\"+17377074552\"},\"timezone\":{\"S\":\"America/Chicago\"},\"clinicAddress\":{\"S\":\"2110 W Slaughter Ln Ste 190 Austin, TX 78748\"},\"clinicCity\":{\"S\":\"Austin\"},\"clinicState\":{\"S\":\"Texas\"},\"clinicZipCode\":{\"S\":\"78748\"},\"clinicPhone\":{\"S\":\"512-430-4472\"},\"clinicEmail\":{\"S\":\"Dentalcare@dentistinaustintx.com\"},\"websiteLink\":{\"S\":\"https://dentistinaustintx.com\"},\"logoUrl\":{\"S\":\"https://dentistinaustintx.com/logo.png\"},\"mapsUrl\":{\"S\":\"https://maps.app.goo.gl/BbvkUzQb14p6YhH77\"},\"scheduleUrl\":{\"S\":\"https://dentistinaustintx.com/patient-portal\"}}}},{\"PutRequest\":{\"Item\":{\"clinicId\":{\"S\":\"therimdentalcare\"},\"phoneNumber\":{\"S\":\"+17262023123\"},\"clinicName\":{\"S\":\"The Rim Dental Care\"},\"aiPhoneNumber\":{\"S\":\"\"},\"timezone\":{\"S\":\"America/Chicago\"},\"clinicAddress\":{\"S\":\"6028 WORTH PKWY STE 101, SAN ANTONIO, TX 78257-5071\"},\"clinicCity\":{\"S\":\"SAN ANTONIO\"},\"clinicState\":{\"S\":\"Texas\"},\"clinicZipCode\":{\"S\":\"78257-5071\"},\"clinicPhone\":{\"S\":\"(726) 215-9920\"},\"clinicEmail\":{\"S\":\"Dentist@therimdentalcare.com\"},\"websiteLink\":{\"S\":\"https://therimdentalcare.com\"},\"logoUrl\":{\"S\":\"https://therimdentalcare.com/logo.png\"},\"mapsUrl\":{\"S\":\"https://maps.app.goo.gl/cabosKW6nqkmPCQs8\"},\"scheduleUrl\":{\"S\":\"https://therimdentalcare.com/patient-portal\"}}}},{\"PutRequest\":{\"Item\":{\"clinicId\":{\"S\":\"dentistinbloomingdale\"},\"phoneNumber\":{\"S\":\"+16302969003\"},\"clinicName\":{\"S\":\"Dentist in Bloomingdale\"},\"aiPhoneNumber\":{\"S\":\"\"},\"timezone\":{\"S\":\"America/Chicago\"},\"clinicAddress\":{\"S\":\"366 W Army Trail Rd #310a, Bloomingdale, IL 60108, USA\"},\"clinicCity\":{\"S\":\"Bloomingdale\"},\"clinicState\":{\"S\":\"Illinois\"},\"clinicZipCode\":{\"S\":\"60108\"},\"clinicPhone\":{\"S\":\"(630) 686-1328\"},\"clinicEmail\":{\"S\":\"Dentalcare@dentistinbloomingdaleil.com\"},\"websiteLink\":{\"S\":\"https://dentistinbloomingdaleil.com\"},\"logoUrl\":{\"S\":\"https://dentistinbloomingdaleil.com/logo.png\"},\"mapsUrl\":{\"S\":\"https://maps.app.goo.gl/e7WeCV2FKXuTbyMA6\"},\"scheduleUrl\":{\"S\":\"https://dentistinbloomingdaleil.com/patient-portal\"}}}},{\"PutRequest\":{\"Item\":{\"clinicId\":{\"S\":\"dentistinvernonhills\"},\"phoneNumber\":{\"S\":\"+18472608875\"},\"clinicName\":{\"S\":\"Dentist in Vernon Hills\"},\"aiPhoneNumber\":{\"S\":\"\"},\"timezone\":{\"S\":\"America/Chicago\"},\"clinicAddress\":{\"S\":\"6826 Bardstown Road, VernonHills, Illinois, 40291, USA\"},\"clinicCity\":{\"S\":\"VernonHills\"},\"clinicState\":{\"S\":\"Illinois\"},\"clinicZipCode\":{\"S\":\"40291\"},\"clinicPhone\":{\"S\":\"(847) 978-4077\"},\"clinicEmail\":{\"S\":\"DentalCare@DentistinVernonHills.com\"},\"websiteLink\":{\"S\":\"https://dentistinvernonhills.com\"},\"logoUrl\":{\"S\":\"https://dentistinvernonhills.com/logo.png\"},\"mapsUrl\":{\"S\":\"https://maps.app.goo.gl/3EJBccxEGW41P8Rh7\"},\"scheduleUrl\":{\"S\":\"https://dentistinvernonhills.com/patient-portal\"}}}},{\"PutRequest\":{\"Item\":{\"clinicId\":{\"S\":\"meadowsdentalcare\"},\"phoneNumber\":{\"S\":\"+17372273831\"},\"clinicName\":{\"S\":\"Meadows Dental Care\"},\"aiPhoneNumber\":{\"S\":\"\"},\"timezone\":{\"S\":\"America/Chicago\"},\"clinicAddress\":{\"S\":\"9600 S I-35 Frontage Rd Bldg S #275, Austin, TX 78748, United States\"},\"clinicCity\":{\"S\":\"Austin\"},\"clinicState\":{\"S\":\"Texas\"},\"clinicZipCode\":{\"S\":\"78748\"},\"clinicPhone\":{\"S\":\"(737) 263-1581\"},\"clinicEmail\":{\"S\":\"dentist@themeadowsdentalcare.com\"},\"websiteLink\":{\"S\":\"https://themeadowsdentalcare.com\"},\"logoUrl\":{\"S\":\"https://themeadowsdentalcare.com/logo.png\"},\"mapsUrl\":{\"S\":\"https://maps.app.goo.gl/Hz4S86nieDoEJyZi6\"},\"scheduleUrl\":{\"S\":\"https://themeadowsdentalcare.com/patient-portal\"}}}}]}},\"physicalResourceId\":{\"id\":\"SeedClinicsBatch0-v3\"}}"
+       "\":[{\"PutRequest\":{\"Item\":{\"clinicId\":{\"S\":\"dentistinnewbritain\"},\"phoneNumber\":{\"S\":\"+18602612866\"},\"clinicName\":{\"S\":\"Dentist in New Britain\"},\"aiPhoneNumber\":{\"S\":\"\"},\"timezone\":{\"S\":\"America/New_York\"},\"clinicAddress\":{\"S\":\"446 S Main St, New Britain CT 06051-3516, USA\"},\"clinicCity\":{\"S\":\"New Britain\"},\"clinicState\":{\"S\":\"Connecticut\"},\"clinicZipCode\":{\"S\":\"29607\"},\"clinicPhone\":{\"S\":\"860-259-4141\"},\"clinicEmail\":{\"S\":\"dentalcare@dentistinnewbritain.com\"},\"websiteLink\":{\"S\":\"https://dentistinnewbritain.com\"},\"logoUrl\":{\"S\":\"https://dentistinnewbritain.com/logo.png\"},\"mapsUrl\":{\"S\":\"https://maps.app.goo.gl/1wKzE8B2jbxQJaHB8\"},\"scheduleUrl\":{\"S\":\"https://dentistinnewbritain.com/patient-portal\"}}}},{\"PutRequest\":{\"Item\":{\"clinicId\":{\"S\":\"dentistingreenville\"},\"phoneNumber\":{\"S\":\"+18643192704\"},\"clinicName\":{\"S\":\"Dentist in Greenville\"},\"aiPhoneNumber\":{\"S\":\"+14439272295\"},\"timezone\":{\"S\":\"America/New_York\"},\"clinicAddress\":{\"S\":\"4 Market Point Drive Suite E, Greenville SC 29607\"},\"clinicCity\":{\"S\":\"Greenville\"},\"clinicState\":{\"S\":\"South Carolina\"},\"clinicZipCode\":{\"S\":\"06051-3516\"},\"clinicPhone\":{\"S\":\"864-284-0066\"},\"clinicEmail\":{\"S\":\"dentalcare@dentistingreenville.com\"},\"websiteLink\":{\"S\":\"https://dentistingreenville.com\"},\"logoUrl\":{\"S\":\"https://dentistingreenville.com/logo.png\"},\"mapsUrl\":{\"S\":\"https://maps.app.goo.gl/TP79MgS1EcycndPy8\"},\"scheduleUrl\":{\"S\":\"https://dentistingreenville.com/patient-portal\"}}}},{\"PutRequest\":{\"Item\":{\"clinicId\":{\"S\":\"todaysdentalcayce\"},\"phoneNumber\":{\"S\":\"+18033027525\"},\"clinicName\":{\"S\":\"Todays Dental Cayce\"},\"aiPhoneNumber\":{\"S\":\"\"},\"timezone\":{\"S\":\"America/New_York\"},\"clinicAddress\":{\"S\":\"1305 Knox Abbott Dr suite 101, Cayce, SC 29033, United States\"},\"clinicCity\":{\"S\":\"Cayce\"},\"clinicState\":{\"S\":\"South Carolina\"},\"clinicZipCode\":{\"S\":\"29033\"},\"clinicPhone\":{\"S\":\"803-233-6141\"},\"clinicEmail\":{\"S\":\"Dentist@TodaysDentalCayce.com\"},\"websiteLink\":{\"S\":\"https://todaysdentalcayce.com\"},\"logoUrl\":{\"S\":\"https://todaysdentalcayce.com/logo.png\"},\"mapsUrl\":{\"S\":\"https://maps.app.goo.gl/eU4TuxoySfuqfwib7\"},\"scheduleUrl\":{\"S\":\"https://todaysdentalcayce.com/patient-portal\"}}}},{\"PutRequest\":{\"Item\":{\"clinicId\":{\"S\":\"creekcrossingdentalcare\"},\"phoneNumber\":{\"S\":\"+14692250064\"},\"clinicName\":{\"S\":\"Creek Crossing Dental Care\"},\"aiPhoneNumber\":{\"S\":\"\"},\"timezone\":{\"S\":\"America/Chicago\"},\"clinicAddress\":{\"S\":\"1927 FAITHON P LUCAS SR BLVD Ste 120 MESQUITE TX 75181-1698\"},\"clinicCity\":{\"S\":\"Mesquite\"},\"clinicState\":{\"S\":\"Texas\"},\"clinicZipCode\":{\"S\":\"75181\"},\"clinicPhone\":{\"S\":\"469-333-6158\"},\"clinicEmail\":{\"S\":\"dentist@creekcrossingdentalcare.com\"},\"websiteLink\":{\"S\":\"https://creekcrossingdentalcare.com\"},\"logoUrl\":{\"S\":\"https://creekcrossingdentalcare.com/logo.png\"},\"mapsUrl\":{\"S\":\"https://maps.app.goo.gl/k9Be93nCmmcaE3CG7\"},\"scheduleUrl\":{\"S\":\"https://creekcrossingdentalcare.com/patient-portal\"}}}},{\"PutRequest\":{\"Item\":{\"clinicId\":{\"S\":\"dentistinwinston-salem\"},\"phoneNumber\":{\"S\":\"+13362836627\"},\"clinicName\":{\"S\":\"Dentist in Winston-Salem\"},\"aiPhoneNumber\":{\"S\":\"\"},\"timezone\":{\"S\":\"America/New_York\"},\"clinicAddress\":{\"S\":\"3210 Silas Creek Pkwy, Suite-4 Winston salem, NC, 27103\"},\"clinicCity\":{\"S\":\"Winston-Salem\"},\"clinicState\":{\"S\":\"North Carolina\"},\"clinicZipCode\":{\"S\":\"27103\"},\"clinicPhone\":{\"S\":\"336-802-1894\"},\"clinicEmail\":{\"S\":\"dentalcare@dentistinwinston-salem.com\"},\"websiteLink\":{\"S\":\"https://dentistinwinston-salem.com\"},\"logoUrl\":{\"S\":\"https://dentistinwinston-salem.com/logo.png\"},\"mapsUrl\":{\"S\":\"https://maps.app.goo.gl/fAV5H59kFt1dfuMW9\"},\"scheduleUrl\":{\"S\":\"https://dentistinwinston-salem.com/patient-portal\"}}}},{\"PutRequest\":{\"Item\":{\"clinicId\":{\"S\":\"dentistincentennial\"},\"phoneNumber\":{\"S\":\"+17207020009\"},\"clinicName\":{\"S\":\"Dentist in centennial\"},\"aiPhoneNumber\":{\"S\":\"\"},\"timezone\":{\"S\":\"America/Denver\"},\"clinicAddress\":{\"S\":\"20269 E Smoky Hill Rd, Centennial, CO 80015, USA\"},\"clinicCity\":{\"S\":\"Centennial\"},\"clinicState\":{\"S\":\"Colorado\"},\"clinicZipCode\":{\"S\":\"80015\"},\"clinicPhone\":{\"S\":\"303-923-9068\"},\"clinicEmail\":{\"S\":\"dentalcare@dentistincentennial.com\"},\"websiteLink\":{\"S\":\"https://dentistincentennial.com\"},\"logoUrl\":{\"S\":\"https://dentistincentennial.com/logo.png\"},\"mapsUrl\":{\"S\":\"https://maps.app.goo.gl/HjGoQovp8s1QbsC66\"},\"scheduleUrl\":{\"S\":\"https://dentistincentennial.com/patient-portal\"}}}},{\"PutRequest\":{\"Item\":{\"clinicId\":{\"S\":\"renodentalcareandorthodontics\"},\"phoneNumber\":{\"S\":\"+17752538664\"},\"clinicName\":{\"S\":\"Reno Dental Care and Orthodontics\"},\"aiPhoneNumber\":{\"S\":\"\"},\"timezone\":{\"S\":\"America/Los_Angeles\"},\"clinicAddress\":{\"S\":\"8040 S VIRGINIA ST STE 1 RENO NV 89511-8939\"},\"clinicCity\":{\"S\":\"Reno\"},\"clinicState\":{\"S\":\"Nevada\"},\"clinicZipCode\":{\"S\":\"89511\"},\"clinicPhone\":{\"S\":\"775-339-9893\"},\"clinicEmail\":{\"S\":\"dentalcare@renodentalcareandorthodontics.com\"},\"websiteLink\":{\"S\":\"https://renodentalcareandorthodontics.com\"},\"logoUrl\":{\"S\":\"https://renodentalcareandorthodontics.com/logo.png\"},\"mapsUrl\":{\"S\":\"https://maps.app.goo.gl/yqVa3N8mNwCgwBGv6\"},\"scheduleUrl\":{\"S\":\"https://renodentalcareandorthodontics.com/patient-portal\"}}}},{\"PutRequest\":{\"Item\":{\"clinicId\":{\"S\":\"todaysdentalalexandria\"},\"phoneNumber\":{\"S\":\"+17036728308\"},\"clinicName\":{\"S\":\"Todays Dental Alexandria\"},\"aiPhoneNumber\":{\"S\":\"\"},\"timezone\":{\"S\":\"America/New_York\"},\"clinicAddress\":{\"S\":\"4601 Pinecrest Office Park Dr D, Alexandria, VA 22312, United States\"},\"clinicCity\":{\"S\":\"Alexandria\"},\"clinicState\":{\"S\":\"Virginia\"},\"clinicZipCode\":{\"S\":\"22312\"},\"clinicPhone\":{\"S\":\"(703) 256-2085\"},\"clinicEmail\":{\"S\":\"Dentist@TodaysDentalAlexandria.com\"},\"websiteLink\":{\"S\":\"https://todaysdentalalexandria.com\"},\"logoUrl\":{\"S\":\"https://todaysdentalalexandria.com/logo.png\"},\"mapsUrl\":{\"S\":\"https://maps.app.goo.gl/vqABURPKCfMrFuuX9\"},\"scheduleUrl\":{\"S\":\"https://todaysdentalalexandria.com/patient-portal\"}}}},{\"PutRequest\":{\"Item\":{\"clinicId\":{\"S\":\"todaysdentalgreenville\"},\"phoneNumber\":{\"S\":\"+18643192662\"},\"clinicName\":{\"S\":\"Todays Dental Greenville\"},\"aiPhoneNumber\":{\"S\":\"\"},\"timezone\":{\"S\":\"America/New_York\"},\"clinicAddress\":{\"S\":\"1530 Poinsett Hwy Greenville, SC 29609, USA\"},\"clinicCity\":{\"S\":\"Greenville\"},\"clinicState\":{\"S\":\"South Carolina\"},\"clinicZipCode\":{\"S\":\"29609\"},\"clinicPhone\":{\"S\":\"(864) 999-9899\"},\"clinicEmail\":{\"S\":\"Dentist@TodaysDentalGreenville.com\"},\"websiteLink\":{\"S\":\"https://todaysdentalgreenville.com\"},\"logoUrl\":{\"S\":\"https://todaysdentalgreenville.com/logo.png\"},\"mapsUrl\":{\"S\":\"https://maps.app.goo.gl/ksQRNsjQsjH7VNUa9\"},\"scheduleUrl\":{\"S\":\"https://todaysdentalgreenville.com/patient-portal\"}}}},{\"PutRequest\":{\"Item\":{\"clinicId\":{\"S\":\"todaysdentalwestcolumbia\"},\"phoneNumber\":{\"S\":\"+18032988480\"},\"clinicName\":{\"S\":\"Todays Dental West Columbia\"},\"aiPhoneNumber\":{\"S\":\"\"},\"timezone\":{\"S\":\"America/New_York\"},\"clinicAddress\":{\"S\":\"115 Medical Cir West Columbia, SC 29169, USA\"},\"clinicCity\":{\"S\":\"West Columbia\"},\"clinicState\":{\"S\":\"South Carolina\"},\"clinicZipCode\":{\"S\":\"29169\"},\"clinicPhone\":{\"S\":\"(803) 233-8177\"},\"clinicEmail\":{\"S\":\"Dentist@TodaysDentalWestColumbia.com\"},\"websiteLink\":{\"S\":\"https://todaysdentalwestcolumbia.com\"},\"logoUrl\":{\"S\":\"https://todaysdentalwestcolumbia.com/logo.png\"},\"mapsUrl\":{\"S\":\"https://maps.app.goo.gl/NfpA3W9nsMdxC2gy5\"},\"scheduleUrl\":{\"S\":\"https://todaysdentalwestcolumbia.com/patient-portal\"}}}},{\"PutRequest\":{\"Item\":{\"clinicId\":{\"S\":\"dentistinconcord\"},\"phoneNumber\":{\"S\":\"+17043682506\"},\"clinicName\":{\"S\":\"Dentist in Concord\"},\"aiPhoneNumber\":{\"S\":\"\"},\"timezone\":{\"S\":\"America/New_York\"},\"clinicAddress\":{\"S\":\"2460 Wonder DR STE C, Kannapolis, NC 28083\"},\"clinicCity\":{\"S\":\"Concord\"},\"clinicState\":{\"S\":\"North Carolina\"},\"clinicZipCode\":{\"S\":\"28083\"},\"clinicPhone\":{\"S\":\"(704) 707-3620\"},\"clinicEmail\":{\"S\":\"DentalCare@DentistinConcord.com\"},\"websiteLink\":{\"S\":\"https://dentistinconcord.com\"},\"logoUrl\":{\"S\":\"https://dentistinconcord.com/logo.png\"},\"mapsUrl\":{\"S\":\"https://maps.app.goo.gl/PRVNRH5U7tnv4erA8\"},\"scheduleUrl\":{\"S\":\"https://dentistinconcord.com/patient-portal\"}}}},{\"PutRequest\":{\"Item\":{\"clinicId\":{\"S\":\"dentistinedgewater\"},\"phoneNumber\":{\"S\":\"+14432038433\"},\"clinicName\":{\"S\":\"Dentist in EdgeWater\"},\"aiPhoneNumber\":{\"S\":\"+14439272295\"},\"timezone\":{\"S\":\"America/New_York\"},\"clinicAddress\":{\"S\":\"15 Lee Airpark Dr, Suite 100, Edgewater MD 21037\"},\"clinicCity\":{\"S\":\"Edgewater\"},\"clinicState\":{\"S\":\"Maryland\"},\"clinicZipCode\":{\"S\":\"21037\"},\"clinicPhone\":{\"S\":\"(443) 334-6689\"},\"clinicEmail\":{\"S\":\"DentalCare@DentistinEdgewater.com\"},\"websiteLink\":{\"S\":\"https://dentistinedgewatermd.com\"},\"logoUrl\":{\"S\":\"https://dentistinedgewatermd.com/logo.png\"},\"mapsUrl\":{\"S\":\"https://maps.app.goo.gl/x97PmcG9KJH5Rdu16\"},\"scheduleUrl\":{\"S\":\"https://dentistinedgewatermd.com/patient-portal\"}}}},{\"PutRequest\":{\"Item\":{\"clinicId\":{\"S\":\"lawrencevilledentistry\"},\"phoneNumber\":{\"S\":\"+17702840555\"},\"clinicName\":{\"S\":\"Lawrenceville Dentistry\"},\"aiPhoneNumber\":{\"S\":\"\"},\"timezone\":{\"S\":\"America/New_York\"},\"clinicAddress\":{\"S\":\"1455 Pleasant Hill Road, Lawrenceville, Suite 807A, georgia 30044, USA\"},\"clinicCity\":{\"S\":\"Lawrenceville\"},\"clinicState\":{\"S\":\"Georgia\"},\"clinicZipCode\":{\"S\":\"30044\"},\"clinicPhone\":{\"S\":\"(770)-415-0077\"},\"clinicEmail\":{\"S\":\"Dentist@LawrencevilleDentistry.com\"},\"websiteLink\":{\"S\":\"https://lawrencevilledentistry.com\"},\"logoUrl\":{\"S\":\"https://lawrencevilledentistry.com/logo.png\"},\"mapsUrl\":{\"S\":\"https://maps.app.goo.gl/MFnMPmHSsdyHaGZe9\"},\"scheduleUrl\":{\"S\":\"https://lawrencevilledentistry.com/book-appointment\"}}}},{\"PutRequest\":{\"Item\":{\"clinicId\":{\"S\":\"dentistinlouisville\"},\"phoneNumber\":{\"S\":\"+15022158254\"},\"clinicName\":{\"S\":\"Dentist In Louisville\"},\"aiPhoneNumber\":{\"S\":\"\"},\"timezone\":{\"S\":\"America/New_York\"},\"clinicAddress\":{\"S\":\"6826 Bardstown Road, Louisville Kentucky 40291, USA\"},\"clinicCity\":{\"S\":\"Louisville\"},\"clinicState\":{\"S\":\"Kentucky\"},\"clinicZipCode\":{\"S\":\"40291\"},\"clinicPhone\":{\"S\":\"(502)-239-9751\"},\"clinicEmail\":{\"S\":\"dentalcare@dentistinlouisville.com\"},\"websiteLink\":{\"S\":\"https://dentistinlouisville.com\"},\"logoUrl\":{\"S\":\"https://dentistinlouisville.com/logo.png\"},\"mapsUrl\":{\"S\":\"https://maps.app.goo.gl/m76QtysK96poeUWy7\"},\"scheduleUrl\":{\"S\":\"https://dentistinlouisville.com/book-appointment\"}}}},{\"PutRequest\":{\"Item\":{\"clinicId\":{\"S\":\"dentistatsaludapointe\"},\"phoneNumber\":{\"S\":\"+18032919970\"},\"clinicName\":{\"S\":\"Todays Dental Saluda Pointe\"},\"aiPhoneNumber\":{\"S\":\"\"},\"timezone\":{\"S\":\"America/New_York\"},\"clinicAddress\":{\"S\":\"105 Saluda Pointe Ct Suite C, Lexington, SC 29072, USA\"},\"clinicCity\":{\"S\":\"SaludaPointe\"},\"clinicState\":{\"S\":\"South Carolina\"},\"clinicZipCode\":{\"S\":\"29072\"},\"clinicPhone\":{\"S\":\"(803) 399-8236\"},\"clinicEmail\":{\"S\":\"DentalCare@DentistatSaludaPointe.com\"},\"websiteLink\":{\"S\":\"https://dentistatsaludapointe.com\"},\"logoUrl\":{\"S\":\"https://dentistatsaludapointe.com/logo.png\"},\"mapsUrl\":{\"S\":\"https://maps.app.goo.gl/ybcArAkBw4JLHqmY7\"},\"scheduleUrl\":{\"S\":\"https://dentistatsaludapointe.com/book-appointment\"}}}},{\"PutRequest\":{\"Item\":{\"clinicId\":{\"S\":\"dentistinoregonoh\"},\"phoneNumber\":{\"S\":\"+14193183371\"},\"clinicName\":{\"S\":\"Dentist in Oregon\"},\"aiPhoneNumber\":{\"S\":\"\"},\"timezone\":{\"S\":\"America/New_York\"},\"clinicAddress\":{\"S\":\"3555 Navarre Ave Stre 12, Oregon OH 43616\"},\"clinicCity\":{\"S\":\"Oregon\"},\"clinicState\":{\"S\":\"Ohio\"},\"clinicZipCode\":{\"S\":\"43616\"},\"clinicPhone\":{\"S\":\"(419) 690-0320\"},\"clinicEmail\":{\"S\":\"dentalcare@dentistinoregonoh.com\"},\"websiteLink\":{\"S\":\"https://dentistinoregonoh.com\"},\"logoUrl\":{\"S\":\"https://dentistinoregonoh.com/logo.png\"},\"mapsUrl\":{\"S\":\"https://maps.app.goo.gl/dHUuSUYSeot1YxBw5\"},\"scheduleUrl\":{\"S\":\"https://dentistinOregonoh.com/patient-portal\"}}}},{\"PutRequest\":{\"Item\":{\"clinicId\":{\"S\":\"todaysdentallexington\"},\"phoneNumber\":{\"S\":\"+18032210987\"},\"clinicName\":{\"S\":\"Todays Dental Lexington\"},\"aiPhoneNumber\":{\"S\":\"\"},\"timezone\":{\"S\":\"America/New_York\"},\"clinicAddress\":{\"S\":\"458 Old Cherokee Rd Suite 100, Lexington, SC 29072, USA\"},\"clinicCity\":{\"S\":\"Lexington\"},\"clinicState\":{\"S\":\"South Carolina\"},\"clinicZipCode\":{\"S\":\"43616\"},\"clinicPhone\":{\"S\":\"(803) 756-4353\"},\"clinicEmail\":{\"S\":\"Dentist@TodaysDentalLexington.com\"},\"websiteLink\":{\"S\":\"https://todaysdentallexington.com\"},\"logoUrl\":{\"S\":\"https://todaysdentallexington.com/logo.png\"},\"mapsUrl\":{\"S\":\"https://maps.app.goo.gl/nBnxjeHrWU8mxDgV7\"},\"scheduleUrl\":{\"S\":\"https://todaysdentallexington.com/patient-portal\"}}}},{\"PutRequest\":{\"Item\":{\"clinicId\":{\"S\":\"dentistinbowie\"},\"phoneNumber\":{\"S\":\"+13012416572\"},\"clinicName\":{\"S\":\"Dentist in Bowie\"},\"aiPhoneNumber\":{\"S\":\"\"},\"timezone\":{\"S\":\"America/New_York\"},\"clinicAddress\":{\"S\":\"14999 Health Center Dr #110 Bowie, MD 20716, USA\"},\"clinicCity\":{\"S\":\"Bowie\"},\"clinicState\":{\"S\":\"Maryland\"},\"clinicZipCode\":{\"S\":\"20716\"},\"clinicPhone\":{\"S\":\"(301) 880-0504\"},\"clinicEmail\":{\"S\":\"DentalCare@DentistinBowie.com\"},\"websiteLink\":{\"S\":\"https://dentistinbowie.com\"},\"logoUrl\":{\"S\":\"https://dentistinbowie.com/logo.png\"},\"mapsUrl\":{\"S\":\"https://maps.app.goo.gl/Tb2ZSscmYFCkdEsLA\"},\"scheduleUrl\":{\"S\":\"https://dentistinbowie.com/patient-portal\"}}}},{\"PutRequest\":{\"Item\":{\"clinicId\":{\"S\":\"dentistinpowellohio\"},\"phoneNumber\":{\"S\":\"+16144898815\"},\"clinicName\":{\"S\":\"Dentist in Powell\"},\"aiPhoneNumber\":{\"S\":\"\"},\"timezone\":{\"S\":\"America/New_York\"},\"clinicAddress\":{\"S\":\"4091 W Powell Rd#1, Powell, OH 43065\"},\"clinicCity\":{\"S\":\"Powell\"},\"clinicState\":{\"S\":\"Ohio\"},\"clinicZipCode\":{\"S\":\"43065\"},\"clinicPhone\":{\"S\":\"(614) 659-0018\"},\"clinicEmail\":{\"S\":\"DentalCare@DentistinPowellOhio.com\"},\"websiteLink\":{\"S\":\"https://dentistinpowellohio.com\"},\"logoUrl\":{\"S\":\"https://dentistinpowellohio.com/logo.png\"},\"mapsUrl\":{\"S\":\"https://maps.app.goo.gl/eR4MznoQ3gj897NX8\"},\"scheduleUrl\":{\"S\":\"https://dentistinpowellohio.com/patient-portal\"}}}},{\"PutRequest\":{\"Item\":{\"clinicId\":{\"S\":\"dentistinperrysburg\"},\"phoneNumber\":{\"S\":\"+14193183386\"},\"clinicName\":{\"S\":\"Dentist in PerrysBurg\"},\"aiPhoneNumber\":{\"S\":\"\"},\"timezone\":{\"S\":\"America/New_York\"},\"clinicAddress\":{\"S\":\"110 E South Boundary St, Perrysburg, OH 43551, USA\"},\"clinicCity\":{\"S\":\"Perrysburg\"},\"clinicState\":{\"S\":\"Ohio\"},\"clinicZipCode\":{\"S\":\"43551\"},\"clinicPhone\":{\"S\":\"(419) 792-1264\"},\"clinicEmail\":{\"S\":\"Dentalcare@dentistinperrysburg.com\"},\"websiteLink\":{\"S\":\"https://dentistinperrysburg.com\"},\"logoUrl\":{\"S\":\"https://dentistinperrysburg.com/logo.png\"},\"mapsUrl\":{\"S\":\"https://maps.app.goo.gl/aVCiTAY9UvGYXQaR8\"},\"scheduleUrl\":{\"S\":\"https://dentistinperrysburg.com/patient-portal\"}}}},{\"PutRequest\":{\"Item\":{\"clinicId\":{\"S\":\"dentistinaustin\"},\"phoneNumber\":{\"S\":\"+15123095624\"},\"clinicName\":{\"S\":\"Dentist in Austin\"},\"aiPhoneNumber\":{\"S\":\"+17377074552\"},\"timezone\":{\"S\":\"America/Chicago\"},\"clinicAddress\":{\"S\":\"2110 W Slaughter Ln Ste 190 Austin, TX 78748\"},\"clinicCity\":{\"S\":\"Austin\"},\"clinicState\":{\"S\":\"Texas\"},\"clinicZipCode\":{\"S\":\"78748\"},\"clinicPhone\":{\"S\":\"512-430-4472\"},\"clinicEmail\":{\"S\":\"Dentalcare@dentistinaustintx.com\"},\"websiteLink\":{\"S\":\"https://dentistinaustintx.com\"},\"logoUrl\":{\"S\":\"https://dentistinaustintx.com/logo.png\"},\"mapsUrl\":{\"S\":\"https://maps.app.goo.gl/BbvkUzQb14p6YhH77\"},\"scheduleUrl\":{\"S\":\"https://dentistinaustintx.com/patient-portal\"}}}},{\"PutRequest\":{\"Item\":{\"clinicId\":{\"S\":\"therimdentalcare\"},\"phoneNumber\":{\"S\":\"+17262023123\"},\"clinicName\":{\"S\":\"The Rim Dental Care\"},\"aiPhoneNumber\":{\"S\":\"\"},\"timezone\":{\"S\":\"America/Chicago\"},\"clinicAddress\":{\"S\":\"6028 WORTH PKWY STE 101, SAN ANTONIO, TX 78257-5071\"},\"clinicCity\":{\"S\":\"SAN ANTONIO\"},\"clinicState\":{\"S\":\"Texas\"},\"clinicZipCode\":{\"S\":\"78257-5071\"},\"clinicPhone\":{\"S\":\"(726) 215-9920\"},\"clinicEmail\":{\"S\":\"Dentist@therimdentalcare.com\"},\"websiteLink\":{\"S\":\"https://therimdentalcare.com\"},\"logoUrl\":{\"S\":\"https://therimdentalcare.com/logo.png\"},\"mapsUrl\":{\"S\":\"https://maps.app.goo.gl/cabosKW6nqkmPCQs8\"},\"scheduleUrl\":{\"S\":\"https://therimdentalcare.com/patient-portal\"}}}},{\"PutRequest\":{\"Item\":{\"clinicId\":{\"S\":\"dentistinbloomingdale\"},\"phoneNumber\":{\"S\":\"+16302969003\"},\"clinicName\":{\"S\":\"Dentist in Bloomingdale\"},\"aiPhoneNumber\":{\"S\":\"\"},\"timezone\":{\"S\":\"America/Chicago\"},\"clinicAddress\":{\"S\":\"366 W Army Trail Rd #310a, Bloomingdale, IL 60108, USA\"},\"clinicCity\":{\"S\":\"Bloomingdale\"},\"clinicState\":{\"S\":\"Illinois\"},\"clinicZipCode\":{\"S\":\"60108\"},\"clinicPhone\":{\"S\":\"(630) 686-1328\"},\"clinicEmail\":{\"S\":\"Dentalcare@dentistinbloomingdaleil.com\"},\"websiteLink\":{\"S\":\"https://dentistinbloomingdaleil.com\"},\"logoUrl\":{\"S\":\"https://dentistinbloomingdaleil.com/logo.png\"},\"mapsUrl\":{\"S\":\"https://maps.app.goo.gl/e7WeCV2FKXuTbyMA6\"},\"scheduleUrl\":{\"S\":\"https://dentistinbloomingdaleil.com/patient-portal\"}}}},{\"PutRequest\":{\"Item\":{\"clinicId\":{\"S\":\"dentistinvernonhills\"},\"phoneNumber\":{\"S\":\"+18472608875\"},\"clinicName\":{\"S\":\"Dentist in Vernon Hills\"},\"aiPhoneNumber\":{\"S\":\"\"},\"timezone\":{\"S\":\"America/Chicago\"},\"clinicAddress\":{\"S\":\"6826 Bardstown Road, VernonHills, Illinois, 40291, USA\"},\"clinicCity\":{\"S\":\"VernonHills\"},\"clinicState\":{\"S\":\"Illinois\"},\"clinicZipCode\":{\"S\":\"40291\"},\"clinicPhone\":{\"S\":\"(847) 978-4077\"},\"clinicEmail\":{\"S\":\"DentalCare@DentistinVernonHills.com\"},\"websiteLink\":{\"S\":\"https://dentistinvernonhills.com\"},\"logoUrl\":{\"S\":\"https://dentistinvernonhills.com/logo.png\"},\"mapsUrl\":{\"S\":\"https://maps.app.goo.gl/3EJBccxEGW41P8Rh7\"},\"scheduleUrl\":{\"S\":\"https://dentistinvernonhills.com/patient-portal\"}}}},{\"PutRequest\":{\"Item\":{\"clinicId\":{\"S\":\"meadowsdentalcare\"},\"phoneNumber\":{\"S\":\"+17372273831\"},\"clinicName\":{\"S\":\"Meadows Dental Care\"},\"aiPhoneNumber\":{\"S\":\"\"},\"timezone\":{\"S\":\"America/Chicago\"},\"clinicAddress\":{\"S\":\"9600 S I-35 Frontage Rd Bldg S #275, Austin, TX 78748, United States\"},\"clinicCity\":{\"S\":\"Austin\"},\"clinicState\":{\"S\":\"Texas\"},\"clinicZipCode\":{\"S\":\"78748\"},\"clinicPhone\":{\"S\":\"(737) 263-1581\"},\"clinicEmail\":{\"S\":\"dentist@themeadowsdentalcare.com\"},\"websiteLink\":{\"S\":\"https://themeadowsdentalcare.com\"},\"logoUrl\":{\"S\":\"https://themeadowsdentalcare.com/logo.png\"},\"mapsUrl\":{\"S\":\"https://maps.app.goo.gl/Hz4S86nieDoEJyZi6\"},\"scheduleUrl\":{\"S\":\"https://themeadowsdentalcare.com/patient-portal\"}}}}]}},\"physicalResourceId\":{\"id\":\"SeedClinicsBatch0-v3\"}}"
       ]
      ]
     },
@@ -678,6 +678,113 @@
     "aws:cdk:path": "TodaysDentalInsightsChimeN1/LocksTable/Resource"
    }
   },
+  "CallAuditTable35314263": {
+   "Type": "AWS::DynamoDB::Table",
+   "Properties": {
+    "AttributeDefinitions": [
+     {
+      "AttributeName": "pk",
+      "AttributeType": "S"
+     },
+     {
+      "AttributeName": "sk",
+      "AttributeType": "S"
+     },
+     {
+      "AttributeName": "gsi1pk",
+      "AttributeType": "S"
+     },
+     {
+      "AttributeName": "gsi1sk",
+      "AttributeType": "S"
+     },
+     {
+      "AttributeName": "gsi2pk",
+      "AttributeType": "S"
+     },
+     {
+      "AttributeName": "gsi2sk",
+      "AttributeType": "S"
+     }
+    ],
+    "BillingMode": "PAY_PER_REQUEST",
+    "GlobalSecondaryIndexes": [
+     {
+      "IndexName": "gsi1",
+      "KeySchema": [
+       {
+        "AttributeName": "gsi1pk",
+        "KeyType": "HASH"
+       },
+       {
+        "AttributeName": "gsi1sk",
+        "KeyType": "RANGE"
+       }
+      ],
+      "Projection": {
+       "ProjectionType": "ALL"
+      }
+     },
+     {
+      "IndexName": "gsi2",
+      "KeySchema": [
+       {
+        "AttributeName": "gsi2pk",
+        "KeyType": "HASH"
+       },
+       {
+        "AttributeName": "gsi2sk",
+        "KeyType": "RANGE"
+       }
+      ],
+      "Projection": {
+       "ProjectionType": "ALL"
+      }
+     }
+    ],
+    "KeySchema": [
+     {
+      "AttributeName": "pk",
+      "KeyType": "HASH"
+     },
+     {
+      "AttributeName": "sk",
+      "KeyType": "RANGE"
+     }
+    ],
+    "PointInTimeRecoverySpecification": {
+     "PointInTimeRecoveryEnabled": true
+    },
+    "TableName": "TodaysDentalInsightsChimeN1-CallAudit",
+    "Tags": [
+     {
+      "Key": "ManagedBy",
+      "Value": "cdk"
+     },
+     {
+      "Key": "Service",
+      "Value": "Chime"
+     },
+     {
+      "Key": "Stack",
+      "Value": "TodaysDentalInsightsChimeN1"
+     },
+     {
+      "Key": "Table",
+      "Value": "call-audit"
+     }
+    ],
+    "TimeToLiveSpecification": {
+     "AttributeName": "ttl",
+     "Enabled": true
+    }
+   },
+   "UpdateReplacePolicy": "Retain",
+   "DeletionPolicy": "Retain",
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsChimeN1/CallAuditTable/Resource"
+   }
+  },
   "AgentPerformanceTableFD0853D8": {
    "Type": "AWS::DynamoDB::Table",
    "Properties": {
@@ -983,6 +1090,38 @@
       },
       {
        "Action": [
+        "dynamodb:BatchWriteItem",
+        "dynamodb:PutItem",
+        "dynamodb:UpdateItem",
+        "dynamodb:DeleteItem",
+        "dynamodb:DescribeTable"
+       ],
+       "Effect": "Allow",
+       "Resource": [
+        {
+         "Fn::GetAtt": [
+          "CallAuditTable35314263",
+          "Arn"
+         ]
+        },
+        {
+         "Fn::Join": [
+          "",
+          [
+           {
+            "Fn::GetAtt": [
+             "CallAuditTable35314263",
+             "Arn"
+            ]
+           },
+           "/index/*"
+          ]
+         ]
+        }
+       ]
+      },
+      {
+       "Action": [
         "dynamodb:BatchGetItem",
         "dynamodb:GetRecords",
         "dynamodb:GetShardIterator",
@@ -1089,6 +1228,11 @@
        }
       },
       {
+       "Action": "cloudwatch:PutMetricData",
+       "Effect": "Allow",
+       "Resource": "*"
+      },
+      {
        "Action": [
         "chime:CreateSipMediaApplicationCall",
         "chime:UpdateSipMediaApplicationCall",
@@ -1157,6 +1301,43 @@
            {
             "Fn::GetAtt": [
              "HoldMusicBucketC13064FE",
+             "Arn"
+            ]
+           },
+           "/*"
+          ]
+         ]
+        }
+       ]
+      },
+      {
+       "Action": [
+        "s3:GetObject*",
+        "s3:GetBucket*",
+        "s3:List*",
+        "s3:DeleteObject*",
+        "s3:PutObject",
+        "s3:PutObjectLegalHold",
+        "s3:PutObjectRetention",
+        "s3:PutObjectTagging",
+        "s3:PutObjectVersionTagging",
+        "s3:Abort*"
+       ],
+       "Effect": "Allow",
+       "Resource": [
+        {
+         "Fn::GetAtt": [
+          "VoicemailBucket6DF79C0C",
+          "Arn"
+         ]
+        },
+        {
+         "Fn::Join": [
+          "",
+          [
+           {
+            "Fn::GetAtt": [
+             "VoicemailBucket6DF79C0C",
              "Arn"
             ]
            },
@@ -1248,7 +1429,7 @@
    "Properties": {
     "Code": {
      "S3Bucket": "cdk-tdi3-assets-851620242036-us-east-1",
-     "S3Key": "1333502ef30357c36d412cdc2876f6c26f5bae1f0fc72b0dafa409dab781321b.zip"
+     "S3Key": "6bbd05b91d72e6c8b304ee6e894f508dbaa6fa5ea14d0814da1e177e4f9d60f8.zip"
     },
     "Environment": {
      "Variables": {
@@ -1263,6 +1444,9 @@
       },
       "CALL_QUEUE_TABLE_NAME": {
        "Ref": "CallQueueTable65E48E45"
+      },
+      "CALL_AUDIT_TABLE_NAME": {
+       "Ref": "CallAuditTable35314263"
       },
       "LOCKS_TABLE_NAME": {
        "Ref": "LocksTable0C14848D"
@@ -1286,6 +1470,9 @@
       },
       "SEND_PUSH_FUNCTION_ARN": {
        "Fn::ImportValue": "TodaysDentalInsightsPushN1:ExportsOutputFnGetAttSendPushFnB8AEA016Arn02900E0D"
+      },
+      "VOICEMAIL_BUCKET": {
+       "Ref": "VoicemailBucket6DF79C0C"
       },
       "RECORDINGS_BUCKET": {
        "Ref": "CallRecordingsBucketF5B214BA"
@@ -1324,7 +1511,7 @@
    ],
    "Metadata": {
     "aws:cdk:path": "TodaysDentalInsightsChimeN1/SmaHandler/Resource",
-    "aws:asset:path": "asset.1333502ef30357c36d412cdc2876f6c26f5bae1f0fc72b0dafa409dab781321b",
+    "aws:asset:path": "asset.6bbd05b91d72e6c8b304ee6e894f508dbaa6fa5ea14d0814da1e177e4f9d60f8",
     "aws:asset:is-bundled": true,
     "aws:asset:property": "Code"
    }
@@ -1599,7 +1786,7 @@
      "cdk-tdi3-assets-851620242036-us-east-1"
     ],
     "SourceObjectKeys": [
-     "b4484d1c6c13044738290d37c79eed8f055f4f171869b4507c10838bb7ca8642.zip"
+     "223602430b629d2f78c4f9483000ead45fddece825f62a4a2c1ead599d5eddd6.zip"
     ],
     "DestinationBucketName": {
      "Ref": "HoldMusicBucketC13064FE"
@@ -5006,7 +5193,7 @@
    "Properties": {
     "Code": {
      "S3Bucket": "cdk-tdi3-assets-851620242036-us-east-1",
-     "S3Key": "a7a1ba32a892834d522fbf66c203757344925517eda4e5578e2ee3672d3f0d6b.zip"
+     "S3Key": "f00d6c19fb64687e26a16ff51917a3dfebc88045d23b1bcf7c349525eb48fd35.zip"
     },
     "Environment": {
      "Variables": {
@@ -5056,7 +5243,7 @@
    ],
    "Metadata": {
     "aws:cdk:path": "TodaysDentalInsightsChimeN1/StartSessionFn/Resource",
-    "aws:asset:path": "asset.a7a1ba32a892834d522fbf66c203757344925517eda4e5578e2ee3672d3f0d6b",
+    "aws:asset:path": "asset.f00d6c19fb64687e26a16ff51917a3dfebc88045d23b1bcf7c349525eb48fd35",
     "aws:asset:is-bundled": true,
     "aws:asset:property": "Code"
    }
@@ -5324,6 +5511,13 @@
          ]
         }
        ]
+      },
+      {
+       "Action": "lambda:InvokeFunction",
+       "Effect": "Allow",
+       "Resource": {
+        "Fn::ImportValue": "TodaysDentalInsightsPushN1:ExportsOutputFnGetAttSendPushFnB8AEA016Arn02900E0D"
+       }
       }
      ],
      "Version": "2012-10-17"
@@ -5344,7 +5538,7 @@
    "Properties": {
     "Code": {
      "S3Bucket": "cdk-tdi3-assets-851620242036-us-east-1",
-     "S3Key": "ffccc935da6cca69d04c954339e51952d9347ff481ad0514d2b76906d47ebaac.zip"
+     "S3Key": "3ae458464b89841ee5c1b58e28e22f81bced41ff1e605b606f0849aae3769f59.zip"
     },
     "Environment": {
      "Variables": {
@@ -5554,7 +5748,10 @@
       "JWT_SECRET": "8f3a2b9c7d1e5f6a4b3c8d9e2f1a7b5c9d4e3f2a1b6c7d8e9f3a2b1c4d5e6f7a8b9c1d2e3f4a5b6c7d8e9f",
       "CHIME_MEDIA_REGION": "us-east-1",
       "AWS_XRAY_TRACING_ENABLED": "true",
-      "AWS_XRAY_CONTEXT_MISSING": "LOG_ERROR"
+      "AWS_XRAY_CONTEXT_MISSING": "LOG_ERROR",
+      "SEND_PUSH_FUNCTION_ARN": {
+       "Fn::ImportValue": "TodaysDentalInsightsPushN1:ExportsOutputFnGetAttSendPushFnB8AEA016Arn02900E0D"
+      }
      }
     },
     "FunctionName": "TodaysDentalInsightsChimeN1-StopSession",
@@ -5588,7 +5785,7 @@
    ],
    "Metadata": {
     "aws:cdk:path": "TodaysDentalInsightsChimeN1/StopSessionFn/Resource",
-    "aws:asset:path": "asset.ffccc935da6cca69d04c954339e51952d9347ff481ad0514d2b76906d47ebaac",
+    "aws:asset:path": "asset.3ae458464b89841ee5c1b58e28e22f81bced41ff1e605b606f0849aae3769f59",
     "aws:asset:is-bundled": true,
     "aws:asset:property": "Code"
    }
@@ -5799,7 +5996,7 @@
    "Properties": {
     "Code": {
      "S3Bucket": "cdk-tdi3-assets-851620242036-us-east-1",
-     "S3Key": "214dd9cad7ad090aeecb980d8bfe98dec8cfd0a7a35f6290a215918b514db8ba.zip"
+     "S3Key": "56407c84d8fcc25466ffb0e09459ca30ea338b179b3e4113388966a15ccc02c0.zip"
     },
     "Environment": {
      "Variables": {
@@ -5821,6 +6018,7 @@
     },
     "FunctionName": "TodaysDentalInsightsChimeN1-AgentActive",
     "Handler": "index.handler",
+    "MemorySize": 256,
     "Role": {
      "Fn::GetAtt": [
       "AgentActiveFnServiceRoleFF3C3B38",
@@ -5846,7 +6044,7 @@
       "Value": "TodaysDentalInsightsChimeN1"
      }
     ],
-    "Timeout": 10
+    "Timeout": 20
    },
    "DependsOn": [
     "AgentActiveFnServiceRoleDefaultPolicy6A627EE3",
@@ -5854,7 +6052,7 @@
    ],
    "Metadata": {
     "aws:cdk:path": "TodaysDentalInsightsChimeN1/AgentActiveFn/Resource",
-    "aws:asset:path": "asset.214dd9cad7ad090aeecb980d8bfe98dec8cfd0a7a35f6290a215918b514db8ba",
+    "aws:asset:path": "asset.56407c84d8fcc25466ffb0e09459ca30ea338b179b3e4113388966a15ccc02c0",
     "aws:asset:is-bundled": true,
     "aws:asset:property": "Code"
    }
@@ -5991,7 +6189,7 @@
    "Properties": {
     "Code": {
      "S3Bucket": "cdk-tdi3-assets-851620242036-us-east-1",
-     "S3Key": "f089f0e4eb27564c14a765e17ca42262cbba8ca6357365253cc1b151d8802119.zip"
+     "S3Key": "d188315b3a55a5fb60bba039efa99b9105a98c5223b832c82456909b3fef3d26.zip"
     },
     "Environment": {
      "Variables": {
@@ -6036,7 +6234,7 @@
    ],
    "Metadata": {
     "aws:cdk:path": "TodaysDentalInsightsChimeN1/AgentInactiveFn/Resource",
-    "aws:asset:path": "asset.f089f0e4eb27564c14a765e17ca42262cbba8ca6357365253cc1b151d8802119",
+    "aws:asset:path": "asset.d188315b3a55a5fb60bba039efa99b9105a98c5223b832c82456909b3fef3d26",
     "aws:asset:is-bundled": true,
     "aws:asset:property": "Code"
    }
@@ -6320,6 +6518,13 @@
        ],
        "Effect": "Allow",
        "Resource": "arn:aws:chime:us-east-1:851620242036:sma/*"
+      },
+      {
+       "Action": "lambda:InvokeFunction",
+       "Effect": "Allow",
+       "Resource": {
+        "Fn::ImportValue": "TodaysDentalInsightsPushN1:ExportsOutputFnGetAttSendPushFnB8AEA016Arn02900E0D"
+       }
       }
      ],
      "Version": "2012-10-17"
@@ -6340,7 +6545,7 @@
    "Properties": {
     "Code": {
      "S3Bucket": "cdk-tdi3-assets-851620242036-us-east-1",
-     "S3Key": "ed9a4ef0ff401b35608a8648868a722181c94bbd81fe03c808a03f4e1a3c2e6c.zip"
+     "S3Key": "7e178f042677013f71292e07ed945937be0444ade524cfec5be31a1cad536b25.zip"
     },
     "Environment": {
      "Variables": {
@@ -6565,7 +6770,10 @@
       "CHIME_MEDIA_REGION": "us-east-1",
       "JWT_SECRET": "8f3a2b9c7d1e5f6a4b3c8d9e2f1a7b5c9d4e3f2a1b6c7d8e9f3a2b1c4d5e6f7a8b9c1d2e3f4a5b6c7d8e9f",
       "AWS_XRAY_TRACING_ENABLED": "true",
-      "AWS_XRAY_CONTEXT_MISSING": "LOG_ERROR"
+      "AWS_XRAY_CONTEXT_MISSING": "LOG_ERROR",
+      "SEND_PUSH_FUNCTION_ARN": {
+       "Fn::ImportValue": "TodaysDentalInsightsPushN1:ExportsOutputFnGetAttSendPushFnB8AEA016Arn02900E0D"
+      }
      }
     },
     "FunctionName": "TodaysDentalInsightsChimeN1-OutboundCall",
@@ -6599,7 +6807,7 @@
    ],
    "Metadata": {
     "aws:cdk:path": "TodaysDentalInsightsChimeN1/OutboundCallFn/Resource",
-    "aws:asset:path": "asset.ed9a4ef0ff401b35608a8648868a722181c94bbd81fe03c808a03f4e1a3c2e6c",
+    "aws:asset:path": "asset.7e178f042677013f71292e07ed945937be0444ade524cfec5be31a1cad536b25",
     "aws:asset:is-bundled": true,
     "aws:asset:property": "Code"
    }
@@ -6722,6 +6930,41 @@
         "dynamodb:GetItem",
         "dynamodb:Scan",
         "dynamodb:ConditionCheckItem",
+        "dynamodb:DescribeTable"
+       ],
+       "Effect": "Allow",
+       "Resource": [
+        {
+         "Fn::GetAtt": [
+          "AgentActiveTableB8509493",
+          "Arn"
+         ]
+        },
+        {
+         "Fn::Join": [
+          "",
+          [
+           {
+            "Fn::GetAtt": [
+             "AgentActiveTableB8509493",
+             "Arn"
+            ]
+           },
+           "/index/*"
+          ]
+         ]
+        }
+       ]
+      },
+      {
+       "Action": [
+        "dynamodb:BatchGetItem",
+        "dynamodb:GetRecords",
+        "dynamodb:GetShardIterator",
+        "dynamodb:Query",
+        "dynamodb:GetItem",
+        "dynamodb:Scan",
+        "dynamodb:ConditionCheckItem",
         "dynamodb:BatchWriteItem",
         "dynamodb:PutItem",
         "dynamodb:UpdateItem",
@@ -6809,6 +7052,13 @@
        ],
        "Effect": "Allow",
        "Resource": "*"
+      },
+      {
+       "Action": "lambda:InvokeFunction",
+       "Effect": "Allow",
+       "Resource": {
+        "Fn::ImportValue": "TodaysDentalInsightsPushN1:ExportsOutputFnGetAttSendPushFnB8AEA016Arn02900E0D"
+       }
       }
      ],
      "Version": "2012-10-17"
@@ -6829,12 +7079,15 @@
    "Properties": {
     "Code": {
      "S3Bucket": "cdk-tdi3-assets-851620242036-us-east-1",
-     "S3Key": "73a7c5bf948dee53f81a40bbd59372f3ff80dcbbe3771ebd03b3102dc00af6da.zip"
+     "S3Key": "c1eaa285e6589e24ac4af0900466e839ee0c703878868e059324074f80e9b038.zip"
     },
     "Environment": {
      "Variables": {
       "AGENT_PRESENCE_TABLE_NAME": {
        "Ref": "AgentPresenceTable3B930FDB"
+      },
+      "AGENT_ACTIVE_TABLE_NAME": {
+       "Ref": "AgentActiveTableB8509493"
       },
       "CALL_QUEUE_TABLE_NAME": {
        "Ref": "CallQueueTable65E48E45"
@@ -7042,7 +7295,10 @@
       "CHIME_MEDIA_REGION": "us-east-1",
       "JWT_SECRET": "8f3a2b9c7d1e5f6a4b3c8d9e2f1a7b5c9d4e3f2a1b6c7d8e9f3a2b1c4d5e6f7a8b9c1d2e3f4a5b6c7d8e9f",
       "AWS_XRAY_TRACING_ENABLED": "true",
-      "AWS_XRAY_CONTEXT_MISSING": "LOG_ERROR"
+      "AWS_XRAY_CONTEXT_MISSING": "LOG_ERROR",
+      "SEND_PUSH_FUNCTION_ARN": {
+       "Fn::ImportValue": "TodaysDentalInsightsPushN1:ExportsOutputFnGetAttSendPushFnB8AEA016Arn02900E0D"
+      }
      }
     },
     "FunctionName": "TodaysDentalInsightsChimeN1-TransferCall",
@@ -7076,7 +7332,7 @@
    ],
    "Metadata": {
     "aws:cdk:path": "TodaysDentalInsightsChimeN1/TransferCallFn/Resource",
-    "aws:asset:path": "asset.73a7c5bf948dee53f81a40bbd59372f3ff80dcbbe3771ebd03b3102dc00af6da",
+    "aws:asset:path": "asset.c1eaa285e6589e24ac4af0900466e839ee0c703878868e059324074f80e9b038",
     "aws:asset:is-bundled": true,
     "aws:asset:property": "Code"
    }
@@ -7306,7 +7562,7 @@
    "Properties": {
     "Code": {
      "S3Bucket": "cdk-tdi3-assets-851620242036-us-east-1",
-     "S3Key": "dca3d8417ee3c5da532d0d3b4d4224b706a505bef0253a401680aad136cc0143.zip"
+     "S3Key": "2d1a99ec7321de457dac56354c2ee146a8ec6e068377d6cb306c5ec4161757f0.zip"
     },
     "Environment": {
      "Variables": {
@@ -7553,7 +7809,7 @@
    ],
    "Metadata": {
     "aws:cdk:path": "TodaysDentalInsightsChimeN1/CallAcceptedFn/Resource",
-    "aws:asset:path": "asset.dca3d8417ee3c5da532d0d3b4d4224b706a505bef0253a401680aad136cc0143",
+    "aws:asset:path": "asset.2d1a99ec7321de457dac56354c2ee146a8ec6e068377d6cb306c5ec4161757f0",
     "aws:asset:is-bundled": true,
     "aws:asset:property": "Code"
    }
@@ -7767,6 +8023,18 @@
        ],
        "Effect": "Allow",
        "Resource": "*"
+      },
+      {
+       "Action": "lambda:InvokeFunction",
+       "Effect": "Allow",
+       "Resource": {
+        "Fn::ImportValue": "TodaysDentalInsightsPushN1:ExportsOutputFnGetAttSendPushFnB8AEA016Arn02900E0D"
+       }
+      },
+      {
+       "Action": "cloudwatch:PutMetricData",
+       "Effect": "Allow",
+       "Resource": "*"
       }
      ],
      "Version": "2012-10-17"
@@ -7787,7 +8055,7 @@
    "Properties": {
     "Code": {
      "S3Bucket": "cdk-tdi3-assets-851620242036-us-east-1",
-     "S3Key": "79e4d98a7b6bcd2c7f200b513110a10d029d4a710fff00d4eda9f877ac145b26.zip"
+     "S3Key": "812e64da9d42334ccdce57004955a33255b65e5aa0b3e0db908e83177a264435.zip"
     },
     "Environment": {
      "Variables": {
@@ -8000,7 +8268,10 @@
       "CHIME_MEDIA_REGION": "us-east-1",
       "JWT_SECRET": "8f3a2b9c7d1e5f6a4b3c8d9e2f1a7b5c9d4e3f2a1b6c7d8e9f3a2b1c4d5e6f7a8b9c1d2e3f4a5b6c7d8e9f",
       "AWS_XRAY_TRACING_ENABLED": "true",
-      "AWS_XRAY_CONTEXT_MISSING": "LOG_ERROR"
+      "AWS_XRAY_CONTEXT_MISSING": "LOG_ERROR",
+      "SEND_PUSH_FUNCTION_ARN": {
+       "Fn::ImportValue": "TodaysDentalInsightsPushN1:ExportsOutputFnGetAttSendPushFnB8AEA016Arn02900E0D"
+      }
      }
     },
     "FunctionName": "TodaysDentalInsightsChimeN1-CallAcceptedV2",
@@ -8038,7 +8309,7 @@
    ],
    "Metadata": {
     "aws:cdk:path": "TodaysDentalInsightsChimeN1/CallAcceptedV2Fn/Resource",
-    "aws:asset:path": "asset.79e4d98a7b6bcd2c7f200b513110a10d029d4a710fff00d4eda9f877ac145b26",
+    "aws:asset:path": "asset.812e64da9d42334ccdce57004955a33255b65e5aa0b3e0db908e83177a264435",
     "aws:asset:is-bundled": true,
     "aws:asset:property": "Code"
    }
@@ -8249,7 +8520,7 @@
    "Properties": {
     "Code": {
      "S3Bucket": "cdk-tdi3-assets-851620242036-us-east-1",
-     "S3Key": "3d8ce96acc22fd26afd885e954d83af57cf9bab92420bee918f5f17abb397f56.zip"
+     "S3Key": "b3fe237feae1835477900aff13a31ac4d277c29a14789de8830953a4889c7f0c.zip"
     },
     "Environment": {
      "Variables": {
@@ -8305,7 +8576,7 @@
    ],
    "Metadata": {
     "aws:cdk:path": "TodaysDentalInsightsChimeN1/CallRejectedV2Fn/Resource",
-    "aws:asset:path": "asset.3d8ce96acc22fd26afd885e954d83af57cf9bab92420bee918f5f17abb397f56",
+    "aws:asset:path": "asset.b3fe237feae1835477900aff13a31ac4d277c29a14789de8830953a4889c7f0c",
     "aws:asset:is-bundled": true,
     "aws:asset:property": "Code"
    }
@@ -8519,6 +8790,13 @@
        ],
        "Effect": "Allow",
        "Resource": "*"
+      },
+      {
+       "Action": "lambda:InvokeFunction",
+       "Effect": "Allow",
+       "Resource": {
+        "Fn::ImportValue": "TodaysDentalInsightsPushN1:ExportsOutputFnGetAttSendPushFnB8AEA016Arn02900E0D"
+       }
       }
      ],
      "Version": "2012-10-17"
@@ -8539,7 +8817,7 @@
    "Properties": {
     "Code": {
      "S3Bucket": "cdk-tdi3-assets-851620242036-us-east-1",
-     "S3Key": "54d0a90aeb29d7926ed49107aeee985303027e4ad43693584f1bb0cd5c8c8161.zip"
+     "S3Key": "7a235f3c1a10e66e8f314c635ab30fa28123f4941525c4826a5c13c6d32dafa4.zip"
     },
     "Environment": {
      "Variables": {
@@ -8752,7 +9030,10 @@
       "CHIME_MEDIA_REGION": "us-east-1",
       "JWT_SECRET": "8f3a2b9c7d1e5f6a4b3c8d9e2f1a7b5c9d4e3f2a1b6c7d8e9f3a2b1c4d5e6f7a8b9c1d2e3f4a5b6c7d8e9f",
       "AWS_XRAY_TRACING_ENABLED": "true",
-      "AWS_XRAY_CONTEXT_MISSING": "LOG_ERROR"
+      "AWS_XRAY_CONTEXT_MISSING": "LOG_ERROR",
+      "SEND_PUSH_FUNCTION_ARN": {
+       "Fn::ImportValue": "TodaysDentalInsightsPushN1:ExportsOutputFnGetAttSendPushFnB8AEA016Arn02900E0D"
+      }
      }
     },
     "FunctionName": "TodaysDentalInsightsChimeN1-CallHungupV2",
@@ -8790,7 +9071,7 @@
    ],
    "Metadata": {
     "aws:cdk:path": "TodaysDentalInsightsChimeN1/CallHungupV2Fn/Resource",
-    "aws:asset:path": "asset.54d0a90aeb29d7926ed49107aeee985303027e4ad43693584f1bb0cd5c8c8161",
+    "aws:asset:path": "asset.7a235f3c1a10e66e8f314c635ab30fa28123f4941525c4826a5c13c6d32dafa4",
     "aws:asset:is-bundled": true,
     "aws:asset:property": "Code"
    }
@@ -9020,7 +9301,7 @@
    "Properties": {
     "Code": {
      "S3Bucket": "cdk-tdi3-assets-851620242036-us-east-1",
-     "S3Key": "9b52220a3c97ad500406734495f8936b0ed94619a71dad5548c9f23b3d4d4223.zip"
+     "S3Key": "bed6a213bbe5901775d0c59d67a2cbc52cb63bf538a6ee2aeb2e86070182b6ef.zip"
     },
     "Environment": {
      "Variables": {
@@ -9267,7 +9548,7 @@
    ],
    "Metadata": {
     "aws:cdk:path": "TodaysDentalInsightsChimeN1/CallRejectedFn/Resource",
-    "aws:asset:path": "asset.9b52220a3c97ad500406734495f8936b0ed94619a71dad5548c9f23b3d4d4223",
+    "aws:asset:path": "asset.bed6a213bbe5901775d0c59d67a2cbc52cb63bf538a6ee2aeb2e86070182b6ef",
     "aws:asset:is-bundled": true,
     "aws:asset:property": "Code"
    }
@@ -9527,7 +9808,7 @@
    "Properties": {
     "Code": {
      "S3Bucket": "cdk-tdi3-assets-851620242036-us-east-1",
-     "S3Key": "55264718bc165e1be9cd14b65d8f4628a145c89e2ce0f5a5642f5fb0c81fa718.zip"
+     "S3Key": "30e48dd093d2efe9b34b897b2b91d03ef82813aeb37bb7488971d9b6498bd353.zip"
     },
     "Environment": {
      "Variables": {
@@ -9780,7 +10061,7 @@
    ],
    "Metadata": {
     "aws:cdk:path": "TodaysDentalInsightsChimeN1/CallHungupFn/Resource",
-    "aws:asset:path": "asset.55264718bc165e1be9cd14b65d8f4628a145c89e2ce0f5a5642f5fb0c81fa718",
+    "aws:asset:path": "asset.30e48dd093d2efe9b34b897b2b91d03ef82813aeb37bb7488971d9b6498bd353",
     "aws:asset:is-bundled": true,
     "aws:asset:property": "Code"
    }
@@ -9982,6 +10263,13 @@
        ],
        "Effect": "Allow",
        "Resource": "*"
+      },
+      {
+       "Action": "lambda:InvokeFunction",
+       "Effect": "Allow",
+       "Resource": {
+        "Fn::ImportValue": "TodaysDentalInsightsPushN1:ExportsOutputFnGetAttSendPushFnB8AEA016Arn02900E0D"
+       }
       }
      ],
      "Version": "2012-10-17"
@@ -10002,7 +10290,7 @@
    "Properties": {
     "Code": {
      "S3Bucket": "cdk-tdi3-assets-851620242036-us-east-1",
-     "S3Key": "9c14ac0fe949f79cfc2c576bd81d36c64eba38e38cb0d9108033b5b0cc5c0d58.zip"
+     "S3Key": "8ee9ff99c620017b35f5c45bb8531a165d87dad767087eee8415e1e332155397.zip"
     },
     "Environment": {
      "Variables": {
@@ -10018,7 +10306,10 @@
       "CHIME_MEDIA_REGION": "us-east-1",
       "JWT_SECRET": "8f3a2b9c7d1e5f6a4b3c8d9e2f1a7b5c9d4e3f2a1b6c7d8e9f3a2b1c4d5e6f7a8b9c1d2e3f4a5b6c7d8e9f",
       "AWS_XRAY_TRACING_ENABLED": "true",
-      "AWS_XRAY_CONTEXT_MISSING": "LOG_ERROR"
+      "AWS_XRAY_CONTEXT_MISSING": "LOG_ERROR",
+      "SEND_PUSH_FUNCTION_ARN": {
+       "Fn::ImportValue": "TodaysDentalInsightsPushN1:ExportsOutputFnGetAttSendPushFnB8AEA016Arn02900E0D"
+      }
      }
     },
     "FunctionName": "TodaysDentalInsightsChimeN1-LeaveCall",
@@ -10052,7 +10343,7 @@
    ],
    "Metadata": {
     "aws:cdk:path": "TodaysDentalInsightsChimeN1/LeaveCallFn/Resource",
-    "aws:asset:path": "asset.9c14ac0fe949f79cfc2c576bd81d36c64eba38e38cb0d9108033b5b0cc5c0d58",
+    "aws:asset:path": "asset.8ee9ff99c620017b35f5c45bb8531a165d87dad767087eee8415e1e332155397",
     "aws:asset:is-bundled": true,
     "aws:asset:property": "Code"
    }
@@ -10242,6 +10533,13 @@
        "Resource": "*"
       },
       {
+       "Action": "lambda:InvokeFunction",
+       "Effect": "Allow",
+       "Resource": {
+        "Fn::ImportValue": "TodaysDentalInsightsPushN1:ExportsOutputFnGetAttSendPushFnB8AEA016Arn02900E0D"
+       }
+      },
+      {
        "Action": [
         "sqs:SendMessage",
         "sqs:GetQueueAttributes",
@@ -10274,7 +10572,7 @@
    "Properties": {
     "Code": {
      "S3Bucket": "cdk-tdi3-assets-851620242036-us-east-1",
-     "S3Key": "adebdc6f277a344148fb4a89bb72fa885a918b1ce318e1931dbd389de67a6463.zip"
+     "S3Key": "970e2bc9aa0c5abb4d5724ea47e732f146f9d3ffc900d466dc1629131455eae2.zip"
     },
     "Environment": {
      "Variables": {
@@ -10488,6 +10786,9 @@
       "JWT_SECRET": "8f3a2b9c7d1e5f6a4b3c8d9e2f1a7b5c9d4e3f2a1b6c7d8e9f3a2b1c4d5e6f7a8b9c1d2e3f4a5b6c7d8e9f",
       "AWS_XRAY_TRACING_ENABLED": "true",
       "AWS_XRAY_CONTEXT_MISSING": "LOG_ERROR",
+      "SEND_PUSH_FUNCTION_ARN": {
+       "Fn::ImportValue": "TodaysDentalInsightsPushN1:ExportsOutputFnGetAttSendPushFnB8AEA016Arn02900E0D"
+      },
       "COMPENSATING_ACTIONS_QUEUE_URL": {
        "Ref": "CompensatingActionsQueueFEC7FDD7"
       }
@@ -10524,7 +10825,7 @@
    ],
    "Metadata": {
     "aws:cdk:path": "TodaysDentalInsightsChimeN1/HoldCallFn/Resource",
-    "aws:asset:path": "asset.adebdc6f277a344148fb4a89bb72fa885a918b1ce318e1931dbd389de67a6463",
+    "aws:asset:path": "asset.970e2bc9aa0c5abb4d5724ea47e732f146f9d3ffc900d466dc1629131455eae2",
     "aws:asset:is-bundled": true,
     "aws:asset:property": "Code"
    }
@@ -10734,6 +11035,13 @@
        ],
        "Effect": "Allow",
        "Resource": "*"
+      },
+      {
+       "Action": "lambda:InvokeFunction",
+       "Effect": "Allow",
+       "Resource": {
+        "Fn::ImportValue": "TodaysDentalInsightsPushN1:ExportsOutputFnGetAttSendPushFnB8AEA016Arn02900E0D"
+       }
       }
      ],
      "Version": "2012-10-17"
@@ -10754,7 +11062,7 @@
    "Properties": {
     "Code": {
      "S3Bucket": "cdk-tdi3-assets-851620242036-us-east-1",
-     "S3Key": "c7eb3f042e12c490ff05ce4168e9fff9421b1a56a74f50dd65c50812ba82168c.zip"
+     "S3Key": "457e4ae958f154c453e078c2a4884db4cbee24dd210b923f820e9c4f1df43150.zip"
     },
     "Environment": {
      "Variables": {
@@ -10967,7 +11275,10 @@
       "CHIME_MEDIA_REGION": "us-east-1",
       "JWT_SECRET": "8f3a2b9c7d1e5f6a4b3c8d9e2f1a7b5c9d4e3f2a1b6c7d8e9f3a2b1c4d5e6f7a8b9c1d2e3f4a5b6c7d8e9f",
       "AWS_XRAY_TRACING_ENABLED": "true",
-      "AWS_XRAY_CONTEXT_MISSING": "LOG_ERROR"
+      "AWS_XRAY_CONTEXT_MISSING": "LOG_ERROR",
+      "SEND_PUSH_FUNCTION_ARN": {
+       "Fn::ImportValue": "TodaysDentalInsightsPushN1:ExportsOutputFnGetAttSendPushFnB8AEA016Arn02900E0D"
+      }
      }
     },
     "FunctionName": "TodaysDentalInsightsChimeN1-ResumeCall",
@@ -11001,7 +11312,7 @@
    ],
    "Metadata": {
     "aws:cdk:path": "TodaysDentalInsightsChimeN1/ResumeCallFn/Resource",
-    "aws:asset:path": "asset.c7eb3f042e12c490ff05ce4168e9fff9421b1a56a74f50dd65c50812ba82168c",
+    "aws:asset:path": "asset.457e4ae958f154c453e078c2a4884db4cbee24dd210b923f820e9c4f1df43150",
     "aws:asset:is-bundled": true,
     "aws:asset:property": "Code"
    }
@@ -11238,7 +11549,7 @@
    "Properties": {
     "Code": {
      "S3Bucket": "cdk-tdi3-assets-851620242036-us-east-1",
-     "S3Key": "6393f25e9281db1de70a181b6eb504fb20569a3d72290fe242001fea6ff42cdf.zip"
+     "S3Key": "882cd059c9fb589d1ddc70404b5b3466789fe478ab1c1d626d47c558f4ad21fd.zip"
     },
     "Environment": {
      "Variables": {
@@ -11485,7 +11796,7 @@
    ],
    "Metadata": {
     "aws:cdk:path": "TodaysDentalInsightsChimeN1/AddCallFn/Resource",
-    "aws:asset:path": "asset.6393f25e9281db1de70a181b6eb504fb20569a3d72290fe242001fea6ff42cdf",
+    "aws:asset:path": "asset.882cd059c9fb589d1ddc70404b5b3466789fe478ab1c1d626d47c558f4ad21fd",
     "aws:asset:is-bundled": true,
     "aws:asset:property": "Code"
    }
@@ -11661,7 +11972,7 @@
    "Properties": {
     "Code": {
      "S3Bucket": "cdk-tdi3-assets-851620242036-us-east-1",
-     "S3Key": "1e220e6ea8dec603660a4d473f9219e79e19339800a029d33b62b47b2e2ba0ac.zip"
+     "S3Key": "a8a69e08e0175cc1cf371171c1b28fac69decfd717bdd775201255d8de10efba.zip"
     },
     "Environment": {
      "Variables": {
@@ -11905,7 +12216,7 @@
    ],
    "Metadata": {
     "aws:cdk:path": "TodaysDentalInsightsChimeN1/SendDtmfFn/Resource",
-    "aws:asset:path": "asset.1e220e6ea8dec603660a4d473f9219e79e19339800a029d33b62b47b2e2ba0ac",
+    "aws:asset:path": "asset.a8a69e08e0175cc1cf371171c1b28fac69decfd717bdd775201255d8de10efba",
     "aws:asset:is-bundled": true,
     "aws:asset:property": "Code"
    }
@@ -12073,7 +12384,7 @@
    "Properties": {
     "Code": {
      "S3Bucket": "cdk-tdi3-assets-851620242036-us-east-1",
-     "S3Key": "4229fcdf6b8f6bf20bcb750dc7fa9ade70a786686e090ea8a869c2fe414617b8.zip"
+     "S3Key": "e45134cfc92a9b0645fa0a7eab68eced830a1c785134f61adb2a29ea43e820e1.zip"
     },
     "Environment": {
      "Variables": {
@@ -12119,7 +12430,7 @@
    ],
    "Metadata": {
     "aws:cdk:path": "TodaysDentalInsightsChimeN1/CallNotesFn/Resource",
-    "aws:asset:path": "asset.4229fcdf6b8f6bf20bcb750dc7fa9ade70a786686e090ea8a869c2fe414617b8",
+    "aws:asset:path": "asset.e45134cfc92a9b0645fa0a7eab68eced830a1c785134f61adb2a29ea43e820e1",
     "aws:asset:is-bundled": true,
     "aws:asset:property": "Code"
    }
@@ -12301,6 +12612,13 @@
        ],
        "Effect": "Allow",
        "Resource": "*"
+      },
+      {
+       "Action": "lambda:InvokeFunction",
+       "Effect": "Allow",
+       "Resource": {
+        "Fn::ImportValue": "TodaysDentalInsightsPushN1:ExportsOutputFnGetAttSendPushFnB8AEA016Arn02900E0D"
+       }
       }
      ],
      "Version": "2012-10-17"
@@ -12321,7 +12639,7 @@
    "Properties": {
     "Code": {
      "S3Bucket": "cdk-tdi3-assets-851620242036-us-east-1",
-     "S3Key": "73c546ef474652449eb17812992ba365d9fcc37909a24659452745ae3778da61.zip"
+     "S3Key": "21ad45e361f2ed74bfc3e320d000eebc53f38f87b49b48da08efc10a055fd9b1.zip"
     },
     "Environment": {
      "Variables": {
@@ -12531,7 +12849,10 @@
       "CHIME_MEDIA_REGION": "us-east-1",
       "JWT_SECRET": "8f3a2b9c7d1e5f6a4b3c8d9e2f1a7b5c9d4e3f2a1b6c7d8e9f3a2b1c4d5e6f7a8b9c1d2e3f4a5b6c7d8e9f",
       "AWS_XRAY_TRACING_ENABLED": "true",
-      "AWS_XRAY_CONTEXT_MISSING": "LOG_ERROR"
+      "AWS_XRAY_CONTEXT_MISSING": "LOG_ERROR",
+      "SEND_PUSH_FUNCTION_ARN": {
+       "Fn::ImportValue": "TodaysDentalInsightsPushN1:ExportsOutputFnGetAttSendPushFnB8AEA016Arn02900E0D"
+      }
      }
     },
     "FunctionName": "TodaysDentalInsightsChimeN1-ConferenceCall",
@@ -12565,7 +12886,7 @@
    ],
    "Metadata": {
     "aws:cdk:path": "TodaysDentalInsightsChimeN1/ConferenceCallFn/Resource",
-    "aws:asset:path": "asset.73c546ef474652449eb17812992ba365d9fcc37909a24659452745ae3778da61",
+    "aws:asset:path": "asset.21ad45e361f2ed74bfc3e320d000eebc53f38f87b49b48da08efc10a055fd9b1",
     "aws:asset:is-bundled": true,
     "aws:asset:property": "Code"
    }
@@ -12755,6 +13076,69 @@
        "Resource": [
         {
          "Fn::GetAtt": [
+          "AgentActiveTableB8509493",
+          "Arn"
+         ]
+        },
+        {
+         "Fn::Join": [
+          "",
+          [
+           {
+            "Fn::GetAtt": [
+             "AgentActiveTableB8509493",
+             "Arn"
+            ]
+           },
+           "/index/*"
+          ]
+         ]
+        }
+       ]
+      },
+      {
+       "Action": [
+        "dynamodb:BatchGetItem",
+        "dynamodb:GetRecords",
+        "dynamodb:GetShardIterator",
+        "dynamodb:Query",
+        "dynamodb:GetItem",
+        "dynamodb:Scan",
+        "dynamodb:ConditionCheckItem",
+        "dynamodb:BatchWriteItem",
+        "dynamodb:PutItem",
+        "dynamodb:UpdateItem",
+        "dynamodb:DeleteItem",
+        "dynamodb:DescribeTable"
+       ],
+       "Effect": "Allow",
+       "Resource": [
+        {
+         "Fn::GetAtt": [
+          "LocksTable0C14848D",
+          "Arn"
+         ]
+        },
+        {
+         "Ref": "AWS::NoValue"
+        }
+       ]
+      },
+      {
+       "Action": [
+        "dynamodb:BatchGetItem",
+        "dynamodb:GetRecords",
+        "dynamodb:GetShardIterator",
+        "dynamodb:Query",
+        "dynamodb:GetItem",
+        "dynamodb:Scan",
+        "dynamodb:ConditionCheckItem",
+        "dynamodb:DescribeTable"
+       ],
+       "Effect": "Allow",
+       "Resource": [
+        {
+         "Fn::GetAtt": [
           "ClinicsTable4477ED9E",
           "Arn"
          ]
@@ -12782,6 +13166,13 @@
        ],
        "Effect": "Allow",
        "Resource": "*"
+      },
+      {
+       "Action": "lambda:InvokeFunction",
+       "Effect": "Allow",
+       "Resource": {
+        "Fn::ImportValue": "TodaysDentalInsightsPushN1:ExportsOutputFnGetAttSendPushFnB8AEA016Arn02900E0D"
+       }
       }
      ],
      "Version": "2012-10-17"
@@ -12802,7 +13193,7 @@
    "Properties": {
     "Code": {
      "S3Bucket": "cdk-tdi3-assets-851620242036-us-east-1",
-     "S3Key": "4913e2682308b390b4d1710a2d5d7e29aec6918dd3b000559aca98b005289810.zip"
+     "S3Key": "da5d5ee7dcf3ff9e04d5767e86df5c6ef389b1e8c50a2404958e0fbfcc0e1df4.zip"
     },
     "Environment": {
      "Variables": {
@@ -12812,13 +13203,22 @@
       "AGENT_PRESENCE_TABLE_NAME": {
        "Ref": "AgentPresenceTable3B930FDB"
       },
+      "AGENT_ACTIVE_TABLE_NAME": {
+       "Ref": "AgentActiveTableB8509493"
+      },
+      "LOCKS_TABLE_NAME": {
+       "Ref": "LocksTable0C14848D"
+      },
       "CLINICS_TABLE_NAME": {
        "Ref": "ClinicsTable4477ED9E"
       },
       "CHIME_MEDIA_REGION": "us-east-1",
       "JWT_SECRET": "8f3a2b9c7d1e5f6a4b3c8d9e2f1a7b5c9d4e3f2a1b6c7d8e9f3a2b1c4d5e6f7a8b9c1d2e3f4a5b6c7d8e9f",
       "AWS_XRAY_TRACING_ENABLED": "true",
-      "AWS_XRAY_CONTEXT_MISSING": "LOG_ERROR"
+      "AWS_XRAY_CONTEXT_MISSING": "LOG_ERROR",
+      "SEND_PUSH_FUNCTION_ARN": {
+       "Fn::ImportValue": "TodaysDentalInsightsPushN1:ExportsOutputFnGetAttSendPushFnB8AEA016Arn02900E0D"
+      }
      }
     },
     "FunctionName": "TodaysDentalInsightsChimeN1-JoinQueuedCall",
@@ -12852,7 +13252,7 @@
    ],
    "Metadata": {
     "aws:cdk:path": "TodaysDentalInsightsChimeN1/JoinQueuedCallFn/Resource",
-    "aws:asset:path": "asset.4913e2682308b390b4d1710a2d5d7e29aec6918dd3b000559aca98b005289810",
+    "aws:asset:path": "asset.da5d5ee7dcf3ff9e04d5767e86df5c6ef389b1e8c50a2404958e0fbfcc0e1df4",
     "aws:asset:is-bundled": true,
     "aws:asset:property": "Code"
    }
@@ -13074,7 +13474,7 @@
    "Properties": {
     "Code": {
      "S3Bucket": "cdk-tdi3-assets-851620242036-us-east-1",
-     "S3Key": "8a06951f0a1c88b0120320f7a01d47bb0e7966adaf4f782e9b2c46ddbb82ff66.zip"
+     "S3Key": "f217c53a82a835793e818e28aaf5b8395bf407956911901203894e9ec471cc7a.zip"
     },
     "Environment": {
      "Variables": {
@@ -13124,7 +13524,7 @@
    ],
    "Metadata": {
     "aws:cdk:path": "TodaysDentalInsightsChimeN1/JoinActiveCallFn/Resource",
-    "aws:asset:path": "asset.8a06951f0a1c88b0120320f7a01d47bb0e7966adaf4f782e9b2c46ddbb82ff66",
+    "aws:asset:path": "asset.f217c53a82a835793e818e28aaf5b8395bf407956911901203894e9ec471cc7a",
     "aws:asset:is-bundled": true,
     "aws:asset:property": "Code"
    }
@@ -13288,7 +13688,7 @@
    "Properties": {
     "Code": {
      "S3Bucket": "cdk-tdi3-assets-851620242036-us-east-1",
-     "S3Key": "14d515a9e7bea6f5b8a25eb14470a8372c48224bcc86ffc96294d1ff759a1ace.zip"
+     "S3Key": "e4e18ecfff629390dffc53aa6326e9e683a0a1df5923586579b241d473f98f09.zip"
     },
     "Environment": {
      "Variables": {
@@ -13334,7 +13734,7 @@
    ],
    "Metadata": {
     "aws:cdk:path": "TodaysDentalInsightsChimeN1/GetJoinableCallsFn/Resource",
-    "aws:asset:path": "asset.14d515a9e7bea6f5b8a25eb14470a8372c48224bcc86ffc96294d1ff759a1ace",
+    "aws:asset:path": "asset.e4e18ecfff629390dffc53aa6326e9e683a0a1df5923586579b241d473f98f09",
     "aws:asset:is-bundled": true,
     "aws:asset:property": "Code"
    }
@@ -13354,6 +13754,2017 @@
    },
    "Metadata": {
     "aws:cdk:path": "TodaysDentalInsightsChimeN1/GetJoinableCallsFn/AdminApiInvokeGetJoinableCalls"
+   }
+  },
+  "SupervisorSessionsTableF2E8C002": {
+   "Type": "AWS::DynamoDB::Table",
+   "Properties": {
+    "AttributeDefinitions": [
+     {
+      "AttributeName": "sessionId",
+      "AttributeType": "S"
+     },
+     {
+      "AttributeName": "supervisorId",
+      "AttributeType": "S"
+     },
+     {
+      "AttributeName": "startedAt",
+      "AttributeType": "S"
+     }
+    ],
+    "BillingMode": "PAY_PER_REQUEST",
+    "GlobalSecondaryIndexes": [
+     {
+      "IndexName": "supervisorId-index",
+      "KeySchema": [
+       {
+        "AttributeName": "supervisorId",
+        "KeyType": "HASH"
+       },
+       {
+        "AttributeName": "startedAt",
+        "KeyType": "RANGE"
+       }
+      ],
+      "Projection": {
+       "ProjectionType": "ALL"
+      }
+     }
+    ],
+    "KeySchema": [
+     {
+      "AttributeName": "sessionId",
+      "KeyType": "HASH"
+     }
+    ],
+    "PointInTimeRecoverySpecification": {
+     "PointInTimeRecoveryEnabled": true
+    },
+    "TableName": "TodaysDentalInsightsChimeN1-SupervisorSessions",
+    "Tags": [
+     {
+      "Key": "ManagedBy",
+      "Value": "cdk"
+     },
+     {
+      "Key": "Service",
+      "Value": "Chime"
+     },
+     {
+      "Key": "Stack",
+      "Value": "TodaysDentalInsightsChimeN1"
+     },
+     {
+      "Key": "Table",
+      "Value": "supervisor-sessions"
+     }
+    ],
+    "TimeToLiveSpecification": {
+     "AttributeName": "ttl",
+     "Enabled": true
+    }
+   },
+   "UpdateReplacePolicy": "Delete",
+   "DeletionPolicy": "Delete",
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsChimeN1/SupervisorSessionsTable/Resource"
+   }
+  },
+  "SupervisorLiveCallsFnServiceRole78CA85C8": {
+   "Type": "AWS::IAM::Role",
+   "Properties": {
+    "AssumeRolePolicyDocument": {
+     "Statement": [
+      {
+       "Action": "sts:AssumeRole",
+       "Effect": "Allow",
+       "Principal": {
+        "Service": "lambda.amazonaws.com"
+       }
+      }
+     ],
+     "Version": "2012-10-17"
+    },
+    "ManagedPolicyArns": [
+     {
+      "Fn::Join": [
+       "",
+       [
+        "arn:",
+        {
+         "Ref": "AWS::Partition"
+        },
+        ":iam::aws:policy/service-role/AWSLambdaBasicExecutionRole"
+       ]
+      ]
+     }
+    ],
+    "Tags": [
+     {
+      "Key": "ManagedBy",
+      "Value": "cdk"
+     },
+     {
+      "Key": "Service",
+      "Value": "Chime"
+     },
+     {
+      "Key": "Stack",
+      "Value": "TodaysDentalInsightsChimeN1"
+     }
+    ]
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsChimeN1/SupervisorLiveCallsFn/ServiceRole/Resource"
+   }
+  },
+  "SupervisorLiveCallsFnServiceRoleDefaultPolicy063100C3": {
+   "Type": "AWS::IAM::Policy",
+   "Properties": {
+    "PolicyDocument": {
+     "Statement": [
+      {
+       "Action": [
+        "dynamodb:BatchGetItem",
+        "dynamodb:GetRecords",
+        "dynamodb:GetShardIterator",
+        "dynamodb:Query",
+        "dynamodb:GetItem",
+        "dynamodb:Scan",
+        "dynamodb:ConditionCheckItem",
+        "dynamodb:DescribeTable"
+       ],
+       "Effect": "Allow",
+       "Resource": [
+        {
+         "Fn::GetAtt": [
+          "CallQueueTable65E48E45",
+          "Arn"
+         ]
+        },
+        {
+         "Fn::Join": [
+          "",
+          [
+           {
+            "Fn::GetAtt": [
+             "CallQueueTable65E48E45",
+             "Arn"
+            ]
+           },
+           "/index/*"
+          ]
+         ]
+        }
+       ]
+      },
+      {
+       "Action": [
+        "dynamodb:BatchGetItem",
+        "dynamodb:GetRecords",
+        "dynamodb:GetShardIterator",
+        "dynamodb:Query",
+        "dynamodb:GetItem",
+        "dynamodb:Scan",
+        "dynamodb:ConditionCheckItem",
+        "dynamodb:DescribeTable"
+       ],
+       "Effect": "Allow",
+       "Resource": [
+        {
+         "Fn::GetAtt": [
+          "AgentPresenceTable3B930FDB",
+          "Arn"
+         ]
+        },
+        {
+         "Fn::Join": [
+          "",
+          [
+           {
+            "Fn::GetAtt": [
+             "AgentPresenceTable3B930FDB",
+             "Arn"
+            ]
+           },
+           "/index/*"
+          ]
+         ]
+        }
+       ]
+      }
+     ],
+     "Version": "2012-10-17"
+    },
+    "PolicyName": "SupervisorLiveCallsFnServiceRoleDefaultPolicy063100C3",
+    "Roles": [
+     {
+      "Ref": "SupervisorLiveCallsFnServiceRole78CA85C8"
+     }
+    ]
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsChimeN1/SupervisorLiveCallsFn/ServiceRole/DefaultPolicy/Resource"
+   }
+  },
+  "SupervisorLiveCallsFnBA69322A": {
+   "Type": "AWS::Lambda::Function",
+   "Properties": {
+    "Code": {
+     "S3Bucket": "cdk-tdi3-assets-851620242036-us-east-1",
+     "S3Key": "188bd4194256b1f49c2bcfeb1d25f258d9424efa6d36af50a593e212a09d3c4e.zip"
+    },
+    "Environment": {
+     "Variables": {
+      "CALL_QUEUE_TABLE_NAME": {
+       "Ref": "CallQueueTable65E48E45"
+      },
+      "AGENT_PRESENCE_TABLE_NAME": {
+       "Ref": "AgentPresenceTable3B930FDB"
+      },
+      "JWT_SECRET": "8f3a2b9c7d1e5f6a4b3c8d9e2f1a7b5c9d4e3f2a1b6c7d8e9f3a2b1c4d5e6f7a8b9c1d2e3f4a5b6c7d8e9f",
+      "AWS_XRAY_TRACING_ENABLED": "true",
+      "AWS_XRAY_CONTEXT_MISSING": "LOG_ERROR"
+     }
+    },
+    "FunctionName": "TodaysDentalInsightsChimeN1-SupervisorLiveCalls",
+    "Handler": "index.handler",
+    "Role": {
+     "Fn::GetAtt": [
+      "SupervisorLiveCallsFnServiceRole78CA85C8",
+      "Arn"
+     ]
+    },
+    "Runtime": "nodejs20.x",
+    "Tags": [
+     {
+      "Key": "ManagedBy",
+      "Value": "cdk"
+     },
+     {
+      "Key": "Service",
+      "Value": "Chime"
+     },
+     {
+      "Key": "Stack",
+      "Value": "TodaysDentalInsightsChimeN1"
+     }
+    ],
+    "Timeout": 15
+   },
+   "DependsOn": [
+    "SupervisorLiveCallsFnServiceRoleDefaultPolicy063100C3",
+    "SupervisorLiveCallsFnServiceRole78CA85C8"
+   ],
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsChimeN1/SupervisorLiveCallsFn/Resource",
+    "aws:asset:path": "asset.188bd4194256b1f49c2bcfeb1d25f258d9424efa6d36af50a593e212a09d3c4e",
+    "aws:asset:is-bundled": true,
+    "aws:asset:property": "Code"
+   }
+  },
+  "SupervisorLiveCallsFnAdminApiInvokeSupervisorLiveCalls9F6BD293": {
+   "Type": "AWS::Lambda::Permission",
+   "Properties": {
+    "Action": "lambda:InvokeFunction",
+    "FunctionName": {
+     "Fn::GetAtt": [
+      "SupervisorLiveCallsFnBA69322A",
+      "Arn"
+     ]
+    },
+    "Principal": "apigateway.amazonaws.com",
+    "SourceArn": "arn:aws:execute-api:us-east-1:851620242036:*/*/*"
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsChimeN1/SupervisorLiveCallsFn/AdminApiInvokeSupervisorLiveCalls"
+   }
+  },
+  "SupervisorMonitorFnServiceRole544055F9": {
+   "Type": "AWS::IAM::Role",
+   "Properties": {
+    "AssumeRolePolicyDocument": {
+     "Statement": [
+      {
+       "Action": "sts:AssumeRole",
+       "Effect": "Allow",
+       "Principal": {
+        "Service": "lambda.amazonaws.com"
+       }
+      }
+     ],
+     "Version": "2012-10-17"
+    },
+    "ManagedPolicyArns": [
+     {
+      "Fn::Join": [
+       "",
+       [
+        "arn:",
+        {
+         "Ref": "AWS::Partition"
+        },
+        ":iam::aws:policy/service-role/AWSLambdaBasicExecutionRole"
+       ]
+      ]
+     }
+    ],
+    "Tags": [
+     {
+      "Key": "ManagedBy",
+      "Value": "cdk"
+     },
+     {
+      "Key": "Service",
+      "Value": "Chime"
+     },
+     {
+      "Key": "Stack",
+      "Value": "TodaysDentalInsightsChimeN1"
+     }
+    ]
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsChimeN1/SupervisorMonitorFn/ServiceRole/Resource"
+   }
+  },
+  "SupervisorMonitorFnServiceRoleDefaultPolicy68B60901": {
+   "Type": "AWS::IAM::Policy",
+   "Properties": {
+    "PolicyDocument": {
+     "Statement": [
+      {
+       "Action": [
+        "dynamodb:BatchGetItem",
+        "dynamodb:GetRecords",
+        "dynamodb:GetShardIterator",
+        "dynamodb:Query",
+        "dynamodb:GetItem",
+        "dynamodb:Scan",
+        "dynamodb:ConditionCheckItem",
+        "dynamodb:BatchWriteItem",
+        "dynamodb:PutItem",
+        "dynamodb:UpdateItem",
+        "dynamodb:DeleteItem",
+        "dynamodb:DescribeTable"
+       ],
+       "Effect": "Allow",
+       "Resource": [
+        {
+         "Fn::GetAtt": [
+          "CallQueueTable65E48E45",
+          "Arn"
+         ]
+        },
+        {
+         "Fn::Join": [
+          "",
+          [
+           {
+            "Fn::GetAtt": [
+             "CallQueueTable65E48E45",
+             "Arn"
+            ]
+           },
+           "/index/*"
+          ]
+         ]
+        }
+       ]
+      },
+      {
+       "Action": [
+        "dynamodb:BatchGetItem",
+        "dynamodb:GetRecords",
+        "dynamodb:GetShardIterator",
+        "dynamodb:Query",
+        "dynamodb:GetItem",
+        "dynamodb:Scan",
+        "dynamodb:ConditionCheckItem",
+        "dynamodb:BatchWriteItem",
+        "dynamodb:PutItem",
+        "dynamodb:UpdateItem",
+        "dynamodb:DeleteItem",
+        "dynamodb:DescribeTable"
+       ],
+       "Effect": "Allow",
+       "Resource": [
+        {
+         "Fn::GetAtt": [
+          "SupervisorSessionsTableF2E8C002",
+          "Arn"
+         ]
+        },
+        {
+         "Fn::Join": [
+          "",
+          [
+           {
+            "Fn::GetAtt": [
+             "SupervisorSessionsTableF2E8C002",
+             "Arn"
+            ]
+           },
+           "/index/*"
+          ]
+         ]
+        }
+       ]
+      },
+      {
+       "Action": [
+        "chime:CreateMeeting",
+        "chime:CreateAttendee",
+        "chime:DeleteMeeting",
+        "chime:GetMeeting",
+        "chime:ListAttendees",
+        "chime:DeleteAttendee",
+        "chime:StartMeetingTranscription",
+        "chime:StopMeetingTranscription",
+        "chime-sdk-meetings:CreateMeeting",
+        "chime-sdk-meetings:CreateAttendee",
+        "chime-sdk-meetings:DeleteMeeting",
+        "chime-sdk-meetings:GetMeeting",
+        "chime-sdk-meetings:ListAttendees",
+        "chime-sdk-meetings:DeleteAttendee",
+        "chime-sdk-meetings:StartMeetingTranscription",
+        "chime-sdk-meetings:StopMeetingTranscription"
+       ],
+       "Effect": "Allow",
+       "Resource": "*"
+      }
+     ],
+     "Version": "2012-10-17"
+    },
+    "PolicyName": "SupervisorMonitorFnServiceRoleDefaultPolicy68B60901",
+    "Roles": [
+     {
+      "Ref": "SupervisorMonitorFnServiceRole544055F9"
+     }
+    ]
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsChimeN1/SupervisorMonitorFn/ServiceRole/DefaultPolicy/Resource"
+   }
+  },
+  "SupervisorMonitorFn94A08B3D": {
+   "Type": "AWS::Lambda::Function",
+   "Properties": {
+    "Code": {
+     "S3Bucket": "cdk-tdi3-assets-851620242036-us-east-1",
+     "S3Key": "91d946bdc75a3ba32b62b4bd55467284660eb0eef8b2c86ea6c4ed29ed207089.zip"
+    },
+    "Environment": {
+     "Variables": {
+      "CALL_QUEUE_TABLE_NAME": {
+       "Ref": "CallQueueTable65E48E45"
+      },
+      "SUPERVISOR_SESSIONS_TABLE_NAME": {
+       "Ref": "SupervisorSessionsTableF2E8C002"
+      },
+      "CHIME_MEDIA_REGION": "us-east-1",
+      "JWT_SECRET": "8f3a2b9c7d1e5f6a4b3c8d9e2f1a7b5c9d4e3f2a1b6c7d8e9f3a2b1c4d5e6f7a8b9c1d2e3f4a5b6c7d8e9f",
+      "AWS_XRAY_TRACING_ENABLED": "true",
+      "AWS_XRAY_CONTEXT_MISSING": "LOG_ERROR"
+     }
+    },
+    "FunctionName": "TodaysDentalInsightsChimeN1-SupervisorMonitor",
+    "Handler": "index.handler",
+    "Role": {
+     "Fn::GetAtt": [
+      "SupervisorMonitorFnServiceRole544055F9",
+      "Arn"
+     ]
+    },
+    "Runtime": "nodejs20.x",
+    "Tags": [
+     {
+      "Key": "ManagedBy",
+      "Value": "cdk"
+     },
+     {
+      "Key": "Service",
+      "Value": "Chime"
+     },
+     {
+      "Key": "Stack",
+      "Value": "TodaysDentalInsightsChimeN1"
+     }
+    ],
+    "Timeout": 15
+   },
+   "DependsOn": [
+    "SupervisorMonitorFnServiceRoleDefaultPolicy68B60901",
+    "SupervisorMonitorFnServiceRole544055F9"
+   ],
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsChimeN1/SupervisorMonitorFn/Resource",
+    "aws:asset:path": "asset.91d946bdc75a3ba32b62b4bd55467284660eb0eef8b2c86ea6c4ed29ed207089",
+    "aws:asset:is-bundled": true,
+    "aws:asset:property": "Code"
+   }
+  },
+  "SupervisorMonitorFnAdminApiInvokeSupervisorMonitor7B495A3B": {
+   "Type": "AWS::Lambda::Permission",
+   "Properties": {
+    "Action": "lambda:InvokeFunction",
+    "FunctionName": {
+     "Fn::GetAtt": [
+      "SupervisorMonitorFn94A08B3D",
+      "Arn"
+     ]
+    },
+    "Principal": "apigateway.amazonaws.com",
+    "SourceArn": "arn:aws:execute-api:us-east-1:851620242036:*/*/*"
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsChimeN1/SupervisorMonitorFn/AdminApiInvokeSupervisorMonitor"
+   }
+  },
+  "SupervisorWhisperFnServiceRoleDED9F6DE": {
+   "Type": "AWS::IAM::Role",
+   "Properties": {
+    "AssumeRolePolicyDocument": {
+     "Statement": [
+      {
+       "Action": "sts:AssumeRole",
+       "Effect": "Allow",
+       "Principal": {
+        "Service": "lambda.amazonaws.com"
+       }
+      }
+     ],
+     "Version": "2012-10-17"
+    },
+    "ManagedPolicyArns": [
+     {
+      "Fn::Join": [
+       "",
+       [
+        "arn:",
+        {
+         "Ref": "AWS::Partition"
+        },
+        ":iam::aws:policy/service-role/AWSLambdaBasicExecutionRole"
+       ]
+      ]
+     }
+    ],
+    "Tags": [
+     {
+      "Key": "ManagedBy",
+      "Value": "cdk"
+     },
+     {
+      "Key": "Service",
+      "Value": "Chime"
+     },
+     {
+      "Key": "Stack",
+      "Value": "TodaysDentalInsightsChimeN1"
+     }
+    ]
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsChimeN1/SupervisorWhisperFn/ServiceRole/Resource"
+   }
+  },
+  "SupervisorWhisperFnServiceRoleDefaultPolicyE419B836": {
+   "Type": "AWS::IAM::Policy",
+   "Properties": {
+    "PolicyDocument": {
+     "Statement": [
+      {
+       "Action": [
+        "dynamodb:BatchGetItem",
+        "dynamodb:GetRecords",
+        "dynamodb:GetShardIterator",
+        "dynamodb:Query",
+        "dynamodb:GetItem",
+        "dynamodb:Scan",
+        "dynamodb:ConditionCheckItem",
+        "dynamodb:BatchWriteItem",
+        "dynamodb:PutItem",
+        "dynamodb:UpdateItem",
+        "dynamodb:DeleteItem",
+        "dynamodb:DescribeTable"
+       ],
+       "Effect": "Allow",
+       "Resource": [
+        {
+         "Fn::GetAtt": [
+          "AgentPresenceTable3B930FDB",
+          "Arn"
+         ]
+        },
+        {
+         "Fn::Join": [
+          "",
+          [
+           {
+            "Fn::GetAtt": [
+             "AgentPresenceTable3B930FDB",
+             "Arn"
+            ]
+           },
+           "/index/*"
+          ]
+         ]
+        }
+       ]
+      }
+     ],
+     "Version": "2012-10-17"
+    },
+    "PolicyName": "SupervisorWhisperFnServiceRoleDefaultPolicyE419B836",
+    "Roles": [
+     {
+      "Ref": "SupervisorWhisperFnServiceRoleDED9F6DE"
+     }
+    ]
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsChimeN1/SupervisorWhisperFn/ServiceRole/DefaultPolicy/Resource"
+   }
+  },
+  "SupervisorWhisperFn6BAEE1AA": {
+   "Type": "AWS::Lambda::Function",
+   "Properties": {
+    "Code": {
+     "S3Bucket": "cdk-tdi3-assets-851620242036-us-east-1",
+     "S3Key": "ee2c1e7aa9e2937d137bedd8d43e18ded0f56fd637c835ca0948473d8bf4b974.zip"
+    },
+    "Environment": {
+     "Variables": {
+      "AGENT_PRESENCE_TABLE_NAME": {
+       "Ref": "AgentPresenceTable3B930FDB"
+      },
+      "JWT_SECRET": "8f3a2b9c7d1e5f6a4b3c8d9e2f1a7b5c9d4e3f2a1b6c7d8e9f3a2b1c4d5e6f7a8b9c1d2e3f4a5b6c7d8e9f",
+      "AWS_XRAY_TRACING_ENABLED": "true",
+      "AWS_XRAY_CONTEXT_MISSING": "LOG_ERROR"
+     }
+    },
+    "FunctionName": "TodaysDentalInsightsChimeN1-SupervisorWhisper",
+    "Handler": "index.handler",
+    "Role": {
+     "Fn::GetAtt": [
+      "SupervisorWhisperFnServiceRoleDED9F6DE",
+      "Arn"
+     ]
+    },
+    "Runtime": "nodejs20.x",
+    "Tags": [
+     {
+      "Key": "ManagedBy",
+      "Value": "cdk"
+     },
+     {
+      "Key": "Service",
+      "Value": "Chime"
+     },
+     {
+      "Key": "Stack",
+      "Value": "TodaysDentalInsightsChimeN1"
+     }
+    ],
+    "Timeout": 10
+   },
+   "DependsOn": [
+    "SupervisorWhisperFnServiceRoleDefaultPolicyE419B836",
+    "SupervisorWhisperFnServiceRoleDED9F6DE"
+   ],
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsChimeN1/SupervisorWhisperFn/Resource",
+    "aws:asset:path": "asset.ee2c1e7aa9e2937d137bedd8d43e18ded0f56fd637c835ca0948473d8bf4b974",
+    "aws:asset:is-bundled": true,
+    "aws:asset:property": "Code"
+   }
+  },
+  "SupervisorWhisperFnAdminApiInvokeSupervisorWhisperF1C654A5": {
+   "Type": "AWS::Lambda::Permission",
+   "Properties": {
+    "Action": "lambda:InvokeFunction",
+    "FunctionName": {
+     "Fn::GetAtt": [
+      "SupervisorWhisperFn6BAEE1AA",
+      "Arn"
+     ]
+    },
+    "Principal": "apigateway.amazonaws.com",
+    "SourceArn": "arn:aws:execute-api:us-east-1:851620242036:*/*/*"
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsChimeN1/SupervisorWhisperFn/AdminApiInvokeSupervisorWhisper"
+   }
+  },
+  "QueueMonitorFnServiceRole09E5A377": {
+   "Type": "AWS::IAM::Role",
+   "Properties": {
+    "AssumeRolePolicyDocument": {
+     "Statement": [
+      {
+       "Action": "sts:AssumeRole",
+       "Effect": "Allow",
+       "Principal": {
+        "Service": "lambda.amazonaws.com"
+       }
+      }
+     ],
+     "Version": "2012-10-17"
+    },
+    "ManagedPolicyArns": [
+     {
+      "Fn::Join": [
+       "",
+       [
+        "arn:",
+        {
+         "Ref": "AWS::Partition"
+        },
+        ":iam::aws:policy/service-role/AWSLambdaBasicExecutionRole"
+       ]
+      ]
+     }
+    ],
+    "Tags": [
+     {
+      "Key": "ManagedBy",
+      "Value": "cdk"
+     },
+     {
+      "Key": "Service",
+      "Value": "Chime"
+     },
+     {
+      "Key": "Stack",
+      "Value": "TodaysDentalInsightsChimeN1"
+     }
+    ]
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsChimeN1/QueueMonitorFn/ServiceRole/Resource"
+   }
+  },
+  "QueueMonitorFnServiceRoleDefaultPolicy05CB8E0A": {
+   "Type": "AWS::IAM::Policy",
+   "Properties": {
+    "PolicyDocument": {
+     "Statement": [
+      {
+       "Action": [
+        "dynamodb:BatchGetItem",
+        "dynamodb:GetRecords",
+        "dynamodb:GetShardIterator",
+        "dynamodb:Query",
+        "dynamodb:GetItem",
+        "dynamodb:Scan",
+        "dynamodb:ConditionCheckItem",
+        "dynamodb:BatchWriteItem",
+        "dynamodb:PutItem",
+        "dynamodb:UpdateItem",
+        "dynamodb:DeleteItem",
+        "dynamodb:DescribeTable"
+       ],
+       "Effect": "Allow",
+       "Resource": [
+        {
+         "Fn::GetAtt": [
+          "CallQueueTable65E48E45",
+          "Arn"
+         ]
+        },
+        {
+         "Fn::Join": [
+          "",
+          [
+           {
+            "Fn::GetAtt": [
+             "CallQueueTable65E48E45",
+             "Arn"
+            ]
+           },
+           "/index/*"
+          ]
+         ]
+        }
+       ]
+      },
+      {
+       "Action": [
+        "dynamodb:BatchGetItem",
+        "dynamodb:GetRecords",
+        "dynamodb:GetShardIterator",
+        "dynamodb:Query",
+        "dynamodb:GetItem",
+        "dynamodb:Scan",
+        "dynamodb:ConditionCheckItem",
+        "dynamodb:DescribeTable"
+       ],
+       "Effect": "Allow",
+       "Resource": [
+        {
+         "Fn::GetAtt": [
+          "ClinicsTable4477ED9E",
+          "Arn"
+         ]
+        },
+        {
+         "Fn::Join": [
+          "",
+          [
+           {
+            "Fn::GetAtt": [
+             "ClinicsTable4477ED9E",
+             "Arn"
+            ]
+           },
+           "/index/*"
+          ]
+         ]
+        }
+       ]
+      },
+      {
+       "Action": [
+        "chime:UpdateSipMediaApplicationCall",
+        "chime-sdk-voice:UpdateSipMediaApplicationCall"
+       ],
+       "Effect": "Allow",
+       "Resource": "*"
+      },
+      {
+       "Action": "lambda:InvokeFunction",
+       "Effect": "Allow",
+       "Resource": {
+        "Fn::ImportValue": "TodaysDentalInsightsPushN1:ExportsOutputFnGetAttSendPushFnB8AEA016Arn02900E0D"
+       }
+      },
+      {
+       "Action": "cloudwatch:PutMetricData",
+       "Effect": "Allow",
+       "Resource": "*"
+      }
+     ],
+     "Version": "2012-10-17"
+    },
+    "PolicyName": "QueueMonitorFnServiceRoleDefaultPolicy05CB8E0A",
+    "Roles": [
+     {
+      "Ref": "QueueMonitorFnServiceRole09E5A377"
+     }
+    ]
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsChimeN1/QueueMonitorFn/ServiceRole/DefaultPolicy/Resource"
+   }
+  },
+  "QueueMonitorFn305F82F2": {
+   "Type": "AWS::Lambda::Function",
+   "Properties": {
+    "Code": {
+     "S3Bucket": "cdk-tdi3-assets-851620242036-us-east-1",
+     "S3Key": "72b6a3b66d555b5b04d2a369163f86f7f987ec806f1b0ca0598cdbc707820cf3.zip"
+    },
+    "Environment": {
+     "Variables": {
+      "CALL_QUEUE_TABLE_NAME": {
+       "Ref": "CallQueueTable65E48E45"
+      },
+      "CLINICS_TABLE_NAME": {
+       "Ref": "ClinicsTable4477ED9E"
+      },
+      "CHIME_MEDIA_REGION": "us-east-1",
+      "SMA_ID_MAP": {
+       "Fn::Join": [
+        "",
+        [
+         "{\"dentistinnewbritain\":\"",
+         {
+          "Fn::GetAtt": [
+           "SipMediaAppdentistinnewbritain0C4E9E8D",
+           "SipMediaApplication.SipMediaApplicationId"
+          ]
+         },
+         "\",\"dentistingreenville\":\"",
+         {
+          "Fn::GetAtt": [
+           "SipMediaAppdentistingreenville78B324F2",
+           "SipMediaApplication.SipMediaApplicationId"
+          ]
+         },
+         "\",\"todaysdentalcayce\":\"",
+         {
+          "Fn::GetAtt": [
+           "SipMediaApptodaysdentalcayce7E4505D1",
+           "SipMediaApplication.SipMediaApplicationId"
+          ]
+         },
+         "\",\"creekcrossingdentalcare\":\"",
+         {
+          "Fn::GetAtt": [
+           "SipMediaAppcreekcrossingdentalcareEC000727",
+           "SipMediaApplication.SipMediaApplicationId"
+          ]
+         },
+         "\",\"dentistinwinston-salem\":\"",
+         {
+          "Fn::GetAtt": [
+           "SipMediaAppdentistinwinstonsalem62C0CF2D",
+           "SipMediaApplication.SipMediaApplicationId"
+          ]
+         },
+         "\",\"dentistincentennial\":\"",
+         {
+          "Fn::GetAtt": [
+           "SipMediaAppdentistincentennialB7F758B3",
+           "SipMediaApplication.SipMediaApplicationId"
+          ]
+         },
+         "\",\"renodentalcareandorthodontics\":\"",
+         {
+          "Fn::GetAtt": [
+           "SipMediaApprenodentalcareandorthodontics805DBF55",
+           "SipMediaApplication.SipMediaApplicationId"
+          ]
+         },
+         "\",\"todaysdentalalexandria\":\"",
+         {
+          "Fn::GetAtt": [
+           "SipMediaApptodaysdentalalexandriaFCA772A1",
+           "SipMediaApplication.SipMediaApplicationId"
+          ]
+         },
+         "\",\"todaysdentalgreenville\":\"",
+         {
+          "Fn::GetAtt": [
+           "SipMediaApptodaysdentalgreenville13205C25",
+           "SipMediaApplication.SipMediaApplicationId"
+          ]
+         },
+         "\",\"todaysdentalwestcolumbia\":\"",
+         {
+          "Fn::GetAtt": [
+           "SipMediaApptodaysdentalwestcolumbiaE6C068C5",
+           "SipMediaApplication.SipMediaApplicationId"
+          ]
+         },
+         "\",\"dentistinconcord\":\"",
+         {
+          "Fn::GetAtt": [
+           "SipMediaAppdentistinconcord16ED48D0",
+           "SipMediaApplication.SipMediaApplicationId"
+          ]
+         },
+         "\",\"dentistinedgewater\":\"",
+         {
+          "Fn::GetAtt": [
+           "SipMediaAppdentistinedgewater45DA0F91",
+           "SipMediaApplication.SipMediaApplicationId"
+          ]
+         },
+         "\",\"lawrencevilledentistry\":\"",
+         {
+          "Fn::GetAtt": [
+           "SipMediaApplawrencevilledentistryEADBC4EB",
+           "SipMediaApplication.SipMediaApplicationId"
+          ]
+         },
+         "\",\"dentistinlouisville\":\"",
+         {
+          "Fn::GetAtt": [
+           "SipMediaAppdentistinlouisvilleFF7A96B4",
+           "SipMediaApplication.SipMediaApplicationId"
+          ]
+         },
+         "\",\"dentistatsaludapointe\":\"",
+         {
+          "Fn::GetAtt": [
+           "SipMediaAppdentistatsaludapointeB000F407",
+           "SipMediaApplication.SipMediaApplicationId"
+          ]
+         },
+         "\",\"dentistinoregonoh\":\"",
+         {
+          "Fn::GetAtt": [
+           "SipMediaAppdentistinoregonoh4223EAC5",
+           "SipMediaApplication.SipMediaApplicationId"
+          ]
+         },
+         "\",\"todaysdentallexington\":\"",
+         {
+          "Fn::GetAtt": [
+           "SipMediaApptodaysdentallexingtonF15C4830",
+           "SipMediaApplication.SipMediaApplicationId"
+          ]
+         },
+         "\",\"dentistinbowie\":\"",
+         {
+          "Fn::GetAtt": [
+           "SipMediaAppdentistinbowieD1FE9777",
+           "SipMediaApplication.SipMediaApplicationId"
+          ]
+         },
+         "\",\"dentistinpowellohio\":\"",
+         {
+          "Fn::GetAtt": [
+           "SipMediaAppdentistinpowellohio4FCA1778",
+           "SipMediaApplication.SipMediaApplicationId"
+          ]
+         },
+         "\",\"dentistinperrysburg\":\"",
+         {
+          "Fn::GetAtt": [
+           "SipMediaAppdentistinperrysburg446C2013",
+           "SipMediaApplication.SipMediaApplicationId"
+          ]
+         },
+         "\",\"dentistinaustin\":\"",
+         {
+          "Fn::GetAtt": [
+           "SipMediaAppdentistinaustin310BF1B4",
+           "SipMediaApplication.SipMediaApplicationId"
+          ]
+         },
+         "\",\"therimdentalcare\":\"",
+         {
+          "Fn::GetAtt": [
+           "SipMediaApptherimdentalcareD8BCF278",
+           "SipMediaApplication.SipMediaApplicationId"
+          ]
+         },
+         "\",\"dentistinbloomingdale\":\"",
+         {
+          "Fn::GetAtt": [
+           "SipMediaAppdentistinbloomingdale10D31E39",
+           "SipMediaApplication.SipMediaApplicationId"
+          ]
+         },
+         "\",\"dentistinvernonhills\":\"",
+         {
+          "Fn::GetAtt": [
+           "SipMediaAppdentistinvernonhillsA86C8B8D",
+           "SipMediaApplication.SipMediaApplicationId"
+          ]
+         },
+         "\",\"meadowsdentalcare\":\"",
+         {
+          "Fn::GetAtt": [
+           "SipMediaAppmeadowsdentalcareC4BF4C25",
+           "SipMediaApplication.SipMediaApplicationId"
+          ]
+         },
+         "\",\"dentistinstillwater\":\"",
+         {
+          "Fn::GetAtt": [
+           "SipMediaAppdentistinstillwaterFAB1C16D",
+           "SipMediaApplication.SipMediaApplicationId"
+          ]
+         },
+         "\",\"pearlanddentalcare\":\"",
+         {
+          "Fn::GetAtt": [
+           "SipMediaApppearlanddentalcare0FF85685",
+           "SipMediaApplication.SipMediaApplicationId"
+          ]
+         },
+         "\"}"
+        ]
+       ]
+      },
+      "AWS_XRAY_TRACING_ENABLED": "true",
+      "AWS_XRAY_CONTEXT_MISSING": "LOG_ERROR",
+      "SEND_PUSH_FUNCTION_ARN": {
+       "Fn::ImportValue": "TodaysDentalInsightsPushN1:ExportsOutputFnGetAttSendPushFnB8AEA016Arn02900E0D"
+      }
+     }
+    },
+    "FunctionName": "TodaysDentalInsightsChimeN1-QueueMonitor",
+    "Handler": "index.handler",
+    "MemorySize": 256,
+    "Role": {
+     "Fn::GetAtt": [
+      "QueueMonitorFnServiceRole09E5A377",
+      "Arn"
+     ]
+    },
+    "Runtime": "nodejs20.x",
+    "Tags": [
+     {
+      "Key": "ManagedBy",
+      "Value": "cdk"
+     },
+     {
+      "Key": "Service",
+      "Value": "Chime"
+     },
+     {
+      "Key": "Stack",
+      "Value": "TodaysDentalInsightsChimeN1"
+     }
+    ],
+    "Timeout": 30
+   },
+   "DependsOn": [
+    "QueueMonitorFnServiceRoleDefaultPolicy05CB8E0A",
+    "QueueMonitorFnServiceRole09E5A377"
+   ],
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsChimeN1/QueueMonitorFn/Resource",
+    "aws:asset:path": "asset.72b6a3b66d555b5b04d2a369163f86f7f987ec806f1b0ca0598cdbc707820cf3",
+    "aws:asset:is-bundled": true,
+    "aws:asset:property": "Code"
+   }
+  },
+  "QueueMonitorRule739231FA": {
+   "Type": "AWS::Events::Rule",
+   "Properties": {
+    "Description": "Scan call queue for proactive customer notifications (wait time, timeout, callback offers)",
+    "ScheduleExpression": "rate(2 minutes)",
+    "State": "ENABLED",
+    "Tags": [
+     {
+      "Key": "ManagedBy",
+      "Value": "cdk"
+     },
+     {
+      "Key": "Service",
+      "Value": "Chime"
+     },
+     {
+      "Key": "Stack",
+      "Value": "TodaysDentalInsightsChimeN1"
+     }
+    ],
+    "Targets": [
+     {
+      "Arn": {
+       "Fn::GetAtt": [
+        "QueueMonitorFn305F82F2",
+        "Arn"
+       ]
+      },
+      "Id": "Target0"
+     }
+    ]
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsChimeN1/QueueMonitorRule/Resource"
+   }
+  },
+  "QueueMonitorRuleAllowEventRuleTodaysDentalInsightsChimeN1QueueMonitorFn3B36EA8ED23DAEE9": {
+   "Type": "AWS::Lambda::Permission",
+   "Properties": {
+    "Action": "lambda:InvokeFunction",
+    "FunctionName": {
+     "Fn::GetAtt": [
+      "QueueMonitorFn305F82F2",
+      "Arn"
+     ]
+    },
+    "Principal": "events.amazonaws.com",
+    "SourceArn": {
+     "Fn::GetAtt": [
+      "QueueMonitorRule739231FA",
+      "Arn"
+     ]
+    }
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsChimeN1/QueueMonitorRule/AllowEventRuleTodaysDentalInsightsChimeN1QueueMonitorFn3B36EA8E"
+   }
+  },
+  "QueuePollerFnServiceRole1CAC112F": {
+   "Type": "AWS::IAM::Role",
+   "Properties": {
+    "AssumeRolePolicyDocument": {
+     "Statement": [
+      {
+       "Action": "sts:AssumeRole",
+       "Effect": "Allow",
+       "Principal": {
+        "Service": "lambda.amazonaws.com"
+       }
+      }
+     ],
+     "Version": "2012-10-17"
+    },
+    "ManagedPolicyArns": [
+     {
+      "Fn::Join": [
+       "",
+       [
+        "arn:",
+        {
+         "Ref": "AWS::Partition"
+        },
+        ":iam::aws:policy/service-role/AWSLambdaBasicExecutionRole"
+       ]
+      ]
+     }
+    ],
+    "Tags": [
+     {
+      "Key": "ManagedBy",
+      "Value": "cdk"
+     },
+     {
+      "Key": "Service",
+      "Value": "Chime"
+     },
+     {
+      "Key": "Stack",
+      "Value": "TodaysDentalInsightsChimeN1"
+     }
+    ]
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsChimeN1/QueuePollerFn/ServiceRole/Resource"
+   }
+  },
+  "QueuePollerFnServiceRoleDefaultPolicyB54D1C9E": {
+   "Type": "AWS::IAM::Policy",
+   "Properties": {
+    "PolicyDocument": {
+     "Statement": [
+      {
+       "Action": [
+        "dynamodb:BatchGetItem",
+        "dynamodb:GetRecords",
+        "dynamodb:GetShardIterator",
+        "dynamodb:Query",
+        "dynamodb:GetItem",
+        "dynamodb:Scan",
+        "dynamodb:ConditionCheckItem",
+        "dynamodb:BatchWriteItem",
+        "dynamodb:PutItem",
+        "dynamodb:UpdateItem",
+        "dynamodb:DeleteItem",
+        "dynamodb:DescribeTable"
+       ],
+       "Effect": "Allow",
+       "Resource": [
+        {
+         "Fn::GetAtt": [
+          "CallQueueTable65E48E45",
+          "Arn"
+         ]
+        },
+        {
+         "Fn::Join": [
+          "",
+          [
+           {
+            "Fn::GetAtt": [
+             "CallQueueTable65E48E45",
+             "Arn"
+            ]
+           },
+           "/index/*"
+          ]
+         ]
+        }
+       ]
+      },
+      {
+       "Action": [
+        "dynamodb:BatchGetItem",
+        "dynamodb:GetRecords",
+        "dynamodb:GetShardIterator",
+        "dynamodb:Query",
+        "dynamodb:GetItem",
+        "dynamodb:Scan",
+        "dynamodb:ConditionCheckItem",
+        "dynamodb:BatchWriteItem",
+        "dynamodb:PutItem",
+        "dynamodb:UpdateItem",
+        "dynamodb:DeleteItem",
+        "dynamodb:DescribeTable"
+       ],
+       "Effect": "Allow",
+       "Resource": [
+        {
+         "Fn::GetAtt": [
+          "AgentPresenceTable3B930FDB",
+          "Arn"
+         ]
+        },
+        {
+         "Fn::Join": [
+          "",
+          [
+           {
+            "Fn::GetAtt": [
+             "AgentPresenceTable3B930FDB",
+             "Arn"
+            ]
+           },
+           "/index/*"
+          ]
+         ]
+        }
+       ]
+      },
+      {
+       "Action": [
+        "dynamodb:BatchGetItem",
+        "dynamodb:GetRecords",
+        "dynamodb:GetShardIterator",
+        "dynamodb:Query",
+        "dynamodb:GetItem",
+        "dynamodb:Scan",
+        "dynamodb:ConditionCheckItem",
+        "dynamodb:DescribeTable"
+       ],
+       "Effect": "Allow",
+       "Resource": [
+        {
+         "Fn::GetAtt": [
+          "ClinicsTable4477ED9E",
+          "Arn"
+         ]
+        },
+        {
+         "Fn::Join": [
+          "",
+          [
+           {
+            "Fn::GetAtt": [
+             "ClinicsTable4477ED9E",
+             "Arn"
+            ]
+           },
+           "/index/*"
+          ]
+         ]
+        }
+       ]
+      },
+      {
+       "Action": [
+        "dynamodb:BatchGetItem",
+        "dynamodb:GetRecords",
+        "dynamodb:GetShardIterator",
+        "dynamodb:Query",
+        "dynamodb:GetItem",
+        "dynamodb:Scan",
+        "dynamodb:ConditionCheckItem",
+        "dynamodb:BatchWriteItem",
+        "dynamodb:PutItem",
+        "dynamodb:UpdateItem",
+        "dynamodb:DeleteItem",
+        "dynamodb:DescribeTable"
+       ],
+       "Effect": "Allow",
+       "Resource": [
+        {
+         "Fn::GetAtt": [
+          "LocksTable0C14848D",
+          "Arn"
+         ]
+        },
+        {
+         "Ref": "AWS::NoValue"
+        }
+       ]
+      },
+      {
+       "Action": [
+        "chime:UpdateSipMediaApplicationCall",
+        "chime-sdk-voice:UpdateSipMediaApplicationCall",
+        "chime:CreateMeeting",
+        "chime:CreateAttendee",
+        "chime-sdk-meetings:CreateMeeting",
+        "chime-sdk-meetings:CreateAttendee"
+       ],
+       "Effect": "Allow",
+       "Resource": "*"
+      },
+      {
+       "Action": "lambda:InvokeFunction",
+       "Effect": "Allow",
+       "Resource": {
+        "Fn::ImportValue": "TodaysDentalInsightsPushN1:ExportsOutputFnGetAttSendPushFnB8AEA016Arn02900E0D"
+       }
+      },
+      {
+       "Action": [
+        "dynamodb:Query",
+        "dynamodb:GetItem"
+       ],
+       "Effect": "Allow",
+       "Resource": [
+        {
+         "Fn::ImportValue": "TodaysDentalInsightsPushN1:ExportsOutputFnGetAttDeviceTokensTableC4110EBFArn85135A93"
+        },
+        {
+         "Fn::Join": [
+          "",
+          [
+           {
+            "Fn::ImportValue": "TodaysDentalInsightsPushN1:ExportsOutputFnGetAttDeviceTokensTableC4110EBFArn85135A93"
+           },
+           "/index/*"
+          ]
+         ]
+        }
+       ]
+      },
+      {
+       "Action": "cloudwatch:PutMetricData",
+       "Effect": "Allow",
+       "Resource": "*"
+      }
+     ],
+     "Version": "2012-10-17"
+    },
+    "PolicyName": "QueuePollerFnServiceRoleDefaultPolicyB54D1C9E",
+    "Roles": [
+     {
+      "Ref": "QueuePollerFnServiceRole1CAC112F"
+     }
+    ]
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsChimeN1/QueuePollerFn/ServiceRole/DefaultPolicy/Resource"
+   }
+  },
+  "QueuePollerFn5CB811BD": {
+   "Type": "AWS::Lambda::Function",
+   "Properties": {
+    "Code": {
+     "S3Bucket": "cdk-tdi3-assets-851620242036-us-east-1",
+     "S3Key": "31fdd834660bf8c27b850094dd955878c131fdf616a2dc04f7231f4f5a51822d.zip"
+    },
+    "Environment": {
+     "Variables": {
+      "CALL_QUEUE_TABLE_NAME": {
+       "Ref": "CallQueueTable65E48E45"
+      },
+      "AGENT_PRESENCE_TABLE_NAME": {
+       "Ref": "AgentPresenceTable3B930FDB"
+      },
+      "CLINICS_TABLE_NAME": {
+       "Ref": "ClinicsTable4477ED9E"
+      },
+      "LOCKS_TABLE_NAME": {
+       "Ref": "LocksTable0C14848D"
+      },
+      "CHIME_MEDIA_REGION": "us-east-1",
+      "SEND_PUSH_FUNCTION_ARN": {
+       "Fn::ImportValue": "TodaysDentalInsightsPushN1:ExportsOutputFnGetAttSendPushFnB8AEA016Arn02900E0D"
+      },
+      "DEVICE_TOKENS_TABLE": {
+       "Fn::ImportValue": "TodaysDentalInsightsPushN1:ExportsOutputRefDeviceTokensTableC4110EBF3068AC31"
+      }
+     }
+    },
+    "FunctionName": "TodaysDentalInsightsChimeN1-QueuePoller",
+    "Handler": "index.handler",
+    "MemorySize": 256,
+    "Role": {
+     "Fn::GetAtt": [
+      "QueuePollerFnServiceRole1CAC112F",
+      "Arn"
+     ]
+    },
+    "Runtime": "nodejs20.x",
+    "Tags": [
+     {
+      "Key": "ManagedBy",
+      "Value": "cdk"
+     },
+     {
+      "Key": "Service",
+      "Value": "Chime"
+     },
+     {
+      "Key": "Stack",
+      "Value": "TodaysDentalInsightsChimeN1"
+     }
+    ],
+    "Timeout": 30
+   },
+   "DependsOn": [
+    "QueuePollerFnServiceRoleDefaultPolicyB54D1C9E",
+    "QueuePollerFnServiceRole1CAC112F"
+   ],
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsChimeN1/QueuePollerFn/Resource",
+    "aws:asset:path": "asset.31fdd834660bf8c27b850094dd955878c131fdf616a2dc04f7231f4f5a51822d",
+    "aws:asset:is-bundled": true,
+    "aws:asset:property": "Code"
+   }
+  },
+  "QueuePollerRuleFB53A216": {
+   "Type": "AWS::Events::Rule",
+   "Properties": {
+    "Description": "Safety-net: rescue orphaned queued calls by re-triggering fair-share dispatch",
+    "ScheduleExpression": "rate(1 minute)",
+    "State": "ENABLED",
+    "Tags": [
+     {
+      "Key": "ManagedBy",
+      "Value": "cdk"
+     },
+     {
+      "Key": "Service",
+      "Value": "Chime"
+     },
+     {
+      "Key": "Stack",
+      "Value": "TodaysDentalInsightsChimeN1"
+     }
+    ],
+    "Targets": [
+     {
+      "Arn": {
+       "Fn::GetAtt": [
+        "QueuePollerFn5CB811BD",
+        "Arn"
+       ]
+      },
+      "Id": "Target0"
+     }
+    ]
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsChimeN1/QueuePollerRule/Resource"
+   }
+  },
+  "QueuePollerRuleAllowEventRuleTodaysDentalInsightsChimeN1QueuePollerFn6C6EC3FF26F5499C": {
+   "Type": "AWS::Lambda::Permission",
+   "Properties": {
+    "Action": "lambda:InvokeFunction",
+    "FunctionName": {
+     "Fn::GetAtt": [
+      "QueuePollerFn5CB811BD",
+      "Arn"
+     ]
+    },
+    "Principal": "events.amazonaws.com",
+    "SourceArn": {
+     "Fn::GetAtt": [
+      "QueuePollerRuleFB53A216",
+      "Arn"
+     ]
+    }
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsChimeN1/QueuePollerRule/AllowEventRuleTodaysDentalInsightsChimeN1QueuePollerFn6C6EC3FF"
+   }
+  },
+  "VoicemailBucket6DF79C0C": {
+   "Type": "AWS::S3::Bucket",
+   "Properties": {
+    "BucketEncryption": {
+     "ServerSideEncryptionConfiguration": [
+      {
+       "ServerSideEncryptionByDefault": {
+        "SSEAlgorithm": "AES256"
+       }
+      }
+     ]
+    },
+    "BucketName": "todaysdentalinsightschimen1-voicemails",
+    "LifecycleConfiguration": {
+     "Rules": [
+      {
+       "ExpirationInDays": 90,
+       "Id": "ExpireVoicemails",
+       "Status": "Enabled",
+       "Transitions": [
+        {
+         "StorageClass": "STANDARD_IA",
+         "TransitionInDays": 30
+        }
+       ]
+      }
+     ]
+    },
+    "PublicAccessBlockConfiguration": {
+     "BlockPublicAcls": true,
+     "BlockPublicPolicy": true,
+     "IgnorePublicAcls": true,
+     "RestrictPublicBuckets": true
+    },
+    "Tags": [
+     {
+      "Key": "Bucket",
+      "Value": "voicemails"
+     },
+     {
+      "Key": "ManagedBy",
+      "Value": "cdk"
+     },
+     {
+      "Key": "Service",
+      "Value": "Chime"
+     },
+     {
+      "Key": "Stack",
+      "Value": "TodaysDentalInsightsChimeN1"
+     }
+    ]
+   },
+   "UpdateReplacePolicy": "Retain",
+   "DeletionPolicy": "Retain",
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsChimeN1/VoicemailBucket/Resource"
+   }
+  },
+  "VoicemailBucketNotifications2D5FC9B5": {
+   "Type": "Custom::S3BucketNotifications",
+   "Properties": {
+    "ServiceToken": {
+     "Fn::GetAtt": [
+      "BucketNotificationsHandler050a0587b7544547bf325f094a3db8347ECC3691",
+      "Arn"
+     ]
+    },
+    "BucketName": {
+     "Ref": "VoicemailBucket6DF79C0C"
+    },
+    "NotificationConfiguration": {
+     "LambdaFunctionConfigurations": [
+      {
+       "Events": [
+        "s3:ObjectCreated:*"
+       ],
+       "Filter": {
+        "Key": {
+         "FilterRules": [
+          {
+           "Name": "prefix",
+           "Value": "voicemails/"
+          }
+         ]
+        }
+       },
+       "LambdaFunctionArn": {
+        "Fn::GetAtt": [
+         "ProcessVoicemailFn2A9D00C7",
+         "Arn"
+        ]
+       }
+      }
+     ]
+    },
+    "Managed": true,
+    "SkipDestinationValidation": false
+   },
+   "DependsOn": [
+    "VoicemailBucketAllowBucketNotificationsToTodaysDentalInsightsChimeN1ProcessVoicemailFn7E09DE46C603907F"
+   ],
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsChimeN1/VoicemailBucket/Notifications/Resource"
+   }
+  },
+  "VoicemailBucketAllowBucketNotificationsToTodaysDentalInsightsChimeN1ProcessVoicemailFn7E09DE46C603907F": {
+   "Type": "AWS::Lambda::Permission",
+   "Properties": {
+    "Action": "lambda:InvokeFunction",
+    "FunctionName": {
+     "Fn::GetAtt": [
+      "ProcessVoicemailFn2A9D00C7",
+      "Arn"
+     ]
+    },
+    "Principal": "s3.amazonaws.com",
+    "SourceAccount": "851620242036",
+    "SourceArn": {
+     "Fn::GetAtt": [
+      "VoicemailBucket6DF79C0C",
+      "Arn"
+     ]
+    }
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsChimeN1/VoicemailBucket/AllowBucketNotificationsToTodaysDentalInsightsChimeN1ProcessVoicemailFn7E09DE46"
+   }
+  },
+  "ProcessVoicemailFnServiceRole8CE171BE": {
+   "Type": "AWS::IAM::Role",
+   "Properties": {
+    "AssumeRolePolicyDocument": {
+     "Statement": [
+      {
+       "Action": "sts:AssumeRole",
+       "Effect": "Allow",
+       "Principal": {
+        "Service": "lambda.amazonaws.com"
+       }
+      }
+     ],
+     "Version": "2012-10-17"
+    },
+    "ManagedPolicyArns": [
+     {
+      "Fn::Join": [
+       "",
+       [
+        "arn:",
+        {
+         "Ref": "AWS::Partition"
+        },
+        ":iam::aws:policy/service-role/AWSLambdaBasicExecutionRole"
+       ]
+      ]
+     }
+    ],
+    "Tags": [
+     {
+      "Key": "ManagedBy",
+      "Value": "cdk"
+     },
+     {
+      "Key": "Service",
+      "Value": "Chime"
+     },
+     {
+      "Key": "Stack",
+      "Value": "TodaysDentalInsightsChimeN1"
+     }
+    ]
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsChimeN1/ProcessVoicemailFn/ServiceRole/Resource"
+   }
+  },
+  "ProcessVoicemailFnServiceRoleDefaultPolicyF3D93F47": {
+   "Type": "AWS::IAM::Policy",
+   "Properties": {
+    "PolicyDocument": {
+     "Statement": [
+      {
+       "Action": [
+        "dynamodb:BatchGetItem",
+        "dynamodb:GetRecords",
+        "dynamodb:GetShardIterator",
+        "dynamodb:Query",
+        "dynamodb:GetItem",
+        "dynamodb:Scan",
+        "dynamodb:ConditionCheckItem",
+        "dynamodb:BatchWriteItem",
+        "dynamodb:PutItem",
+        "dynamodb:UpdateItem",
+        "dynamodb:DeleteItem",
+        "dynamodb:DescribeTable"
+       ],
+       "Effect": "Allow",
+       "Resource": [
+        {
+         "Fn::GetAtt": [
+          "CallQueueTable65E48E45",
+          "Arn"
+         ]
+        },
+        {
+         "Fn::Join": [
+          "",
+          [
+           {
+            "Fn::GetAtt": [
+             "CallQueueTable65E48E45",
+             "Arn"
+            ]
+           },
+           "/index/*"
+          ]
+         ]
+        }
+       ]
+      },
+      {
+       "Action": [
+        "s3:GetObject*",
+        "s3:GetBucket*",
+        "s3:List*"
+       ],
+       "Effect": "Allow",
+       "Resource": [
+        {
+         "Fn::GetAtt": [
+          "VoicemailBucket6DF79C0C",
+          "Arn"
+         ]
+        },
+        {
+         "Fn::Join": [
+          "",
+          [
+           {
+            "Fn::GetAtt": [
+             "VoicemailBucket6DF79C0C",
+             "Arn"
+            ]
+           },
+           "/*"
+          ]
+         ]
+        }
+       ]
+      },
+      {
+       "Action": "lambda:InvokeFunction",
+       "Effect": "Allow",
+       "Resource": {
+        "Fn::ImportValue": "TodaysDentalInsightsPushN1:ExportsOutputFnGetAttSendPushFnB8AEA016Arn02900E0D"
+       }
+      }
+     ],
+     "Version": "2012-10-17"
+    },
+    "PolicyName": "ProcessVoicemailFnServiceRoleDefaultPolicyF3D93F47",
+    "Roles": [
+     {
+      "Ref": "ProcessVoicemailFnServiceRole8CE171BE"
+     }
+    ]
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsChimeN1/ProcessVoicemailFn/ServiceRole/DefaultPolicy/Resource"
+   }
+  },
+  "ProcessVoicemailFn2A9D00C7": {
+   "Type": "AWS::Lambda::Function",
+   "Properties": {
+    "Code": {
+     "S3Bucket": "cdk-tdi3-assets-851620242036-us-east-1",
+     "S3Key": "fa2d4d127be628a52d39fb05886e9256af3c2eeb7710da59b9243f937cfdec4c.zip"
+    },
+    "Environment": {
+     "Variables": {
+      "CALL_QUEUE_TABLE_NAME": {
+       "Ref": "CallQueueTable65E48E45"
+      },
+      "SEND_PUSH_FUNCTION_ARN": {
+       "Fn::ImportValue": "TodaysDentalInsightsPushN1:ExportsOutputFnGetAttSendPushFnB8AEA016Arn02900E0D"
+      },
+      "AWS_XRAY_TRACING_ENABLED": "true",
+      "AWS_XRAY_CONTEXT_MISSING": "LOG_ERROR"
+     }
+    },
+    "FunctionName": "TodaysDentalInsightsChimeN1-ProcessVoicemail",
+    "Handler": "index.handler",
+    "Role": {
+     "Fn::GetAtt": [
+      "ProcessVoicemailFnServiceRole8CE171BE",
+      "Arn"
+     ]
+    },
+    "Runtime": "nodejs20.x",
+    "Tags": [
+     {
+      "Key": "ManagedBy",
+      "Value": "cdk"
+     },
+     {
+      "Key": "Service",
+      "Value": "Chime"
+     },
+     {
+      "Key": "Stack",
+      "Value": "TodaysDentalInsightsChimeN1"
+     }
+    ],
+    "Timeout": 15
+   },
+   "DependsOn": [
+    "ProcessVoicemailFnServiceRoleDefaultPolicyF3D93F47",
+    "ProcessVoicemailFnServiceRole8CE171BE"
+   ],
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsChimeN1/ProcessVoicemailFn/Resource",
+    "aws:asset:path": "asset.fa2d4d127be628a52d39fb05886e9256af3c2eeb7710da59b9243f937cfdec4c",
+    "aws:asset:is-bundled": true,
+    "aws:asset:property": "Code"
+   }
+  },
+  "BucketNotificationsHandler050a0587b7544547bf325f094a3db834RoleB6FB88EC": {
+   "Type": "AWS::IAM::Role",
+   "Properties": {
+    "AssumeRolePolicyDocument": {
+     "Statement": [
+      {
+       "Action": "sts:AssumeRole",
+       "Effect": "Allow",
+       "Principal": {
+        "Service": "lambda.amazonaws.com"
+       }
+      }
+     ],
+     "Version": "2012-10-17"
+    },
+    "ManagedPolicyArns": [
+     {
+      "Fn::Join": [
+       "",
+       [
+        "arn:",
+        {
+         "Ref": "AWS::Partition"
+        },
+        ":iam::aws:policy/service-role/AWSLambdaBasicExecutionRole"
+       ]
+      ]
+     }
+    ],
+    "Tags": [
+     {
+      "Key": "ManagedBy",
+      "Value": "cdk"
+     },
+     {
+      "Key": "Service",
+      "Value": "Chime"
+     },
+     {
+      "Key": "Stack",
+      "Value": "TodaysDentalInsightsChimeN1"
+     }
+    ]
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsChimeN1/BucketNotificationsHandler050a0587b7544547bf325f094a3db834/Role/Resource"
+   }
+  },
+  "BucketNotificationsHandler050a0587b7544547bf325f094a3db834RoleDefaultPolicy2CF63D36": {
+   "Type": "AWS::IAM::Policy",
+   "Properties": {
+    "PolicyDocument": {
+     "Statement": [
+      {
+       "Action": "s3:PutBucketNotification",
+       "Effect": "Allow",
+       "Resource": {
+        "Fn::GetAtt": [
+         "VoicemailBucket6DF79C0C",
+         "Arn"
+        ]
+       }
+      },
+      {
+       "Action": "s3:PutBucketNotification",
+       "Effect": "Allow",
+       "Resource": {
+        "Fn::GetAtt": [
+         "CallRecordingsBucketF5B214BA",
+         "Arn"
+        ]
+       }
+      }
+     ],
+     "Version": "2012-10-17"
+    },
+    "PolicyName": "BucketNotificationsHandler050a0587b7544547bf325f094a3db834RoleDefaultPolicy2CF63D36",
+    "Roles": [
+     {
+      "Ref": "BucketNotificationsHandler050a0587b7544547bf325f094a3db834RoleB6FB88EC"
+     }
+    ]
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsChimeN1/BucketNotificationsHandler050a0587b7544547bf325f094a3db834/Role/DefaultPolicy/Resource"
+   }
+  },
+  "BucketNotificationsHandler050a0587b7544547bf325f094a3db8347ECC3691": {
+   "Type": "AWS::Lambda::Function",
+   "Properties": {
+    "Description": "AWS CloudFormation handler for \"Custom::S3BucketNotifications\" resources (@aws-cdk/aws-s3)",
+    "Code": {
+     "ZipFile": "import boto3  # type: ignore\nimport json\nimport logging\nimport urllib.request\n\ns3 = boto3.client(\"s3\")\n\nEVENTBRIDGE_CONFIGURATION = 'EventBridgeConfiguration'\nCONFIGURATION_TYPES = [\"TopicConfigurations\", \"QueueConfigurations\", \"LambdaFunctionConfigurations\"]\n\ndef handler(event: dict, context):\n  response_status = \"SUCCESS\"\n  error_message = \"\"\n  try:\n    props = event[\"ResourceProperties\"]\n    notification_configuration = props[\"NotificationConfiguration\"]\n    managed = props.get('Managed', 'true').lower() == 'true'\n    skipDestinationValidation = props.get('SkipDestinationValidation', 'false').lower() == 'true'\n    stack_id = event['StackId']\n    old = event.get(\"OldResourceProperties\", {}).get(\"NotificationConfiguration\", {})\n    if managed:\n      config = handle_managed(event[\"RequestType\"], notification_configuration)\n    else:\n      config = handle_unmanaged(props[\"BucketName\"], stack_id, event[\"RequestType\"], notification_configuration, old)\n    s3.put_bucket_notification_configuration(Bucket=props[\"BucketName\"], NotificationConfiguration=config, SkipDestinationValidation=skipDestinationValidation)\n  except Exception as e:\n    logging.exception(\"Failed to put bucket notification configuration\")\n    response_status = \"FAILED\"\n    error_message = f\"Error: {str(e)}. \"\n  finally:\n    submit_response(event, context, response_status, error_message)\n\ndef handle_managed(request_type, notification_configuration):\n  if request_type == 'Delete':\n    return {}\n  return notification_configuration\n\ndef handle_unmanaged(bucket, stack_id, request_type, notification_configuration, old):\n  def get_id(n):\n    n['Id'] = ''\n    sorted_notifications = sort_filter_rules(n)\n    strToHash=json.dumps(sorted_notifications, sort_keys=True).replace('\"Name\": \"prefix\"', '\"Name\": \"Prefix\"').replace('\"Name\": \"suffix\"', '\"Name\": \"Suffix\"')\n    return f\"{stack_id}-{hash(strToHash)}\"\n  def with_id(n):\n    n['Id'] = get_id(n)\n    return n\n\n  external_notifications = {}\n  existing_notifications = s3.get_bucket_notification_configuration(Bucket=bucket)\n  for t in CONFIGURATION_TYPES:\n    if request_type == 'Update':\n        old_incoming_ids = [get_id(n) for n in old.get(t, [])]\n        external_notifications[t] = [n for n in existing_notifications.get(t, []) if not get_id(n) in old_incoming_ids]      \n    elif request_type == 'Delete':\n        external_notifications[t] = [n for n in existing_notifications.get(t, []) if not n['Id'].startswith(f\"{stack_id}-\")]\n    elif request_type == 'Create':\n        external_notifications[t] = [n for n in existing_notifications.get(t, [])]\n  if EVENTBRIDGE_CONFIGURATION in existing_notifications:\n    external_notifications[EVENTBRIDGE_CONFIGURATION] = existing_notifications[EVENTBRIDGE_CONFIGURATION]\n\n  if request_type == 'Delete':\n    return external_notifications\n\n  notifications = {}\n  for t in CONFIGURATION_TYPES:\n    external = external_notifications.get(t, [])\n    incoming = [with_id(n) for n in notification_configuration.get(t, [])]\n    notifications[t] = external + incoming\n\n  if EVENTBRIDGE_CONFIGURATION in notification_configuration:\n    notifications[EVENTBRIDGE_CONFIGURATION] = notification_configuration[EVENTBRIDGE_CONFIGURATION]\n  elif EVENTBRIDGE_CONFIGURATION in external_notifications:\n    notifications[EVENTBRIDGE_CONFIGURATION] = external_notifications[EVENTBRIDGE_CONFIGURATION]\n\n  return notifications\n\ndef submit_response(event: dict, context, response_status: str, error_message: str):\n  response_body = json.dumps(\n    {\n      \"Status\": response_status,\n      \"Reason\": f\"{error_message}See the details in CloudWatch Log Stream: {context.log_stream_name}\",\n      \"PhysicalResourceId\": event.get(\"PhysicalResourceId\") or event[\"LogicalResourceId\"],\n      \"StackId\": event[\"StackId\"],\n      \"RequestId\": event[\"RequestId\"],\n      \"LogicalResourceId\": event[\"LogicalResourceId\"],\n      \"NoEcho\": False,\n    }\n  ).encode(\"utf-8\")\n  headers = {\"content-type\": \"\", \"content-length\": str(len(response_body))}\n  try:\n    req = urllib.request.Request(url=event[\"ResponseURL\"], headers=headers, data=response_body, method=\"PUT\")\n    with urllib.request.urlopen(req) as response:\n      print(response.read().decode(\"utf-8\"))\n    print(\"Status code: \" + response.reason)\n  except Exception as e:\n      print(\"send(..) failed executing request.urlopen(..): \" + str(e))\n\ndef sort_filter_rules(json_obj):\n  if not isinstance(json_obj, dict):\n      return json_obj\n  for key, value in json_obj.items():\n      if isinstance(value, dict):\n          json_obj[key] = sort_filter_rules(value)\n      elif isinstance(value, list):\n          json_obj[key] = [sort_filter_rules(item) for item in value]\n  if \"Filter\" in json_obj and \"Key\" in json_obj[\"Filter\"] and \"FilterRules\" in json_obj[\"Filter\"][\"Key\"]:\n      filter_rules = json_obj[\"Filter\"][\"Key\"][\"FilterRules\"]\n      sorted_filter_rules = sorted(filter_rules, key=lambda x: x[\"Name\"])\n      json_obj[\"Filter\"][\"Key\"][\"FilterRules\"] = sorted_filter_rules\n  return json_obj"
+    },
+    "Handler": "index.handler",
+    "Role": {
+     "Fn::GetAtt": [
+      "BucketNotificationsHandler050a0587b7544547bf325f094a3db834RoleB6FB88EC",
+      "Arn"
+     ]
+    },
+    "Runtime": "python3.13",
+    "Timeout": 300,
+    "Tags": [
+     {
+      "Key": "ManagedBy",
+      "Value": "cdk"
+     },
+     {
+      "Key": "Service",
+      "Value": "Chime"
+     },
+     {
+      "Key": "Stack",
+      "Value": "TodaysDentalInsightsChimeN1"
+     }
+    ]
+   },
+   "DependsOn": [
+    "BucketNotificationsHandler050a0587b7544547bf325f094a3db834RoleDefaultPolicy2CF63D36",
+    "BucketNotificationsHandler050a0587b7544547bf325f094a3db834RoleB6FB88EC"
+   ],
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsChimeN1/BucketNotificationsHandler050a0587b7544547bf325f094a3db834/Resource"
    }
   },
   "SmaIdMapParameterA040DDC2": {
@@ -13681,7 +16092,7 @@
    "Properties": {
     "Code": {
      "S3Bucket": "cdk-tdi3-assets-851620242036-us-east-1",
-     "S3Key": "c614caecf691b9969849734dd9ad9e38724b1e4f3fa6d48d8e765c72b12efefc.zip"
+     "S3Key": "3419042579d6e24366c6e1471131fca7af0a88f09a5a1c7139b84698a32ca57b.zip"
     },
     "Environment": {
      "Variables": {
@@ -13725,7 +16136,7 @@
    ],
    "Metadata": {
     "aws:cdk:path": "TodaysDentalInsightsChimeN1/HeartbeatFn/Resource",
-    "aws:asset:path": "asset.c614caecf691b9969849734dd9ad9e38724b1e4f3fa6d48d8e765c72b12efefc",
+    "aws:asset:path": "asset.3419042579d6e24366c6e1471131fca7af0a88f09a5a1c7139b84698a32ca57b",
     "aws:asset:is-bundled": true,
     "aws:asset:property": "Code"
    }
@@ -14978,7 +17389,7 @@
    "Properties": {
     "Code": {
      "S3Bucket": "cdk-tdi3-assets-851620242036-us-east-1",
-     "S3Key": "adf4098c66096a69c69bf7809b90fdbbf749c097f2a2f35f16220e22a7fd5d46.zip"
+     "S3Key": "bba5d62ba414ce441ef1719f60fd4bb403e731cb57cc1286e4f1fea2defd7637.zip"
     },
     "Environment": {
      "Variables": {
@@ -15030,7 +17441,7 @@
    ],
    "Metadata": {
     "aws:cdk:path": "TodaysDentalInsightsChimeN1/GetRecordingFn/Resource",
-    "aws:asset:path": "asset.adf4098c66096a69c69bf7809b90fdbbf749c097f2a2f35f16220e22a7fd5d46",
+    "aws:asset:path": "asset.bba5d62ba414ce441ef1719f60fd4bb403e731cb57cc1286e4f1fea2defd7637",
     "aws:asset:is-bundled": true,
     "aws:asset:property": "Code"
    }
@@ -16061,122 +18472,6 @@
     "aws:asset:property": "Code"
    }
   },
-  "BucketNotificationsHandler050a0587b7544547bf325f094a3db834RoleB6FB88EC": {
-   "Type": "AWS::IAM::Role",
-   "Properties": {
-    "AssumeRolePolicyDocument": {
-     "Statement": [
-      {
-       "Action": "sts:AssumeRole",
-       "Effect": "Allow",
-       "Principal": {
-        "Service": "lambda.amazonaws.com"
-       }
-      }
-     ],
-     "Version": "2012-10-17"
-    },
-    "ManagedPolicyArns": [
-     {
-      "Fn::Join": [
-       "",
-       [
-        "arn:",
-        {
-         "Ref": "AWS::Partition"
-        },
-        ":iam::aws:policy/service-role/AWSLambdaBasicExecutionRole"
-       ]
-      ]
-     }
-    ],
-    "Tags": [
-     {
-      "Key": "ManagedBy",
-      "Value": "cdk"
-     },
-     {
-      "Key": "Service",
-      "Value": "Chime"
-     },
-     {
-      "Key": "Stack",
-      "Value": "TodaysDentalInsightsChimeN1"
-     }
-    ]
-   },
-   "Metadata": {
-    "aws:cdk:path": "TodaysDentalInsightsChimeN1/BucketNotificationsHandler050a0587b7544547bf325f094a3db834/Role/Resource"
-   }
-  },
-  "BucketNotificationsHandler050a0587b7544547bf325f094a3db834RoleDefaultPolicy2CF63D36": {
-   "Type": "AWS::IAM::Policy",
-   "Properties": {
-    "PolicyDocument": {
-     "Statement": [
-      {
-       "Action": "s3:PutBucketNotification",
-       "Effect": "Allow",
-       "Resource": {
-        "Fn::GetAtt": [
-         "CallRecordingsBucketF5B214BA",
-         "Arn"
-        ]
-       }
-      }
-     ],
-     "Version": "2012-10-17"
-    },
-    "PolicyName": "BucketNotificationsHandler050a0587b7544547bf325f094a3db834RoleDefaultPolicy2CF63D36",
-    "Roles": [
-     {
-      "Ref": "BucketNotificationsHandler050a0587b7544547bf325f094a3db834RoleB6FB88EC"
-     }
-    ]
-   },
-   "Metadata": {
-    "aws:cdk:path": "TodaysDentalInsightsChimeN1/BucketNotificationsHandler050a0587b7544547bf325f094a3db834/Role/DefaultPolicy/Resource"
-   }
-  },
-  "BucketNotificationsHandler050a0587b7544547bf325f094a3db8347ECC3691": {
-   "Type": "AWS::Lambda::Function",
-   "Properties": {
-    "Description": "AWS CloudFormation handler for \"Custom::S3BucketNotifications\" resources (@aws-cdk/aws-s3)",
-    "Code": {
-     "ZipFile": "import boto3  # type: ignore\nimport json\nimport logging\nimport urllib.request\n\ns3 = boto3.client(\"s3\")\n\nEVENTBRIDGE_CONFIGURATION = 'EventBridgeConfiguration'\nCONFIGURATION_TYPES = [\"TopicConfigurations\", \"QueueConfigurations\", \"LambdaFunctionConfigurations\"]\n\ndef handler(event: dict, context):\n  response_status = \"SUCCESS\"\n  error_message = \"\"\n  try:\n    props = event[\"ResourceProperties\"]\n    notification_configuration = props[\"NotificationConfiguration\"]\n    managed = props.get('Managed', 'true').lower() == 'true'\n    skipDestinationValidation = props.get('SkipDestinationValidation', 'false').lower() == 'true'\n    stack_id = event['StackId']\n    old = event.get(\"OldResourceProperties\", {}).get(\"NotificationConfiguration\", {})\n    if managed:\n      config = handle_managed(event[\"RequestType\"], notification_configuration)\n    else:\n      config = handle_unmanaged(props[\"BucketName\"], stack_id, event[\"RequestType\"], notification_configuration, old)\n    s3.put_bucket_notification_configuration(Bucket=props[\"BucketName\"], NotificationConfiguration=config, SkipDestinationValidation=skipDestinationValidation)\n  except Exception as e:\n    logging.exception(\"Failed to put bucket notification configuration\")\n    response_status = \"FAILED\"\n    error_message = f\"Error: {str(e)}. \"\n  finally:\n    submit_response(event, context, response_status, error_message)\n\ndef handle_managed(request_type, notification_configuration):\n  if request_type == 'Delete':\n    return {}\n  return notification_configuration\n\ndef handle_unmanaged(bucket, stack_id, request_type, notification_configuration, old):\n  def get_id(n):\n    n['Id'] = ''\n    sorted_notifications = sort_filter_rules(n)\n    strToHash=json.dumps(sorted_notifications, sort_keys=True).replace('\"Name\": \"prefix\"', '\"Name\": \"Prefix\"').replace('\"Name\": \"suffix\"', '\"Name\": \"Suffix\"')\n    return f\"{stack_id}-{hash(strToHash)}\"\n  def with_id(n):\n    n['Id'] = get_id(n)\n    return n\n\n  external_notifications = {}\n  existing_notifications = s3.get_bucket_notification_configuration(Bucket=bucket)\n  for t in CONFIGURATION_TYPES:\n    if request_type == 'Update':\n        old_incoming_ids = [get_id(n) for n in old.get(t, [])]\n        external_notifications[t] = [n for n in existing_notifications.get(t, []) if not get_id(n) in old_incoming_ids]      \n    elif request_type == 'Delete':\n        external_notifications[t] = [n for n in existing_notifications.get(t, []) if not n['Id'].startswith(f\"{stack_id}-\")]\n    elif request_type == 'Create':\n        external_notifications[t] = [n for n in existing_notifications.get(t, [])]\n  if EVENTBRIDGE_CONFIGURATION in existing_notifications:\n    external_notifications[EVENTBRIDGE_CONFIGURATION] = existing_notifications[EVENTBRIDGE_CONFIGURATION]\n\n  if request_type == 'Delete':\n    return external_notifications\n\n  notifications = {}\n  for t in CONFIGURATION_TYPES:\n    external = external_notifications.get(t, [])\n    incoming = [with_id(n) for n in notification_configuration.get(t, [])]\n    notifications[t] = external + incoming\n\n  if EVENTBRIDGE_CONFIGURATION in notification_configuration:\n    notifications[EVENTBRIDGE_CONFIGURATION] = notification_configuration[EVENTBRIDGE_CONFIGURATION]\n  elif EVENTBRIDGE_CONFIGURATION in external_notifications:\n    notifications[EVENTBRIDGE_CONFIGURATION] = external_notifications[EVENTBRIDGE_CONFIGURATION]\n\n  return notifications\n\ndef submit_response(event: dict, context, response_status: str, error_message: str):\n  response_body = json.dumps(\n    {\n      \"Status\": response_status,\n      \"Reason\": f\"{error_message}See the details in CloudWatch Log Stream: {context.log_stream_name}\",\n      \"PhysicalResourceId\": event.get(\"PhysicalResourceId\") or event[\"LogicalResourceId\"],\n      \"StackId\": event[\"StackId\"],\n      \"RequestId\": event[\"RequestId\"],\n      \"LogicalResourceId\": event[\"LogicalResourceId\"],\n      \"NoEcho\": False,\n    }\n  ).encode(\"utf-8\")\n  headers = {\"content-type\": \"\", \"content-length\": str(len(response_body))}\n  try:\n    req = urllib.request.Request(url=event[\"ResponseURL\"], headers=headers, data=response_body, method=\"PUT\")\n    with urllib.request.urlopen(req) as response:\n      print(response.read().decode(\"utf-8\"))\n    print(\"Status code: \" + response.reason)\n  except Exception as e:\n      print(\"send(..) failed executing request.urlopen(..): \" + str(e))\n\ndef sort_filter_rules(json_obj):\n  if not isinstance(json_obj, dict):\n      return json_obj\n  for key, value in json_obj.items():\n      if isinstance(value, dict):\n          json_obj[key] = sort_filter_rules(value)\n      elif isinstance(value, list):\n          json_obj[key] = [sort_filter_rules(item) for item in value]\n  if \"Filter\" in json_obj and \"Key\" in json_obj[\"Filter\"] and \"FilterRules\" in json_obj[\"Filter\"][\"Key\"]:\n      filter_rules = json_obj[\"Filter\"][\"Key\"][\"FilterRules\"]\n      sorted_filter_rules = sorted(filter_rules, key=lambda x: x[\"Name\"])\n      json_obj[\"Filter\"][\"Key\"][\"FilterRules\"] = sorted_filter_rules\n  return json_obj"
-    },
-    "Handler": "index.handler",
-    "Role": {
-     "Fn::GetAtt": [
-      "BucketNotificationsHandler050a0587b7544547bf325f094a3db834RoleB6FB88EC",
-      "Arn"
-     ]
-    },
-    "Runtime": "python3.13",
-    "Timeout": 300,
-    "Tags": [
-     {
-      "Key": "ManagedBy",
-      "Value": "cdk"
-     },
-     {
-      "Key": "Service",
-      "Value": "Chime"
-     },
-     {
-      "Key": "Stack",
-      "Value": "TodaysDentalInsightsChimeN1"
-     }
-    ]
-   },
-   "DependsOn": [
-    "BucketNotificationsHandler050a0587b7544547bf325f094a3db834RoleDefaultPolicy2CF63D36",
-    "BucketNotificationsHandler050a0587b7544547bf325f094a3db834RoleB6FB88EC"
-   ],
-   "Metadata": {
-    "aws:cdk:path": "TodaysDentalInsightsChimeN1/BucketNotificationsHandler050a0587b7544547bf325f094a3db834/Resource"
-   }
-  },
   "GetAgentPerformanceFnServiceRole64BD0A14": {
    "Type": "AWS::IAM::Role",
    "Properties": {
@@ -16600,6 +18895,14 @@
        ]
       },
       {
+       "Action": [
+        "dynamodb:Query",
+        "dynamodb:UpdateItem"
+       ],
+       "Effect": "Allow",
+       "Resource": "arn:aws:dynamodb:us-east-1:851620242036:table/TodaysDentalInsightsAnalyticsN1-CallAnalyticsN1"
+      },
+      {
        "Action": "kms:Decrypt",
        "Effect": "Allow",
        "Resource": {
@@ -16641,7 +18944,7 @@
    "Properties": {
     "Code": {
      "S3Bucket": "cdk-tdi3-assets-851620242036-us-east-1",
-     "S3Key": "5cd847e43f3fdd032fdb2ccd78045d4440713bd3da39bfd3650400b053e350bb.zip"
+     "S3Key": "f0fbbe985a3d6bc64603d2112729c9100d953809ddebd7e88bd4573c05753bd0.zip"
     },
     "Environment": {
      "Variables": {
@@ -16656,7 +18959,8 @@
       },
       "RECORDINGS_BUCKET_NAME": {
        "Ref": "CallRecordingsBucketF5B214BA"
-      }
+      },
+      "CALL_ANALYTICS_TABLE_NAME": "TodaysDentalInsightsAnalyticsN1-CallAnalyticsN1"
      }
     },
     "FunctionName": "TodaysDentalInsightsChimeN1-TranscriptionComplete",
@@ -16691,7 +18995,7 @@
    ],
    "Metadata": {
     "aws:cdk:path": "TodaysDentalInsightsChimeN1/TranscriptionCompleteFn/Resource",
-    "aws:asset:path": "asset.5cd847e43f3fdd032fdb2ccd78045d4440713bd3da39bfd3650400b053e350bb",
+    "aws:asset:path": "asset.f0fbbe985a3d6bc64603d2112729c9100d953809ddebd7e88bd4573c05753bd0",
     "aws:asset:is-bundled": true,
     "aws:asset:property": "Code"
    }
@@ -16922,7 +19226,7 @@
    "Properties": {
     "Code": {
      "S3Bucket": "cdk-tdi3-assets-851620242036-us-east-1",
-     "S3Key": "5b78cc8d8b57053453adfe8598779144e5be923b957c606f8d4cd24cbf6f70e2.zip"
+     "S3Key": "680cc10b8bdb560befb3a316ab0ccee710996effe7fa9c08a44780075451d290.zip"
     },
     "Environment": {
      "Variables": {
@@ -16965,7 +19269,7 @@
    ],
    "Metadata": {
     "aws:cdk:path": "TodaysDentalInsightsChimeN1/CallQueueStreamProcessor/Resource",
-    "aws:asset:path": "asset.5b78cc8d8b57053453adfe8598779144e5be923b957c606f8d4cd24cbf6f70e2",
+    "aws:asset:path": "asset.680cc10b8bdb560befb3a316ab0ccee710996effe7fa9c08a44780075451d290",
     "aws:asset:is-bundled": true,
     "aws:asset:property": "Code"
    }
@@ -19007,7 +21311,7 @@
   "CDKMetadata": {
    "Type": "AWS::CDK::Metadata",
    "Properties": {
-    "Analytics": "v2:deflate64:H4sIAAAAAAAA/2VS0VLCMBD8Ft9DVNQPABQfBMXi+NoJ6VkDSVNzCQzT6b97SUsVfbrd7c41t3djPh5f86sLccCRLHYjrTa8WXshd4ykvCmOlTC2IPFNbDSw2UeVQMuUMLzJbKelurJayWOkHWqZFmZTCGqoqlKDt9U8VNIrW7EBkPs3XoEzCrFnC3EE9w4u8Yc9VH5tg5OwFHVNLaPlv9oyvMkbgQge+SQWVkCt7dGQk0+D3IG/H4To5k2nTgUC62Bs3aOu/Az3m59GzCtbwBb5cyrDQNqWyJuFLR+dDXWa6ISX4J2Sc6U9uPjhjJMrA0+voyYtk9qG4iC8/OTNRAtnoj8BejyauC9Hc6+EEwb6dgNpGcSE6BlZ6HcV4vrwi6TXACFpCbRsZ0h8gjQmlbZlGWDKlsmA3prc9ZySPeAsaYPlL6VfnXBaA51VmbZ25ls5u1cFuBR+n6aOe8/pAKVW6UdapVOIPV+CrwOtLSbOt3i5H9/xW7rgLSo1coEyM8Czrn4DK1HUZ94CAAA="
+    "Analytics": "v2:deflate64:H4sIAAAAAAAA/2VS21LCMBD9Ft9DVNQPABQfBMXi+NoJ6VoDSVOzCQzT6b+7SUsVfdpzTk422cuYj8fX/OpCHHAki91Iqw1v1l7IHSMpb4pjJYwtSHwTGw1s9lEl0DIlDG8y22kprqxW8hhph1qmhdkUghKqqtTgbTUPlfTKVmwA5P6NV+CMQuzZQhzBvYNL/GEPlV/b4CQsRV1Tymj5r7YMb/JGIIJHPomBFVBrezTk5NMgd+DvByG6edOpU4HAOhhT96gLP8X95qcS88oWsEX+nMJQkLYl8mZhy0dnQ50qOuEleKfkXGkPLh6ccXJl4Ol3lKRlUttQHISXn7yZaOFM9CfQMojl0xtZ6AcR4mwQTZyio26shBMG+kcGQpYvuvUaIKRrCbRsZ0h8glQmhbZlGWDqLZMBvTW56zl19oCzpA2Wv5R+c8JpDLRWZZramW/l7F4V4FLz+27qOPecFlBqlR7SKq1CzPkSfB1obLHjfIuX+/Edv6UN3qJSIxeoZwZ41sVvWdFwot4CAAA="
    },
    "Metadata": {
     "aws:cdk:path": "TodaysDentalInsightsChimeN1/CDKMetadata/Default"
@@ -19334,6 +21638,48 @@
     "Name": "TodaysDentalInsightsChimeN1-GetJoinableCallsArn"
    }
   },
+  "SupervisorLiveCallsFnArn": {
+   "Value": {
+    "Fn::GetAtt": [
+     "SupervisorLiveCallsFnBA69322A",
+     "Arn"
+    ]
+   },
+   "Export": {
+    "Name": "TodaysDentalInsightsChimeN1-SupervisorLiveCallsArn"
+   }
+  },
+  "SupervisorMonitorFnArn": {
+   "Value": {
+    "Fn::GetAtt": [
+     "SupervisorMonitorFn94A08B3D",
+     "Arn"
+    ]
+   },
+   "Export": {
+    "Name": "TodaysDentalInsightsChimeN1-SupervisorMonitorArn"
+   }
+  },
+  "SupervisorWhisperFnArn": {
+   "Value": {
+    "Fn::GetAtt": [
+     "SupervisorWhisperFn6BAEE1AA",
+     "Arn"
+    ]
+   },
+   "Export": {
+    "Name": "TodaysDentalInsightsChimeN1-SupervisorWhisperArn"
+   }
+  },
+  "VoicemailBucketName": {
+   "Description": "S3 bucket for call voicemails",
+   "Value": {
+    "Ref": "VoicemailBucket6DF79C0C"
+   },
+   "Export": {
+    "Name": "TodaysDentalInsightsChimeN1-VoicemailBucketName"
+   }
+  },
   "HoldMusicBucketName": {
    "Description": "S3 bucket for hold music and streaming TTS audio.",
    "Value": {
@@ -19527,6 +21873,14 @@
    },
    "Export": {
     "Name": "TodaysDentalInsightsChimeN1:ExportsOutputRefCallRecordingsBucketF5B214BA2A458576"
+   }
+  },
+  "ExportsOutputRefAgentActiveTableB850949320633E2E": {
+   "Value": {
+    "Ref": "AgentActiveTableB8509493"
+   },
+   "Export": {
+    "Name": "TodaysDentalInsightsChimeN1:ExportsOutputRefAgentActiveTableB850949320633E2E"
    }
   },
   "ExportsOutputFnGetAttClinicsTable4477ED9EArnE2BAB4BF": {

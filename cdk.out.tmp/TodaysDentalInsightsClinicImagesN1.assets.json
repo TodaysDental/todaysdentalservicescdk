@@ -1,31 +1,31 @@
 {
   "version": "48.0.0",
   "files": {
-    "1f0b94a53e9f193d9664b28af6bb6d5c944813b33e1c6b4482de90a50978e48f": {
+    "02027c880a81753bed60c99d1669c32bfe473b21eb251d350fdef263f62d8568": {
       "displayName": "ImagesFn/Code",
       "source": {
-        "path": "asset.1f0b94a53e9f193d9664b28af6bb6d5c944813b33e1c6b4482de90a50978e48f",
+        "path": "asset.02027c880a81753bed60c99d1669c32bfe473b21eb251d350fdef263f62d8568",
         "packaging": "zip"
       },
       "destinations": {
-        "851620242036-us-east-1-fc433171": {
+        "851620242036-us-east-1-9d4db594": {
           "bucketName": "cdk-tdi3-assets-851620242036-us-east-1",
-          "objectKey": "1f0b94a53e9f193d9664b28af6bb6d5c944813b33e1c6b4482de90a50978e48f.zip",
+          "objectKey": "02027c880a81753bed60c99d1669c32bfe473b21eb251d350fdef263f62d8568.zip",
           "region": "us-east-1",
           "assumeRoleArn": "arn:${AWS::Partition}:iam::851620242036:role/cdk-tdi3-file-publishing-role-851620242036-us-east-1"
         }
       }
     },
-    "406a76ab291ad218292ff2869509a9950b3ef79a2c09f69ad6bee355d6078bc5": {
+    "0a9366cd6a4f58763a8ac6876a1476568cb4d8f3983e29d86a79baf7cfb83b52": {
       "displayName": "TodaysDentalInsightsClinicImagesN1 Template",
       "source": {
         "path": "TodaysDentalInsightsClinicImagesN1.template.json",
         "packaging": "file"
       },
       "destinations": {
-        "851620242036-us-east-1-f68526b8": {
+        "851620242036-us-east-1-8c0e491c": {
           "bucketName": "cdk-tdi3-assets-851620242036-us-east-1",
-          "objectKey": "406a76ab291ad218292ff2869509a9950b3ef79a2c09f69ad6bee355d6078bc5.json",
+          "objectKey": "0a9366cd6a4f58763a8ac6876a1476568cb4d8f3983e29d86a79baf7cfb83b52.json",
           "region": "us-east-1",
           "assumeRoleArn": "arn:${AWS::Partition}:iam::851620242036:role/cdk-tdi3-file-publishing-role-851620242036-us-east-1"
         }

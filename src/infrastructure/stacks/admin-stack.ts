@@ -14,6 +14,7 @@ export interface AdminStackProps extends StackProps {
   clinicHoursTableName: string;
   staffClinicInfoTableName?: string;
   agentPresenceTableName?: string;
+  agentActiveTableName?: string;
   jwtSecretValue?: string;
   /** GlobalSecrets DynamoDB table name for retrieving secrets */
   globalSecretsTableName?: string;
@@ -65,6 +66,10 @@ export interface AdminStackProps extends StackProps {
   getJoinableCallsFnArn?: string;
   // ** NEW: Call Recording **
   getRecordingFnArn?: string;
+  // ** NEW: Supervisor Tools **
+  supervisorLiveCallsFnArn?: string;
+  supervisorMonitorFnArn?: string;
+  supervisorWhisperFnArn?: string;
 }
 
 export class AdminStack extends Stack {
@@ -640,6 +645,7 @@ export class AdminStack extends Stack {
           CALL_ANALYTICS_TABLE_NAME: props.analyticsTableName,
           CALL_QUEUE_TABLE_NAME: props.callQueueTableName,
           AGENT_PRESENCE_TABLE_NAME: props.agentPresenceTableName,
+          AGENT_ACTIVE_TABLE_NAME: props.agentActiveTableName || '',
           AWS_REGION_OVERRIDE: Stack.of(this).region,
         },
       });
@@ -658,6 +664,11 @@ export class AdminStack extends Stack {
           // Agent Presence table
           `arn:aws:dynamodb:${this.region}:${this.account}:table/${props.agentPresenceTableName}`,
           `arn:aws:dynamodb:${this.region}:${this.account}:table/${props.agentPresenceTableName}/index/*`,
+          // Agent Active table
+          ...(props.agentActiveTableName ? [
+            `arn:aws:dynamodb:${this.region}:${this.account}:table/${props.agentActiveTableName}`,
+            `arn:aws:dynamodb:${this.region}:${this.account}:table/${props.agentActiveTableName}/index/*`,
+          ] : []),
         ],
       }));
     }
@@ -828,13 +839,7 @@ export class AdminStack extends Stack {
         methodResponses: [{ statusCode: '200' }],
       });
 
-      // GET /analytics/live?callId={callId} - Real-time/live call analytics with query params
-      const liveRes = analyticsRes.addResource('live');
-      liveRes.addMethod('GET', new apigw.LambdaIntegration(this.getAnalyticsFn), {
-        authorizer: this.authorizer,
-        authorizationType: apigw.AuthorizationType.CUSTOM,
-        methodResponses: [{ statusCode: '200' }],
-      });
+      // NOTE: /analytics/live endpoint removed (live call analytics feature removed)
 
       // GET /analytics/rankings?clinicId={clinicId} - Agent rankings/leaderboard
       const rankingsRes = analyticsRes.addResource('rankings');
@@ -1311,6 +1316,66 @@ export class AdminStack extends Stack {
         getJoinableRes.addMethod('GET', new apigw.LambdaIntegration(importedGetJoinable, { proxy: true }), {
           authorizer: this.authorizer,
           authorizationType: apigw.AuthorizationType.CUSTOM,
+        });
+      }
+    }
+
+    // ========================================
+    // SUPERVISOR TOOLS API ROUTES
+    // ========================================
+    if (props.supervisorLiveCallsFnArn || props.supervisorMonitorFnArn || props.supervisorWhisperFnArn) {
+      const callCenterRoot = this.api.root.getResource('call-center') ?? this.api.root.addResource('call-center');
+      const supervisorRoot = callCenterRoot.getResource('supervisor') ?? callCenterRoot.addResource('supervisor');
+
+      // GET /call-center/supervisor/live-calls
+      if (props.supervisorLiveCallsFnArn) {
+        const importedLiveCalls = lambda.Function.fromFunctionArn(this, 'ImportedSupervisorLiveCallsFn', props.supervisorLiveCallsFnArn);
+        importedLiveCalls.addPermission('ApiGatewayInvokeSupervisorLiveCalls', {
+          principal: new iam.ServicePrincipal('apigateway.amazonaws.com'),
+          sourceArn: this.api.arnForExecuteApi('*', '/call-center/supervisor/live-calls', '*'),
+        });
+        const liveCallsRes = supervisorRoot.addResource('live-calls');
+        liveCallsRes.addMethod('GET', new apigw.LambdaIntegration(importedLiveCalls, { proxy: true }), {
+          authorizer: this.authorizer,
+          authorizationType: apigw.AuthorizationType.CUSTOM,
+        });
+      }
+
+      // POST/PUT/DELETE /call-center/supervisor/monitor
+      if (props.supervisorMonitorFnArn) {
+        const importedMonitor = lambda.Function.fromFunctionArn(this, 'ImportedSupervisorMonitorFn', props.supervisorMonitorFnArn);
+        importedMonitor.addPermission('ApiGatewayInvokeSupervisorMonitor', {
+          principal: new iam.ServicePrincipal('apigateway.amazonaws.com'),
+          sourceArn: this.api.arnForExecuteApi('*', '/call-center/supervisor/monitor', '*'),
+        });
+        const monitorRes = supervisorRoot.addResource('monitor');
+        monitorRes.addMethod('POST', new apigw.LambdaIntegration(importedMonitor, { proxy: true }), {
+          authorizer: this.authorizer, authorizationType: apigw.AuthorizationType.CUSTOM,
+        });
+        monitorRes.addMethod('PUT', new apigw.LambdaIntegration(importedMonitor, { proxy: true }), {
+          authorizer: this.authorizer, authorizationType: apigw.AuthorizationType.CUSTOM,
+        });
+        monitorRes.addMethod('DELETE', new apigw.LambdaIntegration(importedMonitor, { proxy: true }), {
+          authorizer: this.authorizer, authorizationType: apigw.AuthorizationType.CUSTOM,
+        });
+      }
+
+      // POST/GET/PUT /call-center/supervisor/whisper
+      if (props.supervisorWhisperFnArn) {
+        const importedWhisper = lambda.Function.fromFunctionArn(this, 'ImportedSupervisorWhisperFn', props.supervisorWhisperFnArn);
+        importedWhisper.addPermission('ApiGatewayInvokeSupervisorWhisper', {
+          principal: new iam.ServicePrincipal('apigateway.amazonaws.com'),
+          sourceArn: this.api.arnForExecuteApi('*', '/call-center/supervisor/whisper', '*'),
+        });
+        const whisperRes = supervisorRoot.addResource('whisper');
+        whisperRes.addMethod('POST', new apigw.LambdaIntegration(importedWhisper, { proxy: true }), {
+          authorizer: this.authorizer, authorizationType: apigw.AuthorizationType.CUSTOM,
+        });
+        whisperRes.addMethod('GET', new apigw.LambdaIntegration(importedWhisper, { proxy: true }), {
+          authorizer: this.authorizer, authorizationType: apigw.AuthorizationType.CUSTOM,
+        });
+        whisperRes.addMethod('PUT', new apigw.LambdaIntegration(importedWhisper, { proxy: true }), {
+          authorizer: this.authorizer, authorizationType: apigw.AuthorizationType.CUSTOM,
         });
       }
     }

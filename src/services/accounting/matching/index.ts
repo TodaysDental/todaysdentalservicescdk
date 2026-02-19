@@ -3,6 +3,12 @@
  * 
  * This module provides matching strategies for different payment modes
  * to reconcile OpenDental payments with bank transactions.
+ * 
+ * Multi-pass matching:
+ *   Pass 1: Exact reference key match + amount match
+ *   Pass 2: Amount + date match (within tolerance)
+ *   Pass 3: Amount-only match
+ *   Remaining: UNMATCHED with detailed reason
  */
 
 import {
@@ -23,7 +29,7 @@ export interface MatchResult {
   bankRow?: BankStatementRow;
 }
 
-export interface MatchingStrategy {
+interface MatchingStrategy {
   mode: PaymentMode;
   match(
     openDentalRows: OpenDentalPaymentRow[],
@@ -70,8 +76,45 @@ function determineMatchStatus(expected: number, received?: number): RowMatchStat
   return 'PARTIAL';
 }
 
+/**
+ * Format currency for display in reasons
+ */
+function fmtAmt(n: number): string {
+  return `$${n.toFixed(2)}`;
+}
+
+/**
+ * Check if two dates are within N days of each other
+ */
+function datesWithinDays(date1: string, date2: string, days: number): boolean {
+  if (!date1 || !date2) return false;
+  const d1 = new Date(date1).getTime();
+  const d2 = new Date(date2).getTime();
+  if (isNaN(d1) || isNaN(d2)) return false;
+  return Math.abs(d1 - d2) <= days * 24 * 60 * 60 * 1000;
+}
+
+/**
+ * Find the closest bank row by amount (for detailed "near miss" reporting)
+ */
+function findNearestBankRow(
+  odRow: OpenDentalPaymentRow,
+  bankRows: BankStatementRow[],
+  usedBankRows: Set<string>
+): { bankRow: BankStatementRow; diff: number } | null {
+  let closest: { bankRow: BankStatementRow; diff: number } | null = null;
+  for (const br of bankRows) {
+    if (usedBankRows.has(br.rowId)) continue;
+    const diff = Math.abs(br.amount - odRow.expectedAmount);
+    if (!closest || diff < closest.diff) {
+      closest = { bankRow: br, diff };
+    }
+  }
+  return closest;
+}
+
 // ========================================
-// BASE MATCHING STRATEGY
+// MULTI-PASS MATCHING STRATEGY
 // ========================================
 
 abstract class BaseMatchingStrategy implements MatchingStrategy {
@@ -84,120 +127,175 @@ abstract class BaseMatchingStrategy implements MatchingStrategy {
   ): MatchResult[] {
     const results: MatchResult[] = [];
     const usedBankRows = new Set<string>();
-    const usedOpenDentalRows = new Set<string>();
+    const usedODRows = new Set<string>();
 
-    // Create lookup map for bank rows by matching key
+    // ===== PASS 1: Exact reference key + amount match =====
     const bankRowsByKey = new Map<string, BankStatementRow[]>();
     for (const bankRow of bankRows) {
       const key = this.getMatchingKey(bankRow as any);
       if (key) {
-        if (!bankRowsByKey.has(key)) {
-          bankRowsByKey.set(key, []);
-        }
+        if (!bankRowsByKey.has(key)) bankRowsByKey.set(key, []);
         bankRowsByKey.get(key)!.push(bankRow);
       }
     }
 
-    // Match OpenDental rows to bank rows
     for (const odRow of openDentalRows) {
-      const key = this.getMatchingKey(odRow as any);
-      if (!key) {
-        // No reference - mark as unmatched
-        results.push(this.createUnmatchedResult(odRow));
-        usedOpenDentalRows.add(odRow.rowId);
-        continue;
-      }
+      const odKey = this.getMatchingKey(odRow as any);
+      if (!odKey) continue;
 
-      const matchingBankRows = bankRowsByKey.get(key) || [];
-      let matched = false;
-
+      const matchingBankRows = bankRowsByKey.get(odKey) || [];
       for (const bankRow of matchingBankRows) {
         if (usedBankRows.has(bankRow.rowId)) continue;
-
-        // Check if amounts match or partially match
         const status = determineMatchStatus(odRow.expectedAmount, bankRow.amount);
-        
         if (status === 'MATCHED' || status === 'PARTIAL') {
-          results.push(this.createMatchedResult(odRow, bankRow, status));
+          const diff = (bankRow.amount || 0) - odRow.expectedAmount;
+          results.push({
+            row: {
+              rowId: generateRowId(),
+              referenceId: odRow.referenceId,
+              expectedAmount: odRow.expectedAmount,
+              receivedAmount: bankRow.amount,
+              status,
+              difference: diff,
+              reason: status === 'MATCHED'
+                ? `Exact reference match: "${odRow.referenceId}" matched bank ref "${bankRow.reference}"`
+                : `Reference matched ("${odRow.referenceId}"), but amount differs: expected ${fmtAmt(odRow.expectedAmount)}, received ${fmtAmt(bankRow.amount)} (diff: ${fmtAmt(Math.abs(diff))})`,
+              openDentalRowId: odRow.rowId,
+              bankRowId: bankRow.rowId,
+              patientName: odRow.patientName,
+            },
+            openDentalRow: odRow,
+            bankRow,
+          });
           usedBankRows.add(bankRow.rowId);
-          usedOpenDentalRows.add(odRow.rowId);
-          matched = true;
+          usedODRows.add(odRow.rowId);
           break;
         }
       }
+    }
 
-      if (!matched) {
-        results.push(this.createUnmatchedResult(odRow));
-        usedOpenDentalRows.add(odRow.rowId);
+    // ===== PASS 2: Amount + Date match (±3 days) =====
+    for (const odRow of openDentalRows) {
+      if (usedODRows.has(odRow.rowId)) continue;
+
+      for (const bankRow of bankRows) {
+        if (usedBankRows.has(bankRow.rowId)) continue;
+
+        if (amountsMatch(odRow.expectedAmount, bankRow.amount) &&
+          datesWithinDays(odRow.paymentDate, bankRow.date, 3)) {
+          results.push({
+            row: {
+              rowId: generateRowId(),
+              referenceId: odRow.referenceId,
+              expectedAmount: odRow.expectedAmount,
+              receivedAmount: bankRow.amount,
+              status: 'MATCHED',
+              difference: 0,
+              reason: `Amount+Date match: ${fmtAmt(odRow.expectedAmount)} on ${odRow.paymentDate} matched bank txn "${bankRow.reference}" (${bankRow.date}). References differ: OD="${odRow.referenceId}" vs Bank="${bankRow.reference}"`,
+              openDentalRowId: odRow.rowId,
+              bankRowId: bankRow.rowId,
+              patientName: odRow.patientName,
+            },
+            openDentalRow: odRow,
+            bankRow,
+          });
+          usedBankRows.add(bankRow.rowId);
+          usedODRows.add(odRow.rowId);
+          break;
+        }
       }
     }
 
-    // Add unmatched bank rows (payments received but not expected)
-    for (const bankRow of bankRows) {
-      if (!usedBankRows.has(bankRow.rowId)) {
-        results.push(this.createUnexpectedBankResult(bankRow));
+    // ===== PASS 3: Amount-only match (exact amount, no date constraint) =====
+    for (const odRow of openDentalRows) {
+      if (usedODRows.has(odRow.rowId)) continue;
+
+      for (const bankRow of bankRows) {
+        if (usedBankRows.has(bankRow.rowId)) continue;
+
+        if (amountsMatch(odRow.expectedAmount, bankRow.amount)) {
+          results.push({
+            row: {
+              rowId: generateRowId(),
+              referenceId: odRow.referenceId,
+              expectedAmount: odRow.expectedAmount,
+              receivedAmount: bankRow.amount,
+              status: 'PARTIAL',
+              difference: 0,
+              reason: `Amount-only match: ${fmtAmt(odRow.expectedAmount)} matched bank txn "${bankRow.reference}" (${bankRow.date}). No reference or date match found. OD ref="${odRow.referenceId}" (${odRow.paymentDate}) vs Bank ref="${bankRow.reference}" (${bankRow.date})`,
+              openDentalRowId: odRow.rowId,
+              bankRowId: bankRow.rowId,
+              patientName: odRow.patientName,
+            },
+            openDentalRow: odRow,
+            bankRow,
+          });
+          usedBankRows.add(bankRow.rowId);
+          usedODRows.add(odRow.rowId);
+          break;
+        }
       }
+    }
+
+    // ===== PASS 4: Unmatched OpenDental rows (with detailed reason) =====
+    for (const odRow of openDentalRows) {
+      if (usedODRows.has(odRow.rowId)) continue;
+
+      const odKey = this.getMatchingKey(odRow as any);
+      const nearest = findNearestBankRow(odRow, bankRows, usedBankRows);
+      const availableBankCount = bankRows.filter(br => !usedBankRows.has(br.rowId)).length;
+
+      let reason = `UNMATCHED: OpenDental payment ${fmtAmt(odRow.expectedAmount)} (${odRow.paymentDate}) - Patient: ${odRow.patientName}, Ref: "${odRow.referenceId}". `;
+
+      if (availableBankCount === 0) {
+        reason += 'No remaining bank transactions to match against.';
+      } else if (!odKey) {
+        reason += `No reference/cheque number found in OpenDental payment. ${availableBankCount} unmatched bank txns exist but cannot match by reference.`;
+      } else if (nearest) {
+        reason += `Reference "${odKey}" not found in bank data. Closest bank amount: ${fmtAmt(nearest.bankRow.amount)} (ref: "${nearest.bankRow.reference}", date: ${nearest.bankRow.date}), diff: ${fmtAmt(nearest.diff)}. ${availableBankCount} bank txns remain unmatched.`;
+      } else {
+        reason += `Reference "${odKey}" not found in any bank transaction.`;
+      }
+
+      results.push({
+        row: {
+          rowId: generateRowId(),
+          referenceId: odRow.referenceId,
+          expectedAmount: odRow.expectedAmount,
+          receivedAmount: undefined,
+          status: 'UNMATCHED',
+          difference: -odRow.expectedAmount,
+          reason,
+          openDentalRowId: odRow.rowId,
+          patientName: odRow.patientName,
+        },
+        openDentalRow: odRow,
+      });
+    }
+
+    // ===== PASS 5: Unmatched bank rows (with detailed reason) =====
+    for (const bankRow of bankRows) {
+      if (usedBankRows.has(bankRow.rowId)) continue;
+
+      const bankKey = this.getMatchingKey(bankRow as any);
+      const reason = `UNMATCHED: Bank transaction ${fmtAmt(bankRow.amount)} (${bankRow.date}) - Ref: "${bankRow.reference}". No OpenDental payment found with matching ${bankKey ? `reference "${bankKey}"` : 'reference'} or matching amount.`;
+
+      results.push({
+        row: {
+          rowId: generateRowId(),
+          referenceId: bankRow.reference,
+          expectedAmount: 0,
+          receivedAmount: bankRow.amount,
+          status: 'UNMATCHED',
+          difference: bankRow.amount,
+          reason,
+          bankRowId: bankRow.rowId,
+        },
+        bankRow,
+      });
     }
 
     return results;
-  }
-
-  protected createMatchedResult(
-    odRow: OpenDentalPaymentRow,
-    bankRow: BankStatementRow,
-    status: RowMatchStatus
-  ): MatchResult {
-    const difference = (bankRow.amount || 0) - odRow.expectedAmount;
-    
-    return {
-      row: {
-        rowId: generateRowId(),
-        referenceId: odRow.referenceId,
-        expectedAmount: odRow.expectedAmount,
-        receivedAmount: bankRow.amount,
-        status,
-        difference,
-        reason: status === 'PARTIAL' ? 'Amount mismatch' : undefined,
-        openDentalRowId: odRow.rowId,
-        bankRowId: bankRow.rowId,
-        patientName: odRow.patientName,
-      },
-      openDentalRow: odRow,
-      bankRow,
-    };
-  }
-
-  protected createUnmatchedResult(odRow: OpenDentalPaymentRow): MatchResult {
-    return {
-      row: {
-        rowId: generateRowId(),
-        referenceId: odRow.referenceId,
-        expectedAmount: odRow.expectedAmount,
-        receivedAmount: undefined,
-        status: 'UNMATCHED',
-        difference: -odRow.expectedAmount,
-        reason: 'No matching bank transaction found',
-        openDentalRowId: odRow.rowId,
-        patientName: odRow.patientName,
-      },
-      openDentalRow: odRow,
-    };
-  }
-
-  protected createUnexpectedBankResult(bankRow: BankStatementRow): MatchResult {
-    return {
-      row: {
-        rowId: generateRowId(),
-        referenceId: bankRow.reference,
-        expectedAmount: 0,
-        receivedAmount: bankRow.amount,
-        status: 'UNMATCHED',
-        difference: bankRow.amount,
-        reason: 'Bank transaction has no matching OpenDental payment',
-        bankRowId: bankRow.rowId,
-      },
-      bankRow,
-    };
   }
 }
 
@@ -350,7 +448,7 @@ export function runReconciliation(
 }
 
 /**
- * Calculate reconciliation summary statistics
+ * Calculate summary statistics from match results
  */
 export function calculateReconciliationSummary(results: MatchResult[]): {
   totalRows: number;

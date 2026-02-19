@@ -339,7 +339,7 @@
     "aws:cdk:path": "TodaysDentalInsightsRcsN1/RcsApi/Account"
    }
   },
-  "RcsApiDeployment2F891A90b06602efb6e5b7423d2b2a1dcb68eb6c": {
+  "RcsApiDeployment2F891A9093688e558b7d2faa02c18d474bc42a15": {
    "Type": "AWS::ApiGateway::Deployment",
    "Properties": {
     "Description": "RCS Messaging API for Twilio webhooks",
@@ -350,6 +350,10 @@
    "DependsOn": [
     "GatewayResponseDefault4XXC22BF2A7",
     "GatewayResponseDefault5XX28177100",
+    "RcsApiclinicIdaiautoreplyGET13350832",
+    "RcsApiclinicIdaiautoreplyOPTIONSD8A89FA9",
+    "RcsApiclinicIdaiautoreplyPUT791AF961",
+    "RcsApiclinicIdaiautoreply3BA00AEF",
     "RcsApiclinicIdaimessagebodyOPTIONSFF009F0A",
     "RcsApiclinicIdaimessagebodyPOST74C5FBA4",
     "RcsApiclinicIdaimessagebody2E741D13",
@@ -418,7 +422,7 @@
    "Type": "AWS::ApiGateway::Stage",
    "Properties": {
     "DeploymentId": {
-     "Ref": "RcsApiDeployment2F891A90b06602efb6e5b7423d2b2a1dcb68eb6c"
+     "Ref": "RcsApiDeployment2F891A9093688e558b7d2faa02c18d474bc42a15"
     },
     "MethodSettings": [
      {
@@ -2573,6 +2577,299 @@
     "aws:cdk:path": "TodaysDentalInsightsRcsN1/RcsApi/Default/{clinicId}/ai/message-body/POST/Resource"
    }
   },
+  "RcsApiclinicIdaiautoreply3BA00AEF": {
+   "Type": "AWS::ApiGateway::Resource",
+   "Properties": {
+    "ParentId": {
+     "Ref": "RcsApiclinicIdai53237EB6"
+    },
+    "PathPart": "auto-reply",
+    "RestApiId": {
+     "Ref": "RcsApi6BF94691"
+    }
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsRcsN1/RcsApi/Default/{clinicId}/ai/auto-reply/Resource"
+   }
+  },
+  "RcsApiclinicIdaiautoreplyOPTIONSD8A89FA9": {
+   "Type": "AWS::ApiGateway::Method",
+   "Properties": {
+    "ApiKeyRequired": false,
+    "AuthorizationType": "NONE",
+    "HttpMethod": "OPTIONS",
+    "Integration": {
+     "IntegrationResponses": [
+      {
+       "ResponseParameters": {
+        "method.response.header.Access-Control-Allow-Headers": "'Content-Type,Authorization,X-Requested-With,Referer,X-Clinic-Id'",
+        "method.response.header.Access-Control-Allow-Origin": "'https://todaysdentalinsights.com'",
+        "method.response.header.Vary": "'Origin'",
+        "method.response.header.Access-Control-Allow-Methods": "'GET,POST,PUT,DELETE,OPTIONS'"
+       },
+       "ResponseTemplates": {
+        "application/json": "#set($origin = $input.params().header.get(\"Origin\"))\n#if($origin == \"\")\n  #set($origin = $input.params().header.get(\"origin\"))\n#end\n#if($origin == \"https://www.todaysdentalinsights.com\" || $origin == \"http://localhost:3000\" || $origin == \"http://127.0.0.1:3000\" || $origin == \"https://dentistinnewbritain.com\" || $origin == \"https://dentistingreenville.com\" || $origin == \"https://todaysdentalcayce.com\" || $origin == \"https://creekcrossingdentalcare.com\" || $origin == \"https://dentistinwinston-salem.com\" || $origin == \"https://dentistincentennial.com\" || $origin == \"https://renodentalcareandorthodontics.com\" || $origin == \"https://todaysdentalalexandria.com\" || $origin == \"https://todaysdentalgreenville.com\" || $origin == \"https://todaysdentalwestcolumbia.com\" || $origin == \"https://dentistinconcord.com\" || $origin == \"https://dentistinedgewatermd.com\" || $origin == \"https://lawrencevilledentistry.com\" || $origin == \"https://dentistinlouisville.com\" || $origin == \"https://dentistatsaludapointe.com\" || $origin == \"https://dentistinoregonoh.com\" || $origin == \"https://todaysdentallexington.com\" || $origin == \"https://dentistinbowie.com\" || $origin == \"https://dentistinpowellohio.com\" || $origin == \"https://dentistinperrysburg.com\" || $origin == \"https://dentistinaustintx.com\" || $origin == \"https://therimdentalcare.com\" || $origin == \"https://dentistinbloomingdaleil.com\" || $origin == \"https://dentistinvernonhills.com\" || $origin == \"https://themeadowsdentalcare.com\" || $origin == \"https://stillwaterdentalcareandortho.com\" || $origin == \"https://pearlanddentalcare.com\" || $origin == \"https://www.dentistinnewbritain.com\" || $origin == \"https://www.dentistingreenville.com\" || $origin == \"https://www.todaysdentalcayce.com\" || $origin == \"https://www.creekcrossingdentalcare.com\" || $origin == \"https://www.dentistinwinston-salem.com\" || $origin == \"https://www.dentistincentennial.com\" || $origin == \"https://www.renodentalcareandorthodontics.com\" || $origin == \"https://www.todaysdentalalexandria.com\" || $origin == \"https://www.todaysdentalgreenville.com\" || $origin == \"https://www.todaysdentalwestcolumbia.com\" || $origin == \"https://www.dentistinconcord.com\" || $origin == \"https://www.dentistinedgewatermd.com\" || $origin == \"https://www.lawrencevilledentistry.com\" || $origin == \"https://www.dentistinlouisville.com\" || $origin == \"https://www.dentistatsaludapointe.com\" || $origin == \"https://www.dentistinoregonoh.com\" || $origin == \"https://www.todaysdentallexington.com\" || $origin == \"https://www.dentistinbowie.com\" || $origin == \"https://www.dentistinpowellohio.com\" || $origin == \"https://www.dentistinperrysburg.com\" || $origin == \"https://www.dentistinaustintx.com\" || $origin == \"https://www.therimdentalcare.com\" || $origin == \"https://www.dentistinbloomingdaleil.com\" || $origin == \"https://www.dentistinvernonhills.com\" || $origin == \"https://www.themeadowsdentalcare.com\" || $origin == \"https://www.stillwaterdentalcareandortho.com\" || $origin == \"https://www.pearlanddentalcare.com\")\n  #set($context.responseOverride.header.Access-Control-Allow-Origin = $origin)\n#end"
+       },
+       "StatusCode": "204"
+      }
+     ],
+     "RequestTemplates": {
+      "application/json": "{ statusCode: 200 }"
+     },
+     "Type": "MOCK"
+    },
+    "MethodResponses": [
+     {
+      "ResponseParameters": {
+       "method.response.header.Access-Control-Allow-Headers": true,
+       "method.response.header.Access-Control-Allow-Origin": true,
+       "method.response.header.Vary": true,
+       "method.response.header.Access-Control-Allow-Methods": true
+      },
+      "StatusCode": "204"
+     }
+    ],
+    "ResourceId": {
+     "Ref": "RcsApiclinicIdaiautoreply3BA00AEF"
+    },
+    "RestApiId": {
+     "Ref": "RcsApi6BF94691"
+    }
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsRcsN1/RcsApi/Default/{clinicId}/ai/auto-reply/OPTIONS/Resource"
+   }
+  },
+  "RcsApiclinicIdaiautoreplyGETApiPermissionTodaysDentalInsightsRcsN1RcsApi1E82AFABGETclinicIdaiautoreplyB50AE0A1": {
+   "Type": "AWS::Lambda::Permission",
+   "Properties": {
+    "Action": "lambda:InvokeFunction",
+    "FunctionName": {
+     "Fn::GetAtt": [
+      "RcsAutoReplyConfigFnF9956CB5",
+      "Arn"
+     ]
+    },
+    "Principal": "apigateway.amazonaws.com",
+    "SourceArn": {
+     "Fn::Join": [
+      "",
+      [
+       "arn:",
+       {
+        "Ref": "AWS::Partition"
+       },
+       ":execute-api:us-east-1:851620242036:",
+       {
+        "Ref": "RcsApi6BF94691"
+       },
+       "/",
+       {
+        "Ref": "RcsApiDeploymentStageprodD0EAEE7D"
+       },
+       "/GET/*/ai/auto-reply"
+      ]
+     ]
+    }
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsRcsN1/RcsApi/Default/{clinicId}/ai/auto-reply/GET/ApiPermission.TodaysDentalInsightsRcsN1RcsApi1E82AFAB.GET..{clinicId}.ai.auto-reply"
+   }
+  },
+  "RcsApiclinicIdaiautoreplyGETApiPermissionTestTodaysDentalInsightsRcsN1RcsApi1E82AFABGETclinicIdaiautoreplyD8431347": {
+   "Type": "AWS::Lambda::Permission",
+   "Properties": {
+    "Action": "lambda:InvokeFunction",
+    "FunctionName": {
+     "Fn::GetAtt": [
+      "RcsAutoReplyConfigFnF9956CB5",
+      "Arn"
+     ]
+    },
+    "Principal": "apigateway.amazonaws.com",
+    "SourceArn": {
+     "Fn::Join": [
+      "",
+      [
+       "arn:",
+       {
+        "Ref": "AWS::Partition"
+       },
+       ":execute-api:us-east-1:851620242036:",
+       {
+        "Ref": "RcsApi6BF94691"
+       },
+       "/test-invoke-stage/GET/*/ai/auto-reply"
+      ]
+     ]
+    }
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsRcsN1/RcsApi/Default/{clinicId}/ai/auto-reply/GET/ApiPermission.Test.TodaysDentalInsightsRcsN1RcsApi1E82AFAB.GET..{clinicId}.ai.auto-reply"
+   }
+  },
+  "RcsApiclinicIdaiautoreplyGET13350832": {
+   "Type": "AWS::ApiGateway::Method",
+   "Properties": {
+    "AuthorizationType": "CUSTOM",
+    "AuthorizerId": {
+     "Ref": "RcsAuthorizer28607600"
+    },
+    "HttpMethod": "GET",
+    "Integration": {
+     "IntegrationHttpMethod": "POST",
+     "Type": "AWS_PROXY",
+     "Uri": {
+      "Fn::Join": [
+       "",
+       [
+        "arn:",
+        {
+         "Ref": "AWS::Partition"
+        },
+        ":apigateway:us-east-1:lambda:path/2015-03-31/functions/",
+        {
+         "Fn::GetAtt": [
+          "RcsAutoReplyConfigFnF9956CB5",
+          "Arn"
+         ]
+        },
+        "/invocations"
+       ]
+      ]
+     }
+    },
+    "MethodResponses": [
+     {
+      "StatusCode": "200"
+     }
+    ],
+    "ResourceId": {
+     "Ref": "RcsApiclinicIdaiautoreply3BA00AEF"
+    },
+    "RestApiId": {
+     "Ref": "RcsApi6BF94691"
+    }
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsRcsN1/RcsApi/Default/{clinicId}/ai/auto-reply/GET/Resource"
+   }
+  },
+  "RcsApiclinicIdaiautoreplyPUTApiPermissionTodaysDentalInsightsRcsN1RcsApi1E82AFABPUTclinicIdaiautoreply1BA53DCF": {
+   "Type": "AWS::Lambda::Permission",
+   "Properties": {
+    "Action": "lambda:InvokeFunction",
+    "FunctionName": {
+     "Fn::GetAtt": [
+      "RcsAutoReplyConfigFnF9956CB5",
+      "Arn"
+     ]
+    },
+    "Principal": "apigateway.amazonaws.com",
+    "SourceArn": {
+     "Fn::Join": [
+      "",
+      [
+       "arn:",
+       {
+        "Ref": "AWS::Partition"
+       },
+       ":execute-api:us-east-1:851620242036:",
+       {
+        "Ref": "RcsApi6BF94691"
+       },
+       "/",
+       {
+        "Ref": "RcsApiDeploymentStageprodD0EAEE7D"
+       },
+       "/PUT/*/ai/auto-reply"
+      ]
+     ]
+    }
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsRcsN1/RcsApi/Default/{clinicId}/ai/auto-reply/PUT/ApiPermission.TodaysDentalInsightsRcsN1RcsApi1E82AFAB.PUT..{clinicId}.ai.auto-reply"
+   }
+  },
+  "RcsApiclinicIdaiautoreplyPUTApiPermissionTestTodaysDentalInsightsRcsN1RcsApi1E82AFABPUTclinicIdaiautoreplyC840F607": {
+   "Type": "AWS::Lambda::Permission",
+   "Properties": {
+    "Action": "lambda:InvokeFunction",
+    "FunctionName": {
+     "Fn::GetAtt": [
+      "RcsAutoReplyConfigFnF9956CB5",
+      "Arn"
+     ]
+    },
+    "Principal": "apigateway.amazonaws.com",
+    "SourceArn": {
+     "Fn::Join": [
+      "",
+      [
+       "arn:",
+       {
+        "Ref": "AWS::Partition"
+       },
+       ":execute-api:us-east-1:851620242036:",
+       {
+        "Ref": "RcsApi6BF94691"
+       },
+       "/test-invoke-stage/PUT/*/ai/auto-reply"
+      ]
+     ]
+    }
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsRcsN1/RcsApi/Default/{clinicId}/ai/auto-reply/PUT/ApiPermission.Test.TodaysDentalInsightsRcsN1RcsApi1E82AFAB.PUT..{clinicId}.ai.auto-reply"
+   }
+  },
+  "RcsApiclinicIdaiautoreplyPUT791AF961": {
+   "Type": "AWS::ApiGateway::Method",
+   "Properties": {
+    "AuthorizationType": "CUSTOM",
+    "AuthorizerId": {
+     "Ref": "RcsAuthorizer28607600"
+    },
+    "HttpMethod": "PUT",
+    "Integration": {
+     "IntegrationHttpMethod": "POST",
+     "Type": "AWS_PROXY",
+     "Uri": {
+      "Fn::Join": [
+       "",
+       [
+        "arn:",
+        {
+         "Ref": "AWS::Partition"
+        },
+        ":apigateway:us-east-1:lambda:path/2015-03-31/functions/",
+        {
+         "Fn::GetAtt": [
+          "RcsAutoReplyConfigFnF9956CB5",
+          "Arn"
+         ]
+        },
+        "/invocations"
+       ]
+      ]
+     }
+    },
+    "MethodResponses": [
+     {
+      "StatusCode": "200"
+     }
+    ],
+    "ResourceId": {
+     "Ref": "RcsApiclinicIdaiautoreply3BA00AEF"
+    },
+    "RestApiId": {
+     "Ref": "RcsApi6BF94691"
+    }
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsRcsN1/RcsApi/Default/{clinicId}/ai/auto-reply/PUT/Resource"
+   }
+  },
   "RcsApiclinicIdconfigDA4A2F9E": {
    "Type": "AWS::ApiGateway::Resource",
    "Properties": {
@@ -4090,6 +4387,32 @@
        ]
       },
       {
+       "Action": "lambda:InvokeFunction",
+       "Effect": "Allow",
+       "Resource": [
+        {
+         "Fn::GetAtt": [
+          "RcsAutoReplyFnAB19E5B5",
+          "Arn"
+         ]
+        },
+        {
+         "Fn::Join": [
+          "",
+          [
+           {
+            "Fn::GetAtt": [
+             "RcsAutoReplyFnAB19E5B5",
+             "Arn"
+            ]
+           },
+           ":*"
+          ]
+         ]
+        }
+       ]
+      },
+      {
        "Action": [
         "dynamodb:GetItem",
         "dynamodb:Query"
@@ -4160,7 +4483,7 @@
    "Properties": {
     "Code": {
      "S3Bucket": "cdk-tdi3-assets-851620242036-us-east-1",
-     "S3Key": "7aa703a270a17d52738a8789a293c6cd3ba6f9cf7dc0c0f11a8c78bf954e0671.zip"
+     "S3Key": "096d7d97c240efe9c8e339da3aca5428bfe883d7190b245e9b4dd7f8dd014905.zip"
     },
     "Environment": {
      "Variables": {
@@ -4179,7 +4502,14 @@
       },
       "CLINIC_CONFIG_TABLE": {
        "Fn::ImportValue": "TodaysDentalInsightsSecretsN1:ExportsOutputRefClinicConfigTable3BB0291A34870B66"
-      }
+      },
+      "RCS_AUTO_REPLY_FUNCTION_ARN": {
+       "Fn::GetAtt": [
+        "RcsAutoReplyFnAB19E5B5",
+        "Arn"
+       ]
+      },
+      "ENABLE_RCS_AUTO_REPLY": "true"
      }
     },
     "Handler": "index.handler",
@@ -4217,7 +4547,7 @@
    ],
    "Metadata": {
     "aws:cdk:path": "TodaysDentalInsightsRcsN1/RcsIncomingMessageFn/Resource",
-    "aws:asset:path": "asset.7aa703a270a17d52738a8789a293c6cd3ba6f9cf7dc0c0f11a8c78bf954e0671",
+    "aws:asset:path": "asset.096d7d97c240efe9c8e339da3aca5428bfe883d7190b245e9b4dd7f8dd014905",
     "aws:asset:is-bundled": true,
     "aws:asset:property": "Code"
    }
@@ -4874,7 +5204,7 @@
    "Properties": {
     "Code": {
      "S3Bucket": "cdk-tdi3-assets-851620242036-us-east-1",
-     "S3Key": "ccd77b88a47dc24c1c3e391cf005b3191f7d38f4e168c66bafda131474e5d5a9.zip"
+     "S3Key": "81595e24c80ab2a327b4126ad412029d9f36c82a7fd08bdcd9ac15b40daaa6eb.zip"
     },
     "Environment": {
      "Variables": {
@@ -4934,9 +5264,620 @@
    ],
    "Metadata": {
     "aws:cdk:path": "TodaysDentalInsightsRcsN1/RcsSendMessageFn/Resource",
-    "aws:asset:path": "asset.ccd77b88a47dc24c1c3e391cf005b3191f7d38f4e168c66bafda131474e5d5a9",
+    "aws:asset:path": "asset.81595e24c80ab2a327b4126ad412029d9f36c82a7fd08bdcd9ac15b40daaa6eb",
     "aws:asset:is-bundled": true,
     "aws:asset:property": "Code"
+   }
+  },
+  "RcsAutoReplyFnServiceRoleC6E30B94": {
+   "Type": "AWS::IAM::Role",
+   "Properties": {
+    "AssumeRolePolicyDocument": {
+     "Statement": [
+      {
+       "Action": "sts:AssumeRole",
+       "Effect": "Allow",
+       "Principal": {
+        "Service": "lambda.amazonaws.com"
+       }
+      }
+     ],
+     "Version": "2012-10-17"
+    },
+    "ManagedPolicyArns": [
+     {
+      "Fn::Join": [
+       "",
+       [
+        "arn:",
+        {
+         "Ref": "AWS::Partition"
+        },
+        ":iam::aws:policy/service-role/AWSLambdaBasicExecutionRole"
+       ]
+      ]
+     }
+    ],
+    "Tags": [
+     {
+      "Key": "Function",
+      "Value": "rcs-auto-reply"
+     },
+     {
+      "Key": "ManagedBy",
+      "Value": "cdk"
+     },
+     {
+      "Key": "Service",
+      "Value": "RCS"
+     },
+     {
+      "Key": "Stack",
+      "Value": "TodaysDentalInsightsRcsN1"
+     }
+    ]
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsRcsN1/RcsAutoReplyFn/ServiceRole/Resource"
+   }
+  },
+  "RcsAutoReplyFnServiceRoleDefaultPolicyBEF5A3D6": {
+   "Type": "AWS::IAM::Policy",
+   "Properties": {
+    "PolicyDocument": {
+     "Statement": [
+      {
+       "Action": "lambda:InvokeFunction",
+       "Effect": "Allow",
+       "Resource": [
+        {
+         "Fn::GetAtt": [
+          "RcsSendMessageFnFD098BF4",
+          "Arn"
+         ]
+        },
+        {
+         "Fn::Join": [
+          "",
+          [
+           {
+            "Fn::GetAtt": [
+             "RcsSendMessageFnFD098BF4",
+             "Arn"
+            ]
+           },
+           ":*"
+          ]
+         ]
+        }
+       ]
+      },
+      {
+       "Action": [
+        "dynamodb:BatchGetItem",
+        "dynamodb:GetRecords",
+        "dynamodb:GetShardIterator",
+        "dynamodb:Query",
+        "dynamodb:GetItem",
+        "dynamodb:Scan",
+        "dynamodb:ConditionCheckItem",
+        "dynamodb:BatchWriteItem",
+        "dynamodb:PutItem",
+        "dynamodb:UpdateItem",
+        "dynamodb:DeleteItem",
+        "dynamodb:DescribeTable"
+       ],
+       "Effect": "Allow",
+       "Resource": [
+        {
+         "Fn::GetAtt": [
+          "RcsTemplatesTable79520CB8",
+          "Arn"
+         ]
+        },
+        {
+         "Fn::Join": [
+          "",
+          [
+           {
+            "Fn::GetAtt": [
+             "RcsTemplatesTable79520CB8",
+             "Arn"
+            ]
+           },
+           "/index/*"
+          ]
+         ]
+        }
+       ]
+      },
+      {
+       "Action": [
+        "bedrock:InvokeAgent",
+        "bedrock:GetAgent",
+        "bedrock:GetAgentAlias"
+       ],
+       "Effect": "Allow",
+       "Resource": "*"
+      },
+      {
+       "Action": [
+        "dynamodb:BatchGetItem",
+        "dynamodb:GetRecords",
+        "dynamodb:GetShardIterator",
+        "dynamodb:Query",
+        "dynamodb:GetItem",
+        "dynamodb:Scan",
+        "dynamodb:ConditionCheckItem",
+        "dynamodb:DescribeTable"
+       ],
+       "Effect": "Allow",
+       "Resource": [
+        {
+         "Fn::ImportValue": "TodaysDentalInsightsAiAgentsN1:ExportsOutputFnGetAttAiAgentTable08A482D1Arn213493BF"
+        },
+        {
+         "Ref": "AWS::NoValue"
+        }
+       ]
+      },
+      {
+       "Action": [
+        "dynamodb:BatchWriteItem",
+        "dynamodb:PutItem",
+        "dynamodb:UpdateItem",
+        "dynamodb:DeleteItem",
+        "dynamodb:DescribeTable"
+       ],
+       "Effect": "Allow",
+       "Resource": [
+        {
+         "Fn::ImportValue": "TodaysDentalInsightsAiAgentsN1:ExportsOutputFnGetAttAiAgentConversationsTable58FB754EArn22C3E499"
+        },
+        {
+         "Ref": "AWS::NoValue"
+        }
+       ]
+      }
+     ],
+     "Version": "2012-10-17"
+    },
+    "PolicyName": "RcsAutoReplyFnServiceRoleDefaultPolicyBEF5A3D6",
+    "Roles": [
+     {
+      "Ref": "RcsAutoReplyFnServiceRoleC6E30B94"
+     }
+    ]
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsRcsN1/RcsAutoReplyFn/ServiceRole/DefaultPolicy/Resource"
+   }
+  },
+  "RcsAutoReplyFnAB19E5B5": {
+   "Type": "AWS::Lambda::Function",
+   "Properties": {
+    "Code": {
+     "S3Bucket": "cdk-tdi3-assets-851620242036-us-east-1",
+     "S3Key": "c638e58b51eb4bd725a681aefaffc73ba1d1d3a85c1d44f8bb511b06d513a930.zip"
+    },
+    "Environment": {
+     "Variables": {
+      "RCS_MESSAGES_TABLE": {
+       "Ref": "RcsTemplatesTable79520CB8"
+      },
+      "RCS_SEND_MESSAGE_FUNCTION_ARN": {
+       "Fn::GetAtt": [
+        "RcsSendMessageFnFD098BF4",
+        "Arn"
+       ]
+      },
+      "AI_AGENTS_TABLE": {
+       "Fn::ImportValue": "TodaysDentalInsightsAiAgentsN1:ExportsOutputRefAiAgentTable08A482D1F1FC100B"
+      },
+      "AI_AGENT_CONVERSATIONS_TABLE": {
+       "Fn::ImportValue": "TodaysDentalInsightsAiAgentsN1:ExportsOutputRefAiAgentConversationsTable58FB754E0E6F55F5"
+      },
+      "RCS_REPLY_ENABLED": "true",
+      "RCS_REPLY_AGENT_ID": "",
+      "RCS_REPLY_AGENT_TAG": "rcs",
+      "RCS_REPLY_AGENT_ID_MAP_JSON": ""
+     }
+    },
+    "Handler": "index.handler",
+    "MemorySize": 1024,
+    "Role": {
+     "Fn::GetAtt": [
+      "RcsAutoReplyFnServiceRoleC6E30B94",
+      "Arn"
+     ]
+    },
+    "Runtime": "nodejs22.x",
+    "Tags": [
+     {
+      "Key": "Function",
+      "Value": "rcs-auto-reply"
+     },
+     {
+      "Key": "ManagedBy",
+      "Value": "cdk"
+     },
+     {
+      "Key": "Service",
+      "Value": "RCS"
+     },
+     {
+      "Key": "Stack",
+      "Value": "TodaysDentalInsightsRcsN1"
+     }
+    ],
+    "Timeout": 90
+   },
+   "DependsOn": [
+    "RcsAutoReplyFnServiceRoleDefaultPolicyBEF5A3D6",
+    "RcsAutoReplyFnServiceRoleC6E30B94"
+   ],
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsRcsN1/RcsAutoReplyFn/Resource",
+    "aws:asset:path": "asset.c638e58b51eb4bd725a681aefaffc73ba1d1d3a85c1d44f8bb511b06d513a930",
+    "aws:asset:is-bundled": true,
+    "aws:asset:property": "Code"
+   }
+  },
+  "RcsAutoReplyFnLogRetentionE46DB247": {
+   "Type": "Custom::LogRetention",
+   "Properties": {
+    "ServiceToken": {
+     "Fn::GetAtt": [
+      "LogRetentionaae0aa3c5b4d4f87b02d85b201efdd8aFD4BFC8A",
+      "Arn"
+     ]
+    },
+    "LogGroupName": {
+     "Fn::Join": [
+      "",
+      [
+       "/aws/lambda/",
+       {
+        "Ref": "RcsAutoReplyFnAB19E5B5"
+       }
+      ]
+     ]
+    },
+    "RetentionInDays": 7
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsRcsN1/RcsAutoReplyFn/LogRetention/Resource"
+   }
+  },
+  "LogRetentionaae0aa3c5b4d4f87b02d85b201efdd8aServiceRole9741ECFB": {
+   "Type": "AWS::IAM::Role",
+   "Properties": {
+    "AssumeRolePolicyDocument": {
+     "Statement": [
+      {
+       "Action": "sts:AssumeRole",
+       "Effect": "Allow",
+       "Principal": {
+        "Service": "lambda.amazonaws.com"
+       }
+      }
+     ],
+     "Version": "2012-10-17"
+    },
+    "ManagedPolicyArns": [
+     {
+      "Fn::Join": [
+       "",
+       [
+        "arn:",
+        {
+         "Ref": "AWS::Partition"
+        },
+        ":iam::aws:policy/service-role/AWSLambdaBasicExecutionRole"
+       ]
+      ]
+     }
+    ],
+    "Tags": [
+     {
+      "Key": "ManagedBy",
+      "Value": "cdk"
+     },
+     {
+      "Key": "Service",
+      "Value": "RCS"
+     },
+     {
+      "Key": "Stack",
+      "Value": "TodaysDentalInsightsRcsN1"
+     }
+    ]
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsRcsN1/LogRetentionaae0aa3c5b4d4f87b02d85b201efdd8a/ServiceRole/Resource"
+   }
+  },
+  "LogRetentionaae0aa3c5b4d4f87b02d85b201efdd8aServiceRoleDefaultPolicyADDA7DEB": {
+   "Type": "AWS::IAM::Policy",
+   "Properties": {
+    "PolicyDocument": {
+     "Statement": [
+      {
+       "Action": [
+        "logs:PutRetentionPolicy",
+        "logs:DeleteRetentionPolicy"
+       ],
+       "Effect": "Allow",
+       "Resource": "*"
+      }
+     ],
+     "Version": "2012-10-17"
+    },
+    "PolicyName": "LogRetentionaae0aa3c5b4d4f87b02d85b201efdd8aServiceRoleDefaultPolicyADDA7DEB",
+    "Roles": [
+     {
+      "Ref": "LogRetentionaae0aa3c5b4d4f87b02d85b201efdd8aServiceRole9741ECFB"
+     }
+    ]
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsRcsN1/LogRetentionaae0aa3c5b4d4f87b02d85b201efdd8a/ServiceRole/DefaultPolicy/Resource"
+   }
+  },
+  "LogRetentionaae0aa3c5b4d4f87b02d85b201efdd8aFD4BFC8A": {
+   "Type": "AWS::Lambda::Function",
+   "Properties": {
+    "Handler": "index.handler",
+    "Runtime": "nodejs22.x",
+    "Timeout": 900,
+    "Code": {
+     "S3Bucket": "cdk-tdi3-assets-851620242036-us-east-1",
+     "S3Key": "2819175352ad1ce0dae768e83fc328fb70fb5f10b4a8ff0ccbcb791f02b0716d.zip"
+    },
+    "Role": {
+     "Fn::GetAtt": [
+      "LogRetentionaae0aa3c5b4d4f87b02d85b201efdd8aServiceRole9741ECFB",
+      "Arn"
+     ]
+    },
+    "Tags": [
+     {
+      "Key": "ManagedBy",
+      "Value": "cdk"
+     },
+     {
+      "Key": "Service",
+      "Value": "RCS"
+     },
+     {
+      "Key": "Stack",
+      "Value": "TodaysDentalInsightsRcsN1"
+     }
+    ]
+   },
+   "DependsOn": [
+    "LogRetentionaae0aa3c5b4d4f87b02d85b201efdd8aServiceRoleDefaultPolicyADDA7DEB",
+    "LogRetentionaae0aa3c5b4d4f87b02d85b201efdd8aServiceRole9741ECFB"
+   ],
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsRcsN1/LogRetentionaae0aa3c5b4d4f87b02d85b201efdd8a/Resource",
+    "aws:asset:path": "asset.2819175352ad1ce0dae768e83fc328fb70fb5f10b4a8ff0ccbcb791f02b0716d",
+    "aws:asset:is-bundled": false,
+    "aws:asset:property": "Code"
+   }
+  },
+  "RcsAutoReplyConfigFnServiceRole3546A5CE": {
+   "Type": "AWS::IAM::Role",
+   "Properties": {
+    "AssumeRolePolicyDocument": {
+     "Statement": [
+      {
+       "Action": "sts:AssumeRole",
+       "Effect": "Allow",
+       "Principal": {
+        "Service": "lambda.amazonaws.com"
+       }
+      }
+     ],
+     "Version": "2012-10-17"
+    },
+    "ManagedPolicyArns": [
+     {
+      "Fn::Join": [
+       "",
+       [
+        "arn:",
+        {
+         "Ref": "AWS::Partition"
+        },
+        ":iam::aws:policy/service-role/AWSLambdaBasicExecutionRole"
+       ]
+      ]
+     }
+    ],
+    "Tags": [
+     {
+      "Key": "Function",
+      "Value": "rcs-auto-reply-config"
+     },
+     {
+      "Key": "ManagedBy",
+      "Value": "cdk"
+     },
+     {
+      "Key": "Service",
+      "Value": "RCS"
+     },
+     {
+      "Key": "Stack",
+      "Value": "TodaysDentalInsightsRcsN1"
+     }
+    ]
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsRcsN1/RcsAutoReplyConfigFn/ServiceRole/Resource"
+   }
+  },
+  "RcsAutoReplyConfigFnServiceRoleDefaultPolicy9EC2EAA5": {
+   "Type": "AWS::IAM::Policy",
+   "Properties": {
+    "PolicyDocument": {
+     "Statement": [
+      {
+       "Action": [
+        "dynamodb:BatchGetItem",
+        "dynamodb:GetRecords",
+        "dynamodb:GetShardIterator",
+        "dynamodb:Query",
+        "dynamodb:GetItem",
+        "dynamodb:Scan",
+        "dynamodb:ConditionCheckItem",
+        "dynamodb:BatchWriteItem",
+        "dynamodb:PutItem",
+        "dynamodb:UpdateItem",
+        "dynamodb:DeleteItem",
+        "dynamodb:DescribeTable"
+       ],
+       "Effect": "Allow",
+       "Resource": [
+        {
+         "Fn::GetAtt": [
+          "RcsTemplatesTable79520CB8",
+          "Arn"
+         ]
+        },
+        {
+         "Fn::Join": [
+          "",
+          [
+           {
+            "Fn::GetAtt": [
+             "RcsTemplatesTable79520CB8",
+             "Arn"
+            ]
+           },
+           "/index/*"
+          ]
+         ]
+        }
+       ]
+      },
+      {
+       "Action": [
+        "dynamodb:BatchGetItem",
+        "dynamodb:GetRecords",
+        "dynamodb:GetShardIterator",
+        "dynamodb:Query",
+        "dynamodb:GetItem",
+        "dynamodb:Scan",
+        "dynamodb:ConditionCheckItem",
+        "dynamodb:DescribeTable"
+       ],
+       "Effect": "Allow",
+       "Resource": [
+        {
+         "Fn::ImportValue": "TodaysDentalInsightsAiAgentsN1:ExportsOutputFnGetAttAiAgentTable08A482D1Arn213493BF"
+        },
+        {
+         "Ref": "AWS::NoValue"
+        }
+       ]
+      }
+     ],
+     "Version": "2012-10-17"
+    },
+    "PolicyName": "RcsAutoReplyConfigFnServiceRoleDefaultPolicy9EC2EAA5",
+    "Roles": [
+     {
+      "Ref": "RcsAutoReplyConfigFnServiceRole3546A5CE"
+     }
+    ]
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsRcsN1/RcsAutoReplyConfigFn/ServiceRole/DefaultPolicy/Resource"
+   }
+  },
+  "RcsAutoReplyConfigFnF9956CB5": {
+   "Type": "AWS::Lambda::Function",
+   "Properties": {
+    "Code": {
+     "S3Bucket": "cdk-tdi3-assets-851620242036-us-east-1",
+     "S3Key": "23f93459e71ec097a7f41fe9a6adbc5f205277ce4032e12ca53928081f649359.zip"
+    },
+    "Environment": {
+     "Variables": {
+      "RCS_MESSAGES_TABLE": {
+       "Ref": "RcsTemplatesTable79520CB8"
+      },
+      "AI_AGENTS_TABLE": {
+       "Fn::ImportValue": "TodaysDentalInsightsAiAgentsN1:ExportsOutputRefAiAgentTable08A482D1F1FC100B"
+      }
+     }
+    },
+    "Handler": "index.handler",
+    "MemorySize": 256,
+    "Role": {
+     "Fn::GetAtt": [
+      "RcsAutoReplyConfigFnServiceRole3546A5CE",
+      "Arn"
+     ]
+    },
+    "Runtime": "nodejs22.x",
+    "Tags": [
+     {
+      "Key": "Function",
+      "Value": "rcs-auto-reply-config"
+     },
+     {
+      "Key": "ManagedBy",
+      "Value": "cdk"
+     },
+     {
+      "Key": "Service",
+      "Value": "RCS"
+     },
+     {
+      "Key": "Stack",
+      "Value": "TodaysDentalInsightsRcsN1"
+     }
+    ],
+    "Timeout": 30
+   },
+   "DependsOn": [
+    "RcsAutoReplyConfigFnServiceRoleDefaultPolicy9EC2EAA5",
+    "RcsAutoReplyConfigFnServiceRole3546A5CE"
+   ],
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsRcsN1/RcsAutoReplyConfigFn/Resource",
+    "aws:asset:path": "asset.23f93459e71ec097a7f41fe9a6adbc5f205277ce4032e12ca53928081f649359",
+    "aws:asset:is-bundled": true,
+    "aws:asset:property": "Code"
+   }
+  },
+  "RcsAutoReplyConfigFnLogRetention928DC209": {
+   "Type": "Custom::LogRetention",
+   "Properties": {
+    "ServiceToken": {
+     "Fn::GetAtt": [
+      "LogRetentionaae0aa3c5b4d4f87b02d85b201efdd8aFD4BFC8A",
+      "Arn"
+     ]
+    },
+    "LogGroupName": {
+     "Fn::Join": [
+      "",
+      [
+       "/aws/lambda/",
+       {
+        "Ref": "RcsAutoReplyConfigFnF9956CB5"
+       }
+      ]
+     ]
+    },
+    "RetentionInDays": 7
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsRcsN1/RcsAutoReplyConfigFn/LogRetention/Resource"
    }
   },
   "RcsGetMessagesFnServiceRole595EAEC4": {
@@ -5102,7 +6043,7 @@
    "Properties": {
     "Code": {
      "S3Bucket": "cdk-tdi3-assets-851620242036-us-east-1",
-     "S3Key": "875528f6d8ca7fff08929bca7568418fc4ed37633674b8b98e4dc4926a7aa8ed.zip"
+     "S3Key": "4fd7bc2f2197094fa78ae085bc64694fe21e9128d42c293afe34758b1295524b.zip"
     },
     "Environment": {
      "Variables": {
@@ -5159,7 +6100,7 @@
    ],
    "Metadata": {
     "aws:cdk:path": "TodaysDentalInsightsRcsN1/RcsGetMessagesFn/Resource",
-    "aws:asset:path": "asset.875528f6d8ca7fff08929bca7568418fc4ed37633674b8b98e4dc4926a7aa8ed",
+    "aws:asset:path": "asset.4fd7bc2f2197094fa78ae085bc64694fe21e9128d42c293afe34758b1295524b",
     "aws:asset:is-bundled": true,
     "aws:asset:property": "Code"
    }
@@ -5331,7 +6272,7 @@
    "Properties": {
     "Code": {
      "S3Bucket": "cdk-tdi3-assets-851620242036-us-east-1",
-     "S3Key": "fc493bcc5a8b1bbaf11fc4c70ae432da84c31a3883da4beb7c85c124b5d151a4.zip"
+     "S3Key": "7b9c3b7e95db520d5b62776d0a8c3731a1fdb0f5abfcdfc43892d3b053cf9999.zip"
     },
     "Environment": {
      "Variables": {
@@ -5375,7 +6316,7 @@
    ],
    "Metadata": {
     "aws:cdk:path": "TodaysDentalInsightsRcsN1/RcsTemplatesFn/Resource",
-    "aws:asset:path": "asset.fc493bcc5a8b1bbaf11fc4c70ae432da84c31a3883da4beb7c85c124b5d151a4",
+    "aws:asset:path": "asset.7b9c3b7e95db520d5b62776d0a8c3731a1fdb0f5abfcdfc43892d3b053cf9999",
     "aws:asset:is-bundled": true,
     "aws:asset:property": "Code"
    }
@@ -5903,7 +6844,7 @@
    "Properties": {
     "Code": {
      "S3Bucket": "cdk-tdi3-assets-851620242036-us-east-1",
-     "S3Key": "0ecff35ecbf902255d380cd11a659c5e266d81435139d80f5070712c48348bb1.zip"
+     "S3Key": "6b193489eb5ae689a5971be1958d3fafc47bed5082a1b62f23644818b9e51931.zip"
     },
     "Environment": {
      "Variables": {
@@ -5953,7 +6894,7 @@
    ],
    "Metadata": {
     "aws:cdk:path": "TodaysDentalInsightsRcsN1/RcsAnalyticsFn/Resource",
-    "aws:asset:path": "asset.0ecff35ecbf902255d380cd11a659c5e266d81435139d80f5070712c48348bb1",
+    "aws:asset:path": "asset.6b193489eb5ae689a5971be1958d3fafc47bed5082a1b62f23644818b9e51931",
     "aws:asset:is-bundled": true,
     "aws:asset:property": "Code"
    }
@@ -5982,123 +6923,6 @@
    },
    "Metadata": {
     "aws:cdk:path": "TodaysDentalInsightsRcsN1/RcsAnalyticsFn/LogRetention/Resource"
-   }
-  },
-  "LogRetentionaae0aa3c5b4d4f87b02d85b201efdd8aServiceRole9741ECFB": {
-   "Type": "AWS::IAM::Role",
-   "Properties": {
-    "AssumeRolePolicyDocument": {
-     "Statement": [
-      {
-       "Action": "sts:AssumeRole",
-       "Effect": "Allow",
-       "Principal": {
-        "Service": "lambda.amazonaws.com"
-       }
-      }
-     ],
-     "Version": "2012-10-17"
-    },
-    "ManagedPolicyArns": [
-     {
-      "Fn::Join": [
-       "",
-       [
-        "arn:",
-        {
-         "Ref": "AWS::Partition"
-        },
-        ":iam::aws:policy/service-role/AWSLambdaBasicExecutionRole"
-       ]
-      ]
-     }
-    ],
-    "Tags": [
-     {
-      "Key": "ManagedBy",
-      "Value": "cdk"
-     },
-     {
-      "Key": "Service",
-      "Value": "RCS"
-     },
-     {
-      "Key": "Stack",
-      "Value": "TodaysDentalInsightsRcsN1"
-     }
-    ]
-   },
-   "Metadata": {
-    "aws:cdk:path": "TodaysDentalInsightsRcsN1/LogRetentionaae0aa3c5b4d4f87b02d85b201efdd8a/ServiceRole/Resource"
-   }
-  },
-  "LogRetentionaae0aa3c5b4d4f87b02d85b201efdd8aServiceRoleDefaultPolicyADDA7DEB": {
-   "Type": "AWS::IAM::Policy",
-   "Properties": {
-    "PolicyDocument": {
-     "Statement": [
-      {
-       "Action": [
-        "logs:PutRetentionPolicy",
-        "logs:DeleteRetentionPolicy"
-       ],
-       "Effect": "Allow",
-       "Resource": "*"
-      }
-     ],
-     "Version": "2012-10-17"
-    },
-    "PolicyName": "LogRetentionaae0aa3c5b4d4f87b02d85b201efdd8aServiceRoleDefaultPolicyADDA7DEB",
-    "Roles": [
-     {
-      "Ref": "LogRetentionaae0aa3c5b4d4f87b02d85b201efdd8aServiceRole9741ECFB"
-     }
-    ]
-   },
-   "Metadata": {
-    "aws:cdk:path": "TodaysDentalInsightsRcsN1/LogRetentionaae0aa3c5b4d4f87b02d85b201efdd8a/ServiceRole/DefaultPolicy/Resource"
-   }
-  },
-  "LogRetentionaae0aa3c5b4d4f87b02d85b201efdd8aFD4BFC8A": {
-   "Type": "AWS::Lambda::Function",
-   "Properties": {
-    "Handler": "index.handler",
-    "Runtime": "nodejs22.x",
-    "Timeout": 900,
-    "Code": {
-     "S3Bucket": "cdk-tdi3-assets-851620242036-us-east-1",
-     "S3Key": "2819175352ad1ce0dae768e83fc328fb70fb5f10b4a8ff0ccbcb791f02b0716d.zip"
-    },
-    "Role": {
-     "Fn::GetAtt": [
-      "LogRetentionaae0aa3c5b4d4f87b02d85b201efdd8aServiceRole9741ECFB",
-      "Arn"
-     ]
-    },
-    "Tags": [
-     {
-      "Key": "ManagedBy",
-      "Value": "cdk"
-     },
-     {
-      "Key": "Service",
-      "Value": "RCS"
-     },
-     {
-      "Key": "Stack",
-      "Value": "TodaysDentalInsightsRcsN1"
-     }
-    ]
-   },
-   "DependsOn": [
-    "LogRetentionaae0aa3c5b4d4f87b02d85b201efdd8aServiceRoleDefaultPolicyADDA7DEB",
-    "LogRetentionaae0aa3c5b4d4f87b02d85b201efdd8aServiceRole9741ECFB"
-   ],
-   "Metadata": {
-    "aws:cdk:path": "TodaysDentalInsightsRcsN1/LogRetentionaae0aa3c5b4d4f87b02d85b201efdd8a/Resource",
-    "aws:asset:path": "asset.2819175352ad1ce0dae768e83fc328fb70fb5f10b4a8ff0ccbcb791f02b0716d",
-    "aws:asset:is-bundled": false,
-    "aws:asset:property": "Code"
    }
   },
   "RcsAnalyticsAggregatorFnServiceRoleA9703861": {
@@ -6920,7 +7744,7 @@
    "Properties": {
     "Code": {
      "S3Bucket": "cdk-tdi3-assets-851620242036-us-east-1",
-     "S3Key": "aa7bd23ae5aef854ff52b9def0a14694b0555b486b359360cc36a3d8f22235b7.zip"
+     "S3Key": "bcf14a575abebfd2d74a9d441b9d005df68c3d3a9bf6d0308e25fe2c7c7cd3d8.zip"
     },
     "Environment": {
      "Variables": {
@@ -6970,7 +7794,7 @@
    ],
    "Metadata": {
     "aws:cdk:path": "TodaysDentalInsightsRcsN1/RcsAiFn/Resource",
-    "aws:asset:path": "asset.aa7bd23ae5aef854ff52b9def0a14694b0555b486b359360cc36a3d8f22235b7",
+    "aws:asset:path": "asset.bcf14a575abebfd2d74a9d441b9d005df68c3d3a9bf6d0308e25fe2c7c7cd3d8",
     "aws:asset:is-bundled": true,
     "aws:asset:property": "Code"
    }
@@ -7469,6 +8293,240 @@
     "aws:cdk:path": "TodaysDentalInsightsRcsN1/RcsSendMessageFnDurationAlarm/Resource"
    }
   },
+  "RcsAutoReplyFnErrorAlarmC0A743F8": {
+   "Type": "AWS::CloudWatch::Alarm",
+   "Properties": {
+    "AlarmDescription": "Alert when rcs-auto-reply Lambda has errors",
+    "ComparisonOperator": "GreaterThanOrEqualToThreshold",
+    "Dimensions": [
+     {
+      "Name": "FunctionName",
+      "Value": {
+       "Ref": "RcsAutoReplyFnAB19E5B5"
+      }
+     }
+    ],
+    "EvaluationPeriods": 1,
+    "MetricName": "Errors",
+    "Namespace": "AWS/Lambda",
+    "Period": 60,
+    "Statistic": "Sum",
+    "Tags": [
+     {
+      "Key": "ManagedBy",
+      "Value": "cdk"
+     },
+     {
+      "Key": "Service",
+      "Value": "RCS"
+     },
+     {
+      "Key": "Stack",
+      "Value": "TodaysDentalInsightsRcsN1"
+     }
+    ],
+    "Threshold": 1,
+    "TreatMissingData": "notBreaching"
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsRcsN1/RcsAutoReplyFnErrorAlarm/Resource"
+   }
+  },
+  "RcsAutoReplyFnThrottleAlarmB2DA6FAA": {
+   "Type": "AWS::CloudWatch::Alarm",
+   "Properties": {
+    "AlarmDescription": "Alert when rcs-auto-reply Lambda is throttled",
+    "ComparisonOperator": "GreaterThanOrEqualToThreshold",
+    "Dimensions": [
+     {
+      "Name": "FunctionName",
+      "Value": {
+       "Ref": "RcsAutoReplyFnAB19E5B5"
+      }
+     }
+    ],
+    "EvaluationPeriods": 1,
+    "MetricName": "Throttles",
+    "Namespace": "AWS/Lambda",
+    "Period": 60,
+    "Statistic": "Sum",
+    "Tags": [
+     {
+      "Key": "ManagedBy",
+      "Value": "cdk"
+     },
+     {
+      "Key": "Service",
+      "Value": "RCS"
+     },
+     {
+      "Key": "Stack",
+      "Value": "TodaysDentalInsightsRcsN1"
+     }
+    ],
+    "Threshold": 1,
+    "TreatMissingData": "notBreaching"
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsRcsN1/RcsAutoReplyFnThrottleAlarm/Resource"
+   }
+  },
+  "RcsAutoReplyFnDurationAlarm9C38965D": {
+   "Type": "AWS::CloudWatch::Alarm",
+   "Properties": {
+    "AlarmDescription": "Alert when rcs-auto-reply Lambda p99 duration exceeds 72000ms (~80% of timeout)",
+    "ComparisonOperator": "GreaterThanOrEqualToThreshold",
+    "Dimensions": [
+     {
+      "Name": "FunctionName",
+      "Value": {
+       "Ref": "RcsAutoReplyFnAB19E5B5"
+      }
+     }
+    ],
+    "EvaluationPeriods": 2,
+    "MetricName": "Duration",
+    "Namespace": "AWS/Lambda",
+    "Period": 300,
+    "Statistic": "Maximum",
+    "Tags": [
+     {
+      "Key": "ManagedBy",
+      "Value": "cdk"
+     },
+     {
+      "Key": "Service",
+      "Value": "RCS"
+     },
+     {
+      "Key": "Stack",
+      "Value": "TodaysDentalInsightsRcsN1"
+     }
+    ],
+    "Threshold": 72000,
+    "TreatMissingData": "notBreaching"
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsRcsN1/RcsAutoReplyFnDurationAlarm/Resource"
+   }
+  },
+  "RcsAutoReplyConfigFnErrorAlarm9C2C8E7C": {
+   "Type": "AWS::CloudWatch::Alarm",
+   "Properties": {
+    "AlarmDescription": "Alert when rcs-auto-reply-config Lambda has errors",
+    "ComparisonOperator": "GreaterThanOrEqualToThreshold",
+    "Dimensions": [
+     {
+      "Name": "FunctionName",
+      "Value": {
+       "Ref": "RcsAutoReplyConfigFnF9956CB5"
+      }
+     }
+    ],
+    "EvaluationPeriods": 1,
+    "MetricName": "Errors",
+    "Namespace": "AWS/Lambda",
+    "Period": 60,
+    "Statistic": "Sum",
+    "Tags": [
+     {
+      "Key": "ManagedBy",
+      "Value": "cdk"
+     },
+     {
+      "Key": "Service",
+      "Value": "RCS"
+     },
+     {
+      "Key": "Stack",
+      "Value": "TodaysDentalInsightsRcsN1"
+     }
+    ],
+    "Threshold": 1,
+    "TreatMissingData": "notBreaching"
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsRcsN1/RcsAutoReplyConfigFnErrorAlarm/Resource"
+   }
+  },
+  "RcsAutoReplyConfigFnThrottleAlarm3A53A6AC": {
+   "Type": "AWS::CloudWatch::Alarm",
+   "Properties": {
+    "AlarmDescription": "Alert when rcs-auto-reply-config Lambda is throttled",
+    "ComparisonOperator": "GreaterThanOrEqualToThreshold",
+    "Dimensions": [
+     {
+      "Name": "FunctionName",
+      "Value": {
+       "Ref": "RcsAutoReplyConfigFnF9956CB5"
+      }
+     }
+    ],
+    "EvaluationPeriods": 1,
+    "MetricName": "Throttles",
+    "Namespace": "AWS/Lambda",
+    "Period": 60,
+    "Statistic": "Sum",
+    "Tags": [
+     {
+      "Key": "ManagedBy",
+      "Value": "cdk"
+     },
+     {
+      "Key": "Service",
+      "Value": "RCS"
+     },
+     {
+      "Key": "Stack",
+      "Value": "TodaysDentalInsightsRcsN1"
+     }
+    ],
+    "Threshold": 1,
+    "TreatMissingData": "notBreaching"
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsRcsN1/RcsAutoReplyConfigFnThrottleAlarm/Resource"
+   }
+  },
+  "RcsAutoReplyConfigFnDurationAlarm80B9799C": {
+   "Type": "AWS::CloudWatch::Alarm",
+   "Properties": {
+    "AlarmDescription": "Alert when rcs-auto-reply-config Lambda p99 duration exceeds 24000ms (~80% of timeout)",
+    "ComparisonOperator": "GreaterThanOrEqualToThreshold",
+    "Dimensions": [
+     {
+      "Name": "FunctionName",
+      "Value": {
+       "Ref": "RcsAutoReplyConfigFnF9956CB5"
+      }
+     }
+    ],
+    "EvaluationPeriods": 2,
+    "MetricName": "Duration",
+    "Namespace": "AWS/Lambda",
+    "Period": 300,
+    "Statistic": "Maximum",
+    "Tags": [
+     {
+      "Key": "ManagedBy",
+      "Value": "cdk"
+     },
+     {
+      "Key": "Service",
+      "Value": "RCS"
+     },
+     {
+      "Key": "Stack",
+      "Value": "TodaysDentalInsightsRcsN1"
+     }
+    ],
+    "Threshold": 24000,
+    "TreatMissingData": "notBreaching"
+   },
+   "Metadata": {
+    "aws:cdk:path": "TodaysDentalInsightsRcsN1/RcsAutoReplyConfigFnDurationAlarm/Resource"
+   }
+  },
   "RcsGetMessagesFnErrorAlarm93A542B3": {
    "Type": "AWS::CloudWatch::Alarm",
    "Properties": {
@@ -7958,7 +9016,7 @@
   "CDKMetadata": {
    "Type": "AWS::CDK::Metadata",
    "Properties": {
-    "Analytics": "v2:deflate64:H4sIAAAAAAAA/11S0VLCMBD8Ft9D1KofADL6IsoU35lreraBNom9BKZ2+u9eUnDAp9vdS3N7m2Yyy+7l3Q0caabK/azRhRw2HtResLQdyt5Aa0sWP6FoUDx/mQRGQYZYtE6rJCawCQWpTjuvrYnqJR8FOF2BxyP0csiR/NzpeOgCzpWywXixRNfYvkWGrF4wdlYlExPgT23oFC6AUKzQ17aMzRM6d09DJvw6OWDurKHU+y/l+B2ip8C3dPoHu2TtisWBa/D1CpzTphqFhpaXslNCqa5to1Uf6YRG0UBblCCHKGHXaqIY00swKuaTduDWmZ/Pb40tcUfyPZVzV9DDFojQk5zHwlwugtqjT/eoxobyCF7Vcpg30LVphQSWQHVhoUtJ/RGeZiuSb7bK0XPScQQeGPAj5+G0FtdxvIr1I3gXvEgW4pNwFpdpjyKalzu6PWRP8pH/sx1pPev4jXWLMp/qLwXXwfWEAgAA"
+    "Analytics": "v2:deflate64:H4sIAAAAAAAA/11SXVODMBD8Lb6nUVF/ALWjL1Y71PfOESKkhSRySTvI5L97Ca1DfeF2b/OxtyHjWXbP727ghAtRHRatKvm4dSAOjFq7sRo0dKai5ieUrWTPX3oC6bsElIGhRpKNVSLJCWx9iaJX1imjY3fOAwOranDyBAMfC4kutyoumsFcCOO1YytpWzN0kiB1Z4w81snOBGir8b1IjthausZUUTyji3q+ZMKvkwPi1mhM2v9WIb999OTplF79yD5Zu2Lxwg24Zg3WKl0HpqCjocyUVaob0yoxRDqhwFroygr4GFuy7xRijOnFaxHzSTOQdOGX9TttKrlH/p7KRWX4sANE6ZDnsRDnSy8O0qVzWlMjfzN1IR3FFteL1vjqBE40fMxb6Ls0VAIrwKY00Kfs/khg8kh76ZELfx6LaghXsX54Z71jyUJ8EspinnZg0Tzf4+0xe+KP9MftUalFT2+sOsmLqf4CgfsqV44CAAA="
    },
    "Metadata": {
     "aws:cdk:path": "TodaysDentalInsightsRcsN1/CDKMetadata/Default"

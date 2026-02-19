@@ -8,6 +8,8 @@ import { verifyIdToken } from '../../shared/utils/auth-helper';
 import { getUserIdFromJwt, checkClinicAuthorization } from '../../shared/utils/permissions-helper';
 import { createCheckQueueForWork } from './utils/check-queue-for-work';
 import { DistributedLock } from './utils/distributed-lock';
+import { isPushNotificationsEnabled, sendCallEndedToAgent } from './utils/push-notifications';
+import { CHIME_CONFIG } from './config';
 
 const AGENT_PRESENCE_TABLE_NAME = process.env.AGENT_PRESENCE_TABLE_NAME;
 const CALL_QUEUE_TABLE_NAME = process.env.CALL_QUEUE_TABLE_NAME;
@@ -48,7 +50,7 @@ const checkQueueForWork = createCheckQueueForWork({
  */
 export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayProxyResult> => {
     console.log('Leave call event:', JSON.stringify(event, null, 2));
-    
+
     const corsHeaders = buildCorsHeaders({ allowMethods: ['OPTIONS', 'POST'] }, event.headers?.origin);
 
     try {
@@ -62,10 +64,10 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
         const requestingAgentId = getUserIdFromJwt(verifyResult.payload!);
 
         if (!event.body) {
-            return { 
-                statusCode: 400, 
-                headers: corsHeaders, 
-                body: JSON.stringify({ message: 'Missing request body' }) 
+            return {
+                statusCode: 400,
+                headers: corsHeaders,
+                body: JSON.stringify({ message: 'Missing request body' })
             };
         }
 
@@ -73,10 +75,10 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
         const { callId, agentId, reason, duration } = body;
 
         if (!callId || !agentId) {
-            return { 
-                statusCode: 400, 
-                headers: corsHeaders, 
-                body: JSON.stringify({ message: 'Missing required parameters: callId, agentId' }) 
+            return {
+                statusCode: 400,
+                headers: corsHeaders,
+                body: JSON.stringify({ message: 'Missing required parameters: callId, agentId' })
             };
         }
 
@@ -112,7 +114,7 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
             return {
                 statusCode: 403,
                 headers: corsHeaders,
-                body: JSON.stringify({ 
+                body: JSON.stringify({
                     message: 'You are not authorized for this clinic',
                     reason: authzCheck.reason
                 })
@@ -184,6 +186,20 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
 
         console.log(`Agent ${agentId} left call ${callId} non-destructively (status: Online)`);
 
+        // Push notification: notify the agent's mobile app that the call has ended (state sync)
+        if (isPushNotificationsEnabled() && CHIME_CONFIG.PUSH.ENABLE_LEAVE_CALL_PUSH) {
+            sendCallEndedToAgent({
+                callId,
+                clinicId: callRecord.clinicId,
+                clinicName: callRecord.clinicName || callRecord.clinicId,
+                agentId,
+                reason: 'agent_left',
+                message: 'You left the call',
+                direction: callRecord.direction || 'inbound',
+                timestamp,
+            }).catch(err => console.warn('[leave-call] Push notification failed (non-fatal):', err.message));
+        }
+
         // FIX #1: Use distributed lock to prevent race condition when checking queue
         // This prevents duplicate call assignments if multiple requests arrive concurrently
         // FIX #10: LOCKS_TABLE_NAME is now required - fail fast if not configured
@@ -194,7 +210,7 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
             return {
                 statusCode: 200,
                 headers: corsHeaders,
-                body: JSON.stringify({ 
+                body: JSON.stringify({
                     message: 'Agent successfully left the call without ending it',
                     callId,
                     agentId,
@@ -223,7 +239,24 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
 
                 // Only check queue if agent is still Online (no call assigned during lock acquisition)
                 if (refreshedAgentInfo && refreshedAgentInfo.status === 'Online' && !refreshedAgentInfo.currentCallId) {
-                    await checkQueueForWork(agentId, refreshedAgentInfo);
+                    // #8: Agent wrap-up period — delay queue check to give agents time for note-taking
+                    const wrapUpSeconds = CHIME_CONFIG.AGENT.WRAP_UP_SECONDS;
+                    if (wrapUpSeconds > 0) {
+                        console.log(`[leave-call] Agent ${agentId} entering ${wrapUpSeconds}s wrap-up period`);
+                        await new Promise(resolve => setTimeout(resolve, wrapUpSeconds * 1000));
+                        // Re-check agent state after wrap-up
+                        const { Item: postWrapAgent } = await ddb.send(new GetCommand({
+                            TableName: AGENT_PRESENCE_TABLE_NAME,
+                            Key: { agentId }
+                        }));
+                        if (!postWrapAgent || postWrapAgent.status !== 'Online' || postWrapAgent.currentCallId) {
+                            console.log(`[leave-call] Agent ${agentId} state changed during wrap-up, skipping queue check`);
+                        } else {
+                            await checkQueueForWork(agentId, postWrapAgent);
+                        }
+                    } else {
+                        await checkQueueForWork(agentId, refreshedAgentInfo);
+                    }
                 } else {
                     console.log(`[leave-call] Agent ${agentId} already has a call or is not online, skipping queue check`);
                 }
@@ -240,7 +273,7 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
         return {
             statusCode: 200,
             headers: corsHeaders,
-            body: JSON.stringify({ 
+            body: JSON.stringify({
                 message: 'Agent successfully left the call without ending it',
                 callId,
                 agentId,

@@ -16,6 +16,8 @@ import { sanitizePhoneNumber } from '../shared/utils/input-sanitization';
 import { getSmaIdForClinic } from './utils/sma-map';
 import { TTL_POLICY } from './config/ttl-policy';
 import { DistributedLock } from './utils/distributed-lock';
+import { isPushNotificationsEnabled, sendCallEndedToAgent } from './utils/push-notifications';
+import { CHIME_CONFIG } from './config';
 
 const ddb = getDynamoDBClient();
 
@@ -433,6 +435,21 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
         }
       }));
       console.log(`[outbound-call] Call ${callId} added to queue table`);
+
+      // Push notification: notify the agent's mobile app that an outbound call was initiated
+      // This enables the mobile app to show the "Dialing..." overlay without polling
+      if (isPushNotificationsEnabled() && CHIME_CONFIG.PUSH.ENABLE_OUTBOUND_CALL_PUSH) {
+        sendCallEndedToAgent({
+          callId: callId!,
+          clinicId: body.fromClinicId,
+          clinicName: clinic.clinicName || body.fromClinicId,
+          agentId: agentId!,
+          reason: 'outbound_initiated',
+          message: `Dialing ${toPhoneNumber}`,
+          direction: 'outbound',
+          timestamp: new Date().toISOString(),
+        }).catch(err => console.warn('[outbound-call] Push notification failed (non-fatal):', err.message));
+      }
 
       // 8) Return meeting credentials for agent to join the per-call meeting
       const responseBody = {

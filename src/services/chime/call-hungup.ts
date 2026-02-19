@@ -32,7 +32,7 @@ const checkQueueForWork = createCheckQueueForWork({
     agentPresenceTableName: AGENT_PRESENCE_TABLE_NAME,
     chime,
     chimeVoiceClient
-}); 
+});
 
 
 /**
@@ -42,29 +42,29 @@ const checkQueueForWork = createCheckQueueForWork({
  */
 export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayProxyResult> => {
     console.log('Call hungup event:', JSON.stringify(event, null, 2));
-    
+
     const corsHeaders = buildCorsHeaders({ allowMethods: ['OPTIONS', 'POST'] }, event.headers?.origin);
 
     try {
         if (!event.body) {
-            return { 
-                statusCode: 400, 
-                headers: corsHeaders, 
-                body: JSON.stringify({ message: 'Missing request body' }) 
+            return {
+                statusCode: 400,
+                headers: corsHeaders,
+                body: JSON.stringify({ message: 'Missing request body' })
             };
         }
-        
+
         // CRITICAL FIX: Add JWT verification for security
         const authz = event?.headers?.authorization || event?.headers?.Authorization || "";
         const verifyResult = await verifyIdToken(authz);
         if (!verifyResult.ok) {
-            console.warn('[call-hungup] Auth verification failed', { 
-                code: verifyResult.code, 
-                message: verifyResult.message 
+            console.warn('[call-hungup] Auth verification failed', {
+                code: verifyResult.code,
+                message: verifyResult.message
             });
             return { statusCode: verifyResult.code || 401, headers: corsHeaders, body: JSON.stringify({ message: verifyResult.message }) };
         }
-        
+
         console.log('[call-hungup] Auth verification successful');
         const requestingAgentId = getUserIdFromJwt(verifyResult.payload!);
         if (!requestingAgentId) {
@@ -75,13 +75,13 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
         const { callId, agentId, reason } = body;
 
         if (!callId) {
-            return { 
-                statusCode: 400, 
-                headers: corsHeaders, 
-                body: JSON.stringify({ message: 'Missing required parameter: callId' }) 
+            return {
+                statusCode: 400,
+                headers: corsHeaders,
+                body: JSON.stringify({ message: 'Missing required parameter: callId' })
             };
         }
-        
+
         // CRITICAL FIX: Verify the requesting agent is the one hanging up the call
         if (agentId && requestingAgentId !== agentId) {
             console.warn('[call-hungup] Authorization failed - agent attempting to hang up call they are not on', {
@@ -125,7 +125,7 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
                 return {
                     statusCode: 403,
                     headers: corsHeaders,
-                    body: JSON.stringify({ 
+                    body: JSON.stringify({
                         message: 'You are not authorized to hang up calls for this clinic',
                         reason: authzCheck.reason
                     })
@@ -143,10 +143,10 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
             const holdDuration = holdStartTime > 0 ? (Date.now() - holdStartTime) / 1000 : 0;
             const MAX_HOLD_DURATION = CHIME_CONFIG.HOLD.MAX_HOLD_DURATION_MINUTES * 60; // Use config
             const payload = verifyResult.payload as any;
-            const isSupervisor = requestingAgentId && payload && 
-                                (payload.isSuperAdmin || payload.isGlobalSuperAdmin || 
-                                 payload.roles?.includes('supervisor') || payload.roles?.includes('admin'));
-            
+            const isSupervisor = requestingAgentId && payload &&
+                (payload.isSuperAdmin || payload.isGlobalSuperAdmin ||
+                    payload.roles?.includes('supervisor') || payload.roles?.includes('admin'));
+
             if (holdDuration > MAX_HOLD_DURATION) {
                 console.warn('[call-hungup] Overriding stale hold', {
                     callId,
@@ -171,7 +171,7 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
                 return {
                     statusCode: 409,
                     headers: corsHeaders,
-                    body: JSON.stringify({ 
+                    body: JSON.stringify({
                         message: 'Call is currently on hold by another agent. Please wait for them to resume or complete the hold.',
                         holdDuration: Math.floor(holdDuration),
                         heldByAgentId: callMetadata.heldByAgentId
@@ -181,11 +181,11 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
         }
 
         const clinicId = typeof callMetadata.clinicId === 'string' ? callMetadata.clinicId : undefined;
-        
+
         // FIX: Determine final status based on state machine validation
         // 'ringing' calls should transition to 'abandoned', not 'completed'
         let finalStatus: 'completed' | 'abandoned' = 'completed';
-        
+
         if (currentCallStatus && !isValidStateTransition(currentCallStatus, 'completed', CALL_STATE_MACHINE)) {
             // Special case: 'ringing' should transition to 'abandoned' not 'completed' when hung up
             if (isValidStateTransition(currentCallStatus, 'abandoned', CALL_STATE_MACHINE)) {
@@ -210,7 +210,7 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
                 };
             }
         }
-        
+
         const smaId = getSmaIdForClinic(clinicId);
         if (!smaId) {
             console.error('[call-hungup] Missing SMA mapping for clinic', { clinicId, callId });
@@ -240,12 +240,12 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
             // Even if SMA hangup fails, the call is likely already disconnected
             // Cleanup-monitor will reconcile any inconsistencies
         }
-        
+
         // 2. ATOMIC: Update agent status and call record together in single transaction
         // This ensures agent isn't marked as available until both updates succeed
         // CRITICAL FIX: Update BOTH status AND callStatus fields for consistency
         const timestamp = new Date().toISOString();
-        
+
         // Calculate duration BEFORE the transaction so we can include it atomically
         let calculatedDuration = 0;
         const startTime = callMetadata.acceptedAt ? Date.parse(callMetadata.acceptedAt) : null;
@@ -256,7 +256,7 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
         } else {
             console.warn(`[call-hungup] No acceptedAt timestamp for ${callId} - cannot calculate duration`);
         }
-        
+
         if (agentId && callMetadata.clinicId && typeof callMetadata.queuePosition !== 'undefined') {
             try {
                 await ddb.send(new TransactWriteCommand({
@@ -332,7 +332,7 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
             // Fallback if call doesn't have queue key: update agent status AND try to find/update call record
             // FIX: Try to find call record using callId-index and update it if found
             console.warn('[call-hungup] Call record missing queue key, attempting alternative update', { callId, agentId });
-            
+
             try {
                 // Find the call record using callId-index
                 const { Items: callRecords } = await ddb.send(new QueryCommand({
@@ -341,7 +341,7 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
                     KeyConditionExpression: 'callId = :callId',
                     ExpressionAttributeValues: { ':callId': callId }
                 }));
-                
+
                 if (callRecords && callRecords.length > 0) {
                     const foundCall = callRecords[0];
                     // Now we have the correct keys, attempt atomic update
@@ -434,10 +434,27 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
                             TableName: AGENT_PRESENCE_TABLE_NAME,
                             Key: { agentId }
                         }));
-                        
+
                         // Only check queue if agent is still Online (no call assigned during lock acquisition)
                         if (refreshedAgentInfo && refreshedAgentInfo.status === 'Online' && !refreshedAgentInfo.currentCallId) {
-                            await checkQueueForWork(agentId, refreshedAgentInfo);
+                            // #8: Agent wrap-up period — delay queue check to give agents time for note-taking
+                            const wrapUpSeconds = CHIME_CONFIG.AGENT.WRAP_UP_SECONDS;
+                            if (wrapUpSeconds > 0) {
+                                console.log(`[call-hungup] Agent ${agentId} entering ${wrapUpSeconds}s wrap-up period`);
+                                await new Promise(resolve => setTimeout(resolve, wrapUpSeconds * 1000));
+                                // Re-check agent state after wrap-up (they may have gone offline or taken another call)
+                                const { Item: postWrapAgent } = await ddb.send(new GetCommand({
+                                    TableName: AGENT_PRESENCE_TABLE_NAME,
+                                    Key: { agentId }
+                                }));
+                                if (!postWrapAgent || postWrapAgent.status !== 'Online' || postWrapAgent.currentCallId) {
+                                    console.log(`[call-hungup] Agent ${agentId} state changed during wrap-up, skipping queue check`);
+                                } else {
+                                    await checkQueueForWork(agentId, postWrapAgent);
+                                }
+                            } else {
+                                await checkQueueForWork(agentId, refreshedAgentInfo);
+                            }
                         } else {
                             console.log(`[call-hungup] Agent ${agentId} already has a call or is not online, skipping queue check`);
                         }
@@ -458,7 +475,7 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
                         TableName: AGENT_PRESENCE_TABLE_NAME,
                         Key: { agentId }
                     }));
-                    
+
                     if (refreshedAgentInfo && refreshedAgentInfo.status === 'Online') {
                         await checkQueueForWork(agentId, refreshedAgentInfo);
                     }

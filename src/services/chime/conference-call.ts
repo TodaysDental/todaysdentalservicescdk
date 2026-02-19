@@ -15,6 +15,8 @@ import { verifyIdToken } from '../../shared/utils/auth-helper';
 import { getUserIdFromJwt, checkClinicAuthorization } from '../../shared/utils/permissions-helper';
 import { getSmaIdForClinic } from './utils/sma-map';
 import { randomUUID } from 'crypto';
+import { isPushNotificationsEnabled, sendAgentAlert } from './utils/push-notifications';
+import { CHIME_CONFIG } from './config';
 
 const ddb = getDynamoDBClient();
 
@@ -40,7 +42,7 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
     });
 
     const corsHeaders = buildCorsHeaders({ allowMethods: ['POST', 'OPTIONS'] });
-    
+
     if (event.httpMethod === 'OPTIONS') {
         return { statusCode: 200, headers: corsHeaders, body: '' };
     }
@@ -158,7 +160,7 @@ async function mergeCallsIntoConference(
     // Verify clinic authorization for both calls
     const primaryAuthz = checkClinicAuthorization(payload as any, primaryCall.clinicId);
     const secondaryAuthz = checkClinicAuthorization(payload as any, secondaryCall.clinicId);
-    
+
     if (!primaryAuthz.authorized || !secondaryAuthz.authorized) {
         return { statusCode: 403, headers: corsHeaders, body: JSON.stringify({ message: 'Not authorized for one or both calls' }) };
     }
@@ -289,7 +291,7 @@ async function mergeCallsIntoConference(
             return {
                 statusCode: 409,
                 headers: corsHeaders,
-                body: JSON.stringify({ 
+                body: JSON.stringify({
                     message: 'Call state changed during conference merge. Please try again.',
                     error: 'STATE_CHANGED'
                 })
@@ -418,6 +420,21 @@ async function addParticipantToConference(
                 ':callIds': currentConferenceCallIds
             }
         }));
+
+        // Push notification: notify agents in the conference about the new participant
+        if (isPushNotificationsEnabled() && CHIME_CONFIG.PUSH.ENABLE_CONFERENCE_JOIN_PUSH) {
+            sendAgentAlert(
+                [agentId],
+                'Conference Updated',
+                `A new participant has been added to your conference`,
+                {
+                    alertType: 'conference_participant_added',
+                    conferenceId,
+                    addedCallId: callIdToAdd,
+                    phoneNumber: callRecord.phoneNumber,
+                },
+            ).catch(err => console.warn('[conference-call] Conference push failed (non-fatal):', err.message));
+        }
     }
 
     return {
@@ -524,7 +541,7 @@ async function removeParticipantFromConference(
     // Update agent's conference call list
     const currentConferenceCallIds = agentPresence.conferenceCallIds || [];
     const updatedCallIds = currentConferenceCallIds.filter((id: string) => id !== body.callIdToRemove);
-    
+
     // If only one call left, downgrade from conference to regular call
     if (updatedCallIds.length === 1) {
         await ddb.send(new UpdateCommand({
@@ -602,7 +619,7 @@ async function endConference(
             if (callRecords && callRecords.length > 0) {
                 const callRecord = callRecords[0];
                 const smaId = getSmaIdForClinic(callRecord.clinicId);
-                
+
                 if (smaId) {
                     await chimeVoice.send(new UpdateSipMediaApplicationCallCommand({
                         SipMediaApplicationId: smaId,

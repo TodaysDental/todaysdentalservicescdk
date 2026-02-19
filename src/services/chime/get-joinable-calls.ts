@@ -2,8 +2,10 @@ import { APIGatewayProxyEvent, APIGatewayProxyResult } from 'aws-lambda';
 import { DynamoDBClient } from '@aws-sdk/client-dynamodb';
 import { DynamoDBDocumentClient, QueryCommand, GetCommand } from '@aws-sdk/lib-dynamodb';
 import { buildCorsHeaders } from '../../shared/utils/cors';
+import { PriorityQueueManager } from './utils/priority-queue';
 
 const ddb = DynamoDBDocumentClient.from(new DynamoDBClient({}));
+const priorityManager = new PriorityQueueManager(ddb, process.env.CALL_QUEUE_TABLE_NAME!);
 
 const CALL_QUEUE_TABLE_NAME = process.env.CALL_QUEUE_TABLE_NAME!;
 const AGENT_PRESENCE_TABLE_NAME = process.env.AGENT_PRESENCE_TABLE_NAME!;
@@ -14,6 +16,7 @@ interface QueuedCall {
   phoneNumber: string;
   status: string;
   priority: string;
+  priorityScore: number;
   isVip: boolean;
   isCallback: boolean;
   queuedAt: number;
@@ -144,12 +147,21 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
           if (includeQueued && call.status === 'queued') {
             const waitTime = call.queuedAt ? Math.floor((now - call.queuedAt) / 1000) : 0;
 
+            // Compute composite priority score (higher = more urgent)
+            const PRIORITY_WEIGHTS: Record<string, number> = { high: 1000, normal: 100, low: 10 };
+            let priorityScore = PRIORITY_WEIGHTS[call.priority || 'normal'] || 100;
+            if (call.isVip) priorityScore += 500;
+            if (call.isCallback) priorityScore += 300;
+            priorityScore += Math.min(waitTime, 600) * 2; // starvation prevention — max +1200 after 10 min
+            if (waitTime > 900) priorityScore += 1000; // emergency boost at 15 min
+
             queuedCalls.push({
               callId: call.callId,
               clinicId: call.clinicId,
               phoneNumber: call.phoneNumber || 'Unknown',
               status: call.status,
               priority: call.priority || 'normal',
+              priorityScore,
               isVip: call.isVip || false,
               isCallback: call.isCallback || false,
               queuedAt: call.queuedAt,
@@ -198,18 +210,8 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
       }
     }
 
-    // Sort queued calls by priority and wait time
-    queuedCalls.sort((a, b) => {
-      // VIP first
-      if (a.isVip !== b.isVip) return a.isVip ? -1 : 1;
-      // Then by priority
-      const priorityOrder = { high: 0, normal: 1, low: 2 };
-      const aPriority = priorityOrder[a.priority as keyof typeof priorityOrder] ?? 1;
-      const bPriority = priorityOrder[b.priority as keyof typeof priorityOrder] ?? 1;
-      if (aPriority !== bPriority) return aPriority - bPriority;
-      // Then by wait time (longest first)
-      return b.waitTime - a.waitTime;
-    });
+    // Sort queued calls by composite priority score (highest first — most urgent on top)
+    queuedCalls.sort((a, b) => b.priorityScore - a.priorityScore);
 
     // Sort active calls by duration (longest first)
     activeCalls.sort((a, b) => b.duration - a.duration);

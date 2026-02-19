@@ -62,33 +62,33 @@ export interface AnalyticsStackProps extends StackProps {
    * Defaults to ${stackName}-TranscriptBuffersV2
    */
   transcriptBufferTableName?: string;
-  
+
   // ========================================
   // VOICE AI INTEGRATION (from AiAgentsStack)
   // ========================================
   // CRITICAL: Name and ARN must be provided together for proper integration.
   // If only name is provided without ARN, IAM permissions will fail silently.
-  
+
   /**
    * Voice Sessions table name from AiAgentsStack for AI call session tracking.
    * Required for correlating AI voice call sessions with analytics.
    * MUST be provided together with voiceSessionsTableArn.
    */
   voiceSessionsTableName?: string;
-  
+
   /**
    * Voice Sessions table ARN for IAM permissions.
    * MUST be provided together with voiceSessionsTableName.
    */
   voiceSessionsTableArn?: string;
-  
+
   /**
    * AI Agents table name from AiAgentsStack.
    * Used to validate and enrich AI agent information in analytics.
    * MUST be provided together with aiAgentsTableArn.
    */
   aiAgentsTableName?: string;
-  
+
   /**
    * AI Agents table ARN for IAM permissions.
    * MUST be provided together with aiAgentsTableName.
@@ -102,7 +102,7 @@ export class AnalyticsStack extends Stack {
   public readonly transcriptBufferTable: dynamodb.Table;
   public readonly callAlertsTopic: sns.Topic;
   public readonly medicalVocabularyName: string;
-  
+
   // Derived table names from ChimeStack for cross-stack references
   public readonly derivedCallQueueTableName: string;
   public readonly derivedAgentPresenceTableName: string;
@@ -191,7 +191,7 @@ export class AnalyticsStack extends Stack {
         treatMissingData: cloudwatch.TreatMissingData.NOT_BREACHING,
       });
     };
-    
+
     // ========================================
     // CRITICAL FIX: Derive and Validate ChimeStack Table Names
     // ========================================
@@ -199,22 +199,22 @@ export class AnalyticsStack extends Stack {
     // WARNING: These names must match the naming convention in ChimeStack exactly.
     // If ChimeStack changes its table naming, these derivations must be updated.
     // RECOMMENDED: Pass explicit table names via props instead of relying on derivation.
-    
+
     if (!props.chimeStackName) {
       throw new Error('chimeStackName is required for AnalyticsStack to derive ChimeStack table names');
     }
-    
+
     // Validate chimeStackName format (should match CDK stack naming conventions)
     if (!/^[A-Za-z][A-Za-z0-9-]*$/.test(props.chimeStackName)) {
       throw new Error(`Invalid chimeStackName format: ${props.chimeStackName}. Must start with letter and contain only alphanumeric characters and hyphens.`);
     }
-    
+
     // ========================================
     // VOICE AI INTEGRATION VALIDATION
     // ========================================
     // CRITICAL FIX: Validate that name and ARN are provided together
     // This prevents silent failures where Lambda has env var but no IAM permissions
-    
+
     if (props.voiceSessionsTableName && !props.voiceSessionsTableArn) {
       throw new Error(
         '[AnalyticsStack] CONFIGURATION ERROR: voiceSessionsTableName is provided but voiceSessionsTableArn is missing. ' +
@@ -227,7 +227,7 @@ export class AnalyticsStack extends Stack {
         'Both must be provided together for environment variable configuration.'
       );
     }
-    
+
     if (props.aiAgentsTableName && !props.aiAgentsTableArn) {
       throw new Error(
         '[AnalyticsStack] CONFIGURATION ERROR: aiAgentsTableName is provided but aiAgentsTableArn is missing. ' +
@@ -240,31 +240,31 @@ export class AnalyticsStack extends Stack {
         'Both must be provided together for environment variable configuration.'
       );
     }
-    
+
     // Log Voice AI integration status
     const voiceAiEnabled = !!(props.voiceSessionsTableName && props.voiceSessionsTableArn);
     console.log(`[AnalyticsStack] Voice AI integration: ${voiceAiEnabled ? 'ENABLED' : 'DISABLED'}`);
-    
+
     // Use explicit table names if provided, otherwise derive from chimeStackName
     // CRITICAL FIX #1: Validate derived table names and provide clear error messages
     // CRITICAL FIX #1.1: Enforce explicit table names in production to prevent silent failures
     // NOTE: CDK_DEFAULT_ACCOUNT is always set by CDK CLI, so don't use it for production detection
     // Use explicit NODE_ENV=production or ENFORCE_EXPLICIT_TABLE_NAMES=true instead
-    const isProduction = process.env.NODE_ENV === 'production' || 
-                         process.env.ENFORCE_EXPLICIT_TABLE_NAMES === 'true';
-    
+    const isProduction = process.env.NODE_ENV === 'production' ||
+      process.env.ENFORCE_EXPLICIT_TABLE_NAMES === 'true';
+
     if (!props.callQueueTableName || !props.agentPresenceTableName || !props.agentPerformanceTableName) {
       const missingTables = [
         !props.callQueueTableName && 'callQueueTableName',
-        !props.agentPresenceTableName && 'agentPresenceTableName', 
+        !props.agentPresenceTableName && 'agentPresenceTableName',
         !props.agentPerformanceTableName && 'agentPerformanceTableName'
       ].filter(Boolean);
-      
+
       const warningMsg = `[AnalyticsStack] WARNING: Using derived table names for: ${missingTables.join(', ')}. ` +
         'This is fragile - pass explicit table names from infra.ts constants.';
-      
+
       console.warn(warningMsg);
-      
+
       // In production, require explicit table names to prevent silent failures
       if (isProduction && process.env.ALLOW_DERIVED_TABLE_NAMES !== 'true') {
         throw new Error(
@@ -274,11 +274,11 @@ export class AnalyticsStack extends Stack {
         );
       }
     }
-    
+
     this.derivedCallQueueTableName = props.callQueueTableName || `${props.chimeStackName}-CallQueueV2`;
     this.derivedAgentPresenceTableName = props.agentPresenceTableName || `${props.chimeStackName}-AgentPresence`;
     this.derivedAgentPerformanceTableName = props.agentPerformanceTableName || `${props.chimeStackName}-AgentPerformance`;
-    
+
     // CRITICAL FIX #1.1: Log derived table names at INFO level for debugging
     console.info('[AnalyticsStack] Table configuration:', {
       callQueueTable: this.derivedCallQueueTableName,
@@ -287,7 +287,7 @@ export class AnalyticsStack extends Stack {
       source: props.callQueueTableName ? 'EXPLICIT' : 'DERIVED',
       isProduction
     });
-    
+
     // CRITICAL FIX #1: Store expected table name patterns for runtime validation
     // Lambdas can use these to detect misconfiguration early
     const tableNameValidationHints = {
@@ -297,7 +297,7 @@ export class AnalyticsStack extends Stack {
       chimeStackName: props.chimeStackName,
     };
     console.log('[AnalyticsStack] Table name validation hints:', tableNameValidationHints);
-    
+
     // Log derived table names for debugging during synth
     console.log('[AnalyticsStack] ChimeStack table names:', {
       callQueueTable: this.derivedCallQueueTableName,
@@ -318,7 +318,7 @@ export class AnalyticsStack extends Stack {
       removalPolicy: RemovalPolicy.DESTROY,
       pointInTimeRecovery: true,
       timeToLiveAttribute: 'ttl',
-      stream: dynamodb.StreamViewType.NEW_AND_OLD_IMAGES, // Enable streams for real-time coaching
+      stream: dynamodb.StreamViewType.NEW_AND_OLD_IMAGES, // Enable streams for analytics processing
     });
     applyTags(this.analyticsTable, { Table: 'analytics' });
 
@@ -382,7 +382,7 @@ export class AnalyticsStack extends Stack {
     // AI VOICE CALL ANALYTICS GSIs
     // ========================================
     // These GSIs support Voice AI call tracking from AiAgentsStack
-    
+
     // GSI: Query by AI call type (inbound_after_hours, outbound_scheduled, ai_transfer)
     this.analyticsTable.addGlobalSecondaryIndex({
       indexName: 'aiCallType-timestamp-index',
@@ -541,7 +541,7 @@ export class AnalyticsStack extends Stack {
     // Grant permissions to DLQ processor
     agentPerformanceFailuresTable.grantReadWriteData(dlqProcessorFn);
     agentPerformanceAlertTopic.grantPublish(dlqProcessorFn);
-    
+
     // Grant permission to ChimeStack agent performance table
     dlqProcessorFn.addToRolePolicy(new iam.PolicyStatement({
       effect: iam.Effect.ALLOW,
@@ -664,7 +664,7 @@ export class AnalyticsStack extends Stack {
     //
     // DO NOT ADD a stream processor here - it will create duplicate processing.
     // If you need to modify stream processing, update ChimeStack.
-    
+
     // Always export dedup table name for cross-stack references
     new CfnOutput(this, 'AnalyticsDedupTableName', {
       value: this.analyticsDedupTable.tableName,
@@ -894,7 +894,7 @@ export class AnalyticsStack extends Stack {
 
     // Note: QuickSight requires AWS account to have QuickSight enabled
     // This creates the data source configuration for QuickSight dashboards
-    
+
     // Create IAM role for QuickSight to access DynamoDB
     const quicksightRole = new iam.Role(this, 'QuickSightDataSourceRole', {
       assumedBy: new iam.ServicePrincipal('quicksight.amazonaws.com'),
@@ -974,7 +974,7 @@ export class AnalyticsStack extends Stack {
     // because it creates analytics records using PutCommand for orphaned calls
     this.analyticsTable.grantReadWriteData(reconcileAnalyticsFn);
     this.analyticsDedupTable.grantReadWriteData(reconcileAnalyticsFn);
-    
+
     // CRITICAL FIX #1.2: Grant permission to transcript buffer table for orphan cleanup
     this.transcriptBufferTable.grantReadWriteData(reconcileAnalyticsFn);
 
@@ -990,7 +990,7 @@ export class AnalyticsStack extends Stack {
         `arn:aws:dynamodb:${this.region}:${this.account}:table/${this.derivedCallQueueTableName}`,
       ],
     }));
-    
+
     // CRITICAL FIX #1.2: Grant permission to AgentPerformance table for metrics tracking
     reconcileAnalyticsFn.addToRolePolicy(new iam.PolicyStatement({
       effect: iam.Effect.ALLOW,

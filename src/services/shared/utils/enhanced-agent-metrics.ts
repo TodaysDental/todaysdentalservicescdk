@@ -5,7 +5,6 @@
  * - Call handling metrics (AHT, FCR, transfer rate)
  * - Quality metrics (sentiment, CSAT proxy)
  * - Productivity metrics (calls per hour, utilization)
- * - Coaching scores
  */
 
 import { DynamoDBDocumentClient, UpdateCommand, GetCommand, QueryCommand } from '@aws-sdk/lib-dynamodb';
@@ -28,7 +27,7 @@ export interface EnhancedAgentMetrics {
   totalHoldTime: number;
   totalAfterCallWorkTime: number;
   averageHandleTime: number; // AHT = (talk + hold + ACW) / answered calls
-  
+
   // Quality Metrics
   sentimentScores: {
     positive: number;
@@ -38,30 +37,29 @@ export interface EnhancedAgentMetrics {
   };
   averageSentiment: number; // 0-100 scale
   csatProxy: number; // Customer satisfaction proxy based on sentiment
-  
+
   // First Call Resolution (FCR)
   resolvedCalls: number; // Calls not followed by another within 24h
   fcrRate: number; // Percentage
-  
+
   // Transfer & Escalation
   transferredCalls: number;
   escalatedCalls: number;
   transferRate: number; // Percentage
-  
+
   // Efficiency Metrics
   callsPerHour: number;
   utilizationRate: number; // (Talk + Hold + ACW) / Total logged time
-  
-  // Coaching Metrics
-  coachingScore: number; // 0-100 from real-time coaching analysis
+
+
   interruptionRate: number; // Interruptions per call
   talkTimeBalance: number; // Ideal is 40-60%, score 0-100
-  
+
   // Issue Tracking
   customerFrustrationCount: number;
   escalationRequestCount: number;
   audioQualityIssues: number;
-  
+
   // Metadata
   callIds: string[];
   lastUpdated: string;
@@ -95,7 +93,7 @@ export async function trackEnhancedCallMetrics(
 ): Promise<void> {
   // CRITICAL FIX: Validate metrics before processing
   const validationResult = validateAgentMetrics(metrics);
-  
+
   if (!validationResult.valid) {
     console.error('[EnhancedMetrics] Validation failed:', {
       agentId: metrics.agentId,
@@ -104,7 +102,7 @@ export async function trackEnhancedCallMetrics(
     });
     throw new Error(`Metrics validation failed: ${validationResult.errors.join(', ')}`);
   }
-  
+
   // Log warnings but continue processing
   if (validationResult.warnings.length > 0) {
     console.warn('[EnhancedMetrics] Validation warnings:', {
@@ -113,18 +111,18 @@ export async function trackEnhancedCallMetrics(
       warnings: validationResult.warnings
     });
   }
-  
+
   // Use sanitized metrics
   const sanitizedMetrics = validationResult.sanitizedMetrics!;
-  
+
   // CRITICAL FIX: Get clinic timezone for accurate date aggregation
   // Use call's actual timestamp (not current time) to handle calls near midnight correctly
   const clinicTimezone = await getClinicTimezone(sanitizedMetrics.clinicId);
-  const callTimestamp = sanitizedMetrics.timestamp 
-    ? new Date(sanitizedMetrics.timestamp) 
+  const callTimestamp = sanitizedMetrics.timestamp
+    ? new Date(sanitizedMetrics.timestamp)
     : new Date();
   const today = getDateInTimezone(callTimestamp, clinicTimezone);
-  
+
   const MAX_RETRIES = 3;
   let attempt = 0;
 
@@ -143,95 +141,95 @@ export async function trackEnhancedCallMetrics(
       const current = existing.Item as EnhancedAgentMetrics | undefined;
       const currentVersion = (current as any)?.version || 0;
 
-  // Validate call count integrity
-  const currentCallCount = current?.totalCalls || 0;
-  const newCallCount = currentCallCount + 1;
-  
-  const integrityCheck = validateCallCountIntegrity(currentCallCount, newCallCount, sanitizedMetrics.callId);
-  if (!integrityCheck.valid) {
-    console.error('[EnhancedMetrics] Call count integrity check failed:', integrityCheck.errors);
-    throw new Error(`Call count integrity violation: ${integrityCheck.errors.join(', ')}`);
-  }
+      // Validate call count integrity
+      const currentCallCount = current?.totalCalls || 0;
+      const newCallCount = currentCallCount + 1;
 
-  // Calculate new values
-  const newTotalCalls = newCallCount;
-  const newAnsweredCalls = (current?.answeredCalls || 0) + 1;
-  const newInboundCalls = sanitizedMetrics.direction === 'inbound' 
-    ? (current?.inboundCalls || 0) + 1 
-    : (current?.inboundCalls || 0);
-  const newOutboundCalls = sanitizedMetrics.direction === 'outbound'
-    ? (current?.outboundCalls || 0) + 1
-    : (current?.outboundCalls || 0);
+      const integrityCheck = validateCallCountIntegrity(currentCallCount, newCallCount, sanitizedMetrics.callId);
+      if (!integrityCheck.valid) {
+        console.error('[EnhancedMetrics] Call count integrity check failed:', integrityCheck.errors);
+        throw new Error(`Call count integrity violation: ${integrityCheck.errors.join(', ')}`);
+      }
 
-  const newTotalTalkTime = (current?.totalTalkTime || 0) + (sanitizedMetrics.talkTime || sanitizedMetrics.duration);
-  const newTotalHoldTime = (current?.totalHoldTime || 0) + (sanitizedMetrics.holdTime || 0);
+      // Calculate new values
+      const newTotalCalls = newCallCount;
+      const newAnsweredCalls = (current?.answeredCalls || 0) + 1;
+      const newInboundCalls = sanitizedMetrics.direction === 'inbound'
+        ? (current?.inboundCalls || 0) + 1
+        : (current?.inboundCalls || 0);
+      const newOutboundCalls = sanitizedMetrics.direction === 'outbound'
+        ? (current?.outboundCalls || 0) + 1
+        : (current?.outboundCalls || 0);
 
-  // Calculate AHT (Average Handle Time)
-  const newAverageHandleTime = Math.round(
-    (newTotalTalkTime + newTotalHoldTime) / newAnsweredCalls
-  );
+      const newTotalTalkTime = (current?.totalTalkTime || 0) + (sanitizedMetrics.talkTime || sanitizedMetrics.duration);
+      const newTotalHoldTime = (current?.totalHoldTime || 0) + (sanitizedMetrics.holdTime || 0);
 
-  // Update sentiment counts
-  const sentimentScores = current?.sentimentScores || { positive: 0, neutral: 0, negative: 0, mixed: 0 };
-  if (sanitizedMetrics.sentiment) {
-    const sentimentKey = sanitizedMetrics.sentiment.toLowerCase();
-    if (sentimentKey in sentimentScores) {
-      sentimentScores[sentimentKey as keyof typeof sentimentScores]++;
-    }
-  }
+      // Calculate AHT (Average Handle Time)
+      const newAverageHandleTime = Math.round(
+        (newTotalTalkTime + newTotalHoldTime) / newAnsweredCalls
+      );
 
-  // Calculate average sentiment score
-  const currentAvgSentiment = current?.averageSentiment || 50;
-  const totalSentimentCalls = Object.values(sentimentScores).reduce((sum, count) => sum + count, 0);
-  const newAverageSentiment = sanitizedMetrics.sentimentScore
-    ? Math.round(
-        (currentAvgSentiment * (totalSentimentCalls - 1) + sanitizedMetrics.sentimentScore) / totalSentimentCalls
-      )
-    : currentAvgSentiment;
+      // Update sentiment counts
+      const sentimentScores = current?.sentimentScores || { positive: 0, neutral: 0, negative: 0, mixed: 0 };
+      if (sanitizedMetrics.sentiment) {
+        const sentimentKey = sanitizedMetrics.sentiment.toLowerCase();
+        if (sentimentKey in sentimentScores) {
+          sentimentScores[sentimentKey as keyof typeof sentimentScores]++;
+        }
+      }
 
-  // Calculate CSAT proxy (Customer Satisfaction based on sentiment)
-  const csatProxy = Math.round(
-    ((sentimentScores.positive + sentimentScores.neutral * 0.5) / totalSentimentCalls) * 100
-  );
+      // Calculate average sentiment score
+      const currentAvgSentiment = current?.averageSentiment || 50;
+      const totalSentimentCalls = Object.values(sentimentScores).reduce((sum, count) => sum + count, 0);
+      const newAverageSentiment = sanitizedMetrics.sentimentScore
+        ? Math.round(
+          (currentAvgSentiment * (totalSentimentCalls - 1) + sanitizedMetrics.sentimentScore) / totalSentimentCalls
+        )
+        : currentAvgSentiment;
 
-  // Track transfers and escalations
-  const newTransferredCalls = (current?.transferredCalls || 0) + (sanitizedMetrics.transferred ? 1 : 0);
-  const newEscalatedCalls = (current?.escalatedCalls || 0) + (sanitizedMetrics.escalated ? 1 : 0);
-  const transferRate = Math.round((newTransferredCalls / newAnsweredCalls) * 100);
+      // Calculate CSAT proxy (Customer Satisfaction based on sentiment)
+      const csatProxy = Math.round(
+        ((sentimentScores.positive + sentimentScores.neutral * 0.5) / totalSentimentCalls) * 100
+      );
 
-  // Track issues
-  const newCustomerFrustrationCount = (current?.customerFrustrationCount || 0) +
-    (sanitizedMetrics.issues?.includes('customer-frustration') ? 1 : 0);
-  const newEscalationRequestCount = (current?.escalationRequestCount || 0) +
-    (sanitizedMetrics.issues?.includes('escalation-request') ? 1 : 0);
-  const newAudioQualityIssues = (current?.audioQualityIssues || 0) +
-    (sanitizedMetrics.issues?.includes('poor-audio-quality') ? 1 : 0);
+      // Track transfers and escalations
+      const newTransferredCalls = (current?.transferredCalls || 0) + (sanitizedMetrics.transferred ? 1 : 0);
+      const newEscalatedCalls = (current?.escalatedCalls || 0) + (sanitizedMetrics.escalated ? 1 : 0);
+      const transferRate = Math.round((newTransferredCalls / newAnsweredCalls) * 100);
 
-  // Calculate efficiency metrics
-  const callsPerHour = current?.callsPerHour || 0; // Requires session tracking
-  const utilizationRate = current?.utilizationRate || 0; // Requires session tracking
+      // Track issues
+      const newCustomerFrustrationCount = (current?.customerFrustrationCount || 0) +
+        (sanitizedMetrics.issues?.includes('customer-frustration') ? 1 : 0);
+      const newEscalationRequestCount = (current?.escalationRequestCount || 0) +
+        (sanitizedMetrics.issues?.includes('escalation-request') ? 1 : 0);
+      const newAudioQualityIssues = (current?.audioQualityIssues || 0) +
+        (sanitizedMetrics.issues?.includes('poor-audio-quality') ? 1 : 0);
 
-  // Calculate coaching metrics
-  const interruptionRate = sanitizedMetrics.speakerMetrics
-    ? sanitizedMetrics.speakerMetrics.interruptionCount
-    : (current?.interruptionRate || 0);
+      // Calculate efficiency metrics
+      const callsPerHour = current?.callsPerHour || 0; // Requires session tracking
+      const utilizationRate = current?.utilizationRate || 0; // Requires session tracking
 
-  const talkTimeBalance = sanitizedMetrics.speakerMetrics
-    ? calculateTalkTimeBalanceScore(sanitizedMetrics.speakerMetrics.agentTalkPercentage)
-    : (current?.talkTimeBalance || 100);
+      // Calculate coaching metrics
+      const interruptionRate = sanitizedMetrics.speakerMetrics
+        ? sanitizedMetrics.speakerMetrics.interruptionCount
+        : (current?.interruptionRate || 0);
+
+      const talkTimeBalance = sanitizedMetrics.speakerMetrics
+        ? calculateTalkTimeBalanceScore(sanitizedMetrics.speakerMetrics.agentTalkPercentage)
+        : (current?.talkTimeBalance || 100);
 
       // CRITICAL FIX: Cap callIds array to prevent unbounded growth
       // Keep only the last 50 call IDs to stay well under DynamoDB's 400KB item limit
       // ALSO: Deduplicate to prevent the same callId appearing multiple times due to retries
       const existingCallIds = current?.callIds || [];
       const MAX_CALL_IDS = 50;
-      
+
       // Check if callId already exists (prevents duplicate during retries)
       const callIdExists = existingCallIds.includes(sanitizedMetrics.callId);
-      const updatedCallIds = callIdExists 
+      const updatedCallIds = callIdExists
         ? existingCallIds // Don't add duplicate
         : [...existingCallIds, sanitizedMetrics.callId].slice(-MAX_CALL_IDS);
-      
+
       // Validate aggregated metrics before storing
       const aggregatedValidation = validateAggregatedMetrics({
         totalCalls: newTotalCalls,
@@ -240,7 +238,7 @@ export async function trackEnhancedCallMetrics(
         sentimentScores,
         transferRate
       });
-      
+
       if (!aggregatedValidation.valid) {
         console.error('[EnhancedMetrics] Aggregated metrics validation failed:', {
           agentId: sanitizedMetrics.agentId,
@@ -248,16 +246,16 @@ export async function trackEnhancedCallMetrics(
         });
         throw new Error(`Aggregated metrics validation failed: ${aggregatedValidation.errors.join(', ')}`);
       }
-      
+
       if (aggregatedValidation.warnings.length > 0) {
         console.warn('[EnhancedMetrics] Aggregated metrics warnings:', {
           agentId: sanitizedMetrics.agentId,
           warnings: aggregatedValidation.warnings
         });
       }
-      
+
       const newVersion = currentVersion + 1;
-      
+
       // Update DynamoDB with optimistic locking (version check)
       const updateParams: any = {
         TableName: tableName,
@@ -329,9 +327,9 @@ export async function trackEnhancedCallMetrics(
         avgSentiment: newAverageSentiment,
         attempt: attempt + 1,
       });
-      
+
       return; // Success - exit retry loop
-      
+
     } catch (err: any) {
       if (err.name === 'ConditionalCheckFailedException') {
         // Version conflict - retry with exponential backoff
@@ -340,12 +338,12 @@ export async function trackEnhancedCallMetrics(
           console.error('[EnhancedMetrics] Max retries exceeded for agent:', sanitizedMetrics.agentId);
           throw new Error(`Failed to update metrics after ${MAX_RETRIES} attempts due to concurrent updates`);
         }
-        
+
         console.warn('[EnhancedMetrics] Version conflict, retrying...', {
           agentId: sanitizedMetrics.agentId,
           attempt,
         });
-        
+
         // Exponential backoff: 100ms, 200ms, 400ms
         await new Promise(resolve => setTimeout(resolve, 100 * Math.pow(2, attempt - 1)));
         continue; // Retry
@@ -397,19 +395,19 @@ function getDateInTimezone(date: Date, timezone: string): string {
 function calculateTalkTimeBalanceScore(agentTalkPercentage: number): number {
   // Perfect score at 50%
   if (agentTalkPercentage === 50) return 100;
-  
+
   // Good range: 40-60%
   if (agentTalkPercentage >= 40 && agentTalkPercentage <= 60) {
     const deviation = Math.abs(agentTalkPercentage - 50);
     return 100 - (deviation * 2); // -2 points per % deviation
   }
-  
+
   // Acceptable range: 30-70%
   if (agentTalkPercentage >= 30 && agentTalkPercentage <= 70) {
     const deviation = Math.abs(agentTalkPercentage - 50);
     return 80 - ((deviation - 10) * 3); // Steeper penalty outside good range
   }
-  
+
   // Poor: < 30% or > 70%
   if (agentTalkPercentage < 30) {
     return Math.max(0, 50 - (30 - agentTalkPercentage) * 2);

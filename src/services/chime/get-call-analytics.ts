@@ -37,13 +37,13 @@ function signPaginationToken(data: any, context: string): string {
     _ctx: context,
     _exp: Date.now() + TOKEN_EXPIRY_MS
   };
-  
+
   const payloadStr = JSON.stringify(payload);
   const signature = createHmac('sha256', PAGINATION_TOKEN_SECRET)
     .update(payloadStr)
     .digest('hex')
     .substring(0, 16); // Use first 16 chars for brevity
-  
+
   const signedToken = Buffer.from(JSON.stringify({ p: payload, s: signature })).toString('base64');
   return signedToken;
 }
@@ -54,41 +54,41 @@ function signPaginationToken(data: any, context: string): string {
 function verifyPaginationToken(token: string, expectedContext: string): { valid: boolean; data?: any; error?: string } {
   try {
     const decoded = JSON.parse(Buffer.from(token, 'base64').toString('utf-8'));
-    
+
     // Check for signed token format
     if (decoded.p && decoded.s) {
       const { p: payload, s: signature } = decoded;
-      
+
       // Verify signature
       const expectedSig = createHmac('sha256', PAGINATION_TOKEN_SECRET)
         .update(JSON.stringify(payload))
         .digest('hex')
         .substring(0, 16);
-      
+
       if (signature !== expectedSig) {
         return { valid: false, error: 'Invalid token signature' };
       }
-      
+
       // Check expiry
       if (payload._exp && payload._exp < Date.now()) {
         return { valid: false, error: 'Token expired' };
       }
-      
+
       // Check context (clinic/agent)
       if (payload._ctx && payload._ctx !== expectedContext) {
         return { valid: false, error: 'Token context mismatch' };
       }
-      
+
       // Remove internal fields before returning
       const { _ctx, _exp, ...data } = payload;
       return { valid: true, data };
     }
-    
+
     // Fallback: Handle legacy unsigned tokens (for backward compatibility)
     // Log warning but still validate structure
     console.warn('[verifyPaginationToken] Legacy unsigned token detected - consider re-issuing');
     return { valid: true, data: decoded };
-    
+
   } catch (err: any) {
     return { valid: false, error: `Cannot decode token: ${err.message}` };
   }
@@ -119,7 +119,7 @@ function normalizeTimestamp(value: number): number {
   // Year 2001 in seconds: 978307200
   // Year 2100 in seconds: 4102444800
   const YEAR_2100_SECONDS = 4102444800;
-  
+
   if (value > YEAR_2100_SECONDS) {
     // Definitely milliseconds, convert to seconds
     return Math.floor(value / 1000);
@@ -134,21 +134,21 @@ function normalizeTimestamp(value: number): number {
 function validateTimeRange(startTime: number, endTime: number): { valid: boolean; error?: any; normalizedStart?: number; normalizedEnd?: number } {
   const now = Math.floor(Date.now() / 1000);
   const oneYearAgo = now - (365 * 24 * 60 * 60);
-  
+
   if (isNaN(startTime) || isNaN(endTime)) {
     return {
       valid: false,
-      error: { 
+      error: {
         message: 'Invalid time format. Use epoch seconds.',
         error: 'INVALID_TIME_FORMAT'
       }
     };
   }
-  
+
   // CRITICAL FIX #13: Normalize timestamps to handle ms/s inconsistency
   const normalizedStart = normalizeTimestamp(startTime);
   const normalizedEnd = normalizeTimestamp(endTime);
-  
+
   if (normalizedStart !== startTime || normalizedEnd !== endTime) {
     console.log('[validateTimeRange] Normalized timestamps from ms to seconds:', {
       originalStart: startTime,
@@ -157,11 +157,11 @@ function validateTimeRange(startTime: number, endTime: number): { valid: boolean
       normalizedEnd
     });
   }
-  
+
   if (normalizedStart >= normalizedEnd) {
     return {
       valid: false,
-      error: { 
+      error: {
         message: 'startTime must be before endTime',
         error: 'INVALID_TIME_RANGE',
         startTime: normalizedStart,
@@ -169,35 +169,35 @@ function validateTimeRange(startTime: number, endTime: number): { valid: boolean
       }
     };
   }
-  
+
   if (normalizedStart < oneYearAgo) {
     return {
       valid: false,
-      error: { 
+      error: {
         message: 'startTime cannot be more than 1 year in the past',
         error: 'TIME_RANGE_TOO_OLD',
         maxStartTime: oneYearAgo
       }
     };
   }
-  
+
   if (normalizedEnd > now + 3600) {
     return {
       valid: false,
-      error: { 
+      error: {
         message: 'endTime cannot be more than 1 hour in the future',
         error: 'TIME_RANGE_FUTURE',
         currentTime: now
       }
     };
   }
-  
+
   // Prevent excessively large time ranges (max 90 days)
   const MAX_RANGE_SECONDS = 90 * 24 * 60 * 60;
   if (normalizedEnd - normalizedStart > MAX_RANGE_SECONDS) {
     return {
       valid: false,
-      error: { 
+      error: {
         message: 'Time range cannot exceed 90 days',
         error: 'TIME_RANGE_TOO_LARGE',
         requestedRange: normalizedEnd - normalizedStart,
@@ -205,7 +205,7 @@ function validateTimeRange(startTime: number, endTime: number): { valid: boolean
       }
     };
   }
-  
+
   return { valid: true, normalizedStart, normalizedEnd };
 }
 
@@ -214,7 +214,6 @@ function validateTimeRange(startTime: number, endTime: number): { valid: boolean
  * 
  * Endpoints:
  * GET /analytics/call/{callId} - Get analytics for specific call
- * GET /analytics/live?callId={callId} - Get live/real-time analytics (query param)
  * GET /analytics/clinic/{clinicId} - Get analytics for clinic (with filters)
  * GET /analytics/agent/{agentId} - Get analytics for agent
  * GET /analytics/summary - Get aggregate metrics
@@ -225,14 +224,14 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
     path: event.path,
     requestId: event.requestContext?.requestId
   });
-  
+
   // Use proper CORS headers that match API Gateway configuration
   const requestOrigin = event.headers?.origin || event.headers?.Origin;
   const corsHeaders = buildCorsHeaders({
     allowMethods: ['GET', 'OPTIONS'],
     allowHeaders: ['Content-Type', 'Authorization', 'X-Requested-With']
   }, requestOrigin);
-  
+
   if (event.httpMethod === 'OPTIONS') {
     return { statusCode: 200, headers: corsHeaders, body: '' };
   }
@@ -240,23 +239,21 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
   try {
     // Get user permissions from authorizer context
     const userPerms = getUserPermissions(event);
-    
+
     if (!userPerms) {
       console.warn('[get-analytics] No user permissions in authorizer context');
-      return { 
-        statusCode: 401, 
-        headers: corsHeaders, 
-        body: JSON.stringify({ message: 'Unauthorized' }) 
+      return {
+        statusCode: 401,
+        headers: corsHeaders,
+        body: JSON.stringify({ message: 'Unauthorized' })
       };
     }
-    
+
     const path = event.path;
-    
+
     // Route to appropriate handler
     if (path.includes('/call/')) {
       return await getCallAnalytics(event, userPerms, corsHeaders);
-    } else if (path.includes('/live')) {
-      return await getLiveCallAnalytics(event, userPerms, corsHeaders);
     } else if (path.includes('/clinic/')) {
       return await getClinicAnalytics(event, userPerms, corsHeaders);
     } else if (path.includes('/agent/')) {
@@ -268,19 +265,19 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
     } else if (path.includes('/queue')) {
       return await getQueueCalls(event, userPerms, corsHeaders);
     }
-    
+
     return {
       statusCode: 404,
       headers: corsHeaders,
       body: JSON.stringify({ message: 'Not found' })
     };
-    
+
   } catch (error: any) {
     console.error('[get-analytics] Error:', error);
     return {
       statusCode: 500,
       headers: corsHeaders,
-      body: JSON.stringify({ 
+      body: JSON.stringify({
         message: 'Internal server error',
         error: error?.message
       })
@@ -294,7 +291,7 @@ async function getCallAnalytics(
   corsHeaders: any
 ): Promise<APIGatewayProxyResult> {
   const callId = event.pathParameters?.callId;
-  
+
   if (!callId) {
     return {
       statusCode: 400,
@@ -302,7 +299,7 @@ async function getCallAnalytics(
       body: JSON.stringify({ message: 'Missing callId parameter' })
     };
   }
-  
+
   // Query ALL analytics records for this call (there may be multiple from different processors)
   // e.g., process-call-analytics.ts writes sentiment/category, process-call-analytics-stream.ts writes durations
   const queryResult = await ddb.send(new QueryCommand({
@@ -313,7 +310,7 @@ async function getCallAnalytics(
   }));
 
   const allRecords = queryResult.Items || [];
-  
+
   if (allRecords.length === 0) {
     return {
       statusCode: 404,
@@ -328,7 +325,7 @@ async function getCallAnalytics(
 
   if (allRecords.length > 1) {
     console.log(`[getCallAnalytics] Merging ${allRecords.length} records for callId: ${callId}`);
-    
+
     // Fields that should prefer non-null/non-default values from any record
     const sentinelDefaults: Record<string, any> = {
       overallSentiment: undefined,
@@ -373,7 +370,7 @@ async function getCallAnalytics(
       }
     }
   }
-  
+
   // Check authorization using authorizer context
   const allowedClinics = getAllowedClinicIds(userPerms.clinicRoles, userPerms.isSuperAdmin, userPerms.isGlobalSuperAdmin);
   if (!hasClinicAccess(allowedClinics, analytics.clinicId)) {
@@ -383,7 +380,7 @@ async function getCallAnalytics(
       body: JSON.stringify({ message: 'Unauthorized' })
     };
   }
-  
+
   // ----------------------------------------
   // Transcript hydration (Lex/Connect & Voice AI)
   // ----------------------------------------
@@ -478,7 +475,7 @@ async function getCallAnalytics(
   // check RecordingMetadata table (populated by process-recording.ts / process-transcription.ts)
   const RECORDING_METADATA_TABLE = process.env.RECORDING_METADATA_TABLE_NAME;
   const hasTranscriptNow = (typeof analytics.fullTranscript === 'string' && analytics.fullTranscript.trim().length > 0) ||
-                           (Array.isArray(analytics.latestTranscripts) && analytics.latestTranscripts.length > 0);
+    (Array.isArray(analytics.latestTranscripts) && analytics.latestTranscripts.length > 0);
   const hasSentimentNow = analytics.overallSentiment && analytics.overallSentiment !== 'NEUTRAL' && analytics.overallSentiment !== 'uncategorized';
 
   if (RECORDING_METADATA_TABLE && (!hasTranscriptNow || !hasSentimentNow)) {
@@ -555,7 +552,7 @@ async function getCallAnalytics(
 
   const etagSource = `${callId}-${analytics.timestamp}-${changeMarker}-${bufferMarker}`;
   const etag = Buffer.from(etagSource).toString('base64');
-  
+
   // Check If-None-Match header
   const clientETag = event.headers?.['If-None-Match'] || event.headers?.['if-none-match'];
   if (clientETag === etag) {
@@ -569,7 +566,7 @@ async function getCallAnalytics(
       body: ''
     };
   }
-  
+
   return {
     statusCode: 200,
     headers: {
@@ -585,215 +582,6 @@ async function getCallAnalytics(
   };
 }
 
-async function getLiveCallAnalytics(
-  event: APIGatewayProxyEvent,
-  userPerms: UserPermissions,
-  corsHeaders: any
-): Promise<APIGatewayProxyResult> {
-  const callId = event.queryStringParameters?.callId;
-  
-  if (!callId) {
-    return {
-      statusCode: 400,
-      headers: corsHeaders,
-      body: JSON.stringify({ message: 'Missing callId query parameter' })
-    };
-  }
-  
-  console.log('[getLiveCallAnalytics] Fetching live analytics for callId:', callId);
-  
-  // Query analytics for this call
-  const queryResult = await ddb.send(new QueryCommand({
-    TableName: ANALYTICS_TABLE_NAME,
-    KeyConditionExpression: 'callId = :callId',
-    ExpressionAttributeValues: { ':callId': callId },
-    ScanIndexForward: false, // Get most recent first
-    Limit: 1
-  }));
-
-  const analytics = queryResult.Items?.[0];
-  
-  if (!analytics) {
-    return {
-      statusCode: 404,
-      headers: corsHeaders,
-      body: JSON.stringify({ 
-        message: 'Call analytics not found',
-        callId: callId 
-      })
-    };
-  }
-  
-  // Check authorization using authorizer context
-  const allowedClinics = getAllowedClinicIds(userPerms.clinicRoles, userPerms.isSuperAdmin, userPerms.isGlobalSuperAdmin);
-  if (!hasClinicAccess(allowedClinics, analytics.clinicId)) {
-    return {
-      statusCode: 403,
-      headers: corsHeaders,
-      body: JSON.stringify({ message: 'Unauthorized' })
-    };
-  }
-  
-  // CRITICAL FIX: Use state machine for accurate status tracking
-  const analyticsState = analytics.analyticsState || AnalyticsState.ACTIVE;
-  const hasCallEnded = analytics.callEndTime || analytics.finalized;
-  
-  // CRITICAL FIX #1: Validate call is actually still active in real-time
-  // Check if call ended timestamp is recent (within last 5 seconds) to catch stale data
-  const callStartTimestamp = analytics.callStartTimestamp || new Date(analytics.callStartTime).getTime();
-  const now = Date.now();
-  const callDuration = now - callStartTimestamp;
-  const MAX_REASONABLE_CALL_DURATION = 4 * 60 * 60 * 1000; // 4 hours
-  
-  // If call has been "active" for more than 4 hours, something is wrong
-  if (analyticsState === AnalyticsState.ACTIVE && callDuration > MAX_REASONABLE_CALL_DURATION) {
-    console.error('[getLiveCallAnalytics] Stale active call detected (>4 hours):', {
-      callId,
-      callStartTimestamp,
-      callDuration: Math.floor(callDuration / 1000 / 60), // minutes
-      analyticsState
-    });
-    
-    return {
-      statusCode: 400,
-      headers: corsHeaders,
-      body: JSON.stringify({
-        message: 'Call data appears stale. Call may have ended without proper finalization.',
-        callId,
-        error: 'STALE_CALL_DATA',
-        callDuration: Math.floor(callDuration / 1000 / 60), // minutes
-        hint: 'Contact support if this persists. The call may need manual finalization.'
-      })
-    };
-  }
-  
-  // Validate last update timestamp is recent for truly live calls
-  const lastUpdate = new Date(analytics.updatedAt).getTime();
-  const timeSinceUpdate = now - lastUpdate;
-  const STALE_THRESHOLD = 5 * 60 * 1000; // 5 minutes
-  
-  if (analyticsState === AnalyticsState.ACTIVE && timeSinceUpdate > STALE_THRESHOLD) {
-    console.warn('[getLiveCallAnalytics] No recent updates for active call:', {
-      callId,
-      lastUpdate: analytics.updatedAt,
-      minutesSinceUpdate: Math.floor(timeSinceUpdate / 1000 / 60)
-    });
-    
-    // Return data but flag as potentially stale
-    analytics._warning = 'No recent updates received. Call may have ended.';
-    analytics._lastUpdateMinutesAgo = Math.floor(timeSinceUpdate / 1000 / 60);
-  }
-  
-  // Handle FINALIZING state - return helpful response instead of 400 error
-  if (analyticsState === AnalyticsState.FINALIZING) {
-    const stateMetadata = await getAnalyticsState(ddb, ANALYTICS_TABLE_NAME!, callId, analytics.timestamp);
-    const estimatedMsRaw = stateMetadata ? getFinalizationEstimate(stateMetadata) : null;
-    const estimatedMs = estimatedMsRaw ?? 30000; // Use 30s default if null
-    
-    console.log('[getLiveCallAnalytics] Call is in FINALIZING state', {
-      callId,
-      estimatedMs
-    });
-    
-    return {
-      statusCode: 200,
-      headers: corsHeaders,
-      body: JSON.stringify({
-        ...analytics,
-        status: 'finalizing',
-        message: 'Call has ended and is being finalized. Check back shortly for complete analytics.',
-        estimatedReadyIn: Math.ceil(estimatedMs / 1000), // seconds
-        estimatedReadyAt: Date.now() + estimatedMs,
-        isLive: false,
-        isFinalizing: true,
-        hint: 'Poll this endpoint or use GET /analytics/call/{callId} once finalized',
-        fetchedAt: Date.now()
-      })
-    };
-  }
-  
-  // Handle FINALIZED state - redirect to post-call endpoint
-  if (analyticsState === AnalyticsState.FINALIZED || hasCallEnded) {
-    console.log('[getLiveCallAnalytics] Call is finalized', {
-      callId,
-      analyticsState,
-      hasCallEnded
-    });
-    
-    return {
-      statusCode: 200,
-      headers: corsHeaders,
-      body: JSON.stringify({
-        status: 'finalized',
-        message: 'Call has been finalized. Use GET /analytics/call/{callId} for complete analytics.',
-        callId,
-        callEndTime: analytics.callEndTime,
-        isCompleted: true,
-        redirectTo: `/analytics/call/${callId}`,
-        hint: 'This call is no longer live. Complete analytics are available at the redirectTo endpoint.'
-      })
-    };
-  }
-  
-  // Validate call is actually active
-  if (analyticsState !== AnalyticsState.ACTIVE && analyticsState !== AnalyticsState.INITIALIZING) {
-    console.error('[getLiveCallAnalytics] Unexpected analytics state', {
-      callId,
-      analyticsState
-    });
-    
-    return {
-      statusCode: 400,
-      headers: corsHeaders,
-      body: JSON.stringify({
-        message: 'Call is not in an active state',
-        analyticsState,
-        error: 'INVALID_STATE_FOR_LIVE_ANALYTICS'
-      })
-    };
-  }
-  
-  // Calculate how long call has been active (using previously declared callStartTimestamp)
-  const activeSeconds = Math.floor((Date.now() - callStartTimestamp) / 1000);
-  
-  // CRITICAL FIX: Generate ETag for idempotency and caching
-  // ETag based on callId, timestamp, and last update time
-  const etagSource = `${callId}-${analytics.timestamp}-${new Date(analytics.updatedAt).getTime()}`;
-  const etag = Buffer.from(etagSource).toString('base64');
-  
-  // Check If-None-Match header for conditional GET support
-  const clientETag = event.headers?.['If-None-Match'] || event.headers?.['if-none-match'];
-  if (clientETag === etag) {
-    return {
-      statusCode: 304, // Not Modified
-      headers: {
-        ...corsHeaders,
-        'ETag': etag,
-        'Cache-Control': 'no-cache'
-      },
-      body: ''
-    };
-  }
-  
-  return {
-    statusCode: 200,
-    headers: {
-      ...corsHeaders,
-      'ETag': etag,
-      'Cache-Control': 'no-cache, must-revalidate',
-      'X-Data-Version': analytics.timestamp.toString(),
-      'X-Last-Updated': analytics.updatedAt
-    },
-    body: JSON.stringify({
-      ...analytics,
-      isLive: true, // Indicator that this is from the live endpoint
-      fetchedAt: Date.now(),
-      activeSeconds, // How long the call has been active
-      lastUpdatedSeconds: Math.floor((Date.now() - new Date(analytics.updatedAt).getTime()) / 1000),
-      etag // Include in response for client reference
-    })
-  };
-}
 
 async function getClinicAnalytics(
   event: APIGatewayProxyEvent,
@@ -802,7 +590,7 @@ async function getClinicAnalytics(
 ): Promise<APIGatewayProxyResult> {
   const clinicId = event.pathParameters?.clinicId;
   const queryParams = event.queryStringParameters || {};
-  
+
   if (!clinicId) {
     return {
       statusCode: 400,
@@ -810,7 +598,7 @@ async function getClinicAnalytics(
       body: JSON.stringify({ message: 'Missing clinicId parameter' })
     };
   }
-  
+
   // Check authorization using authorizer context
   const allowedClinics = getAllowedClinicIds(userPerms.clinicRoles, userPerms.isSuperAdmin, userPerms.isGlobalSuperAdmin);
   if (!hasClinicAccess(allowedClinics, clinicId)) {
@@ -820,16 +608,16 @@ async function getClinicAnalytics(
       body: JSON.stringify({ message: 'Unauthorized' })
     };
   }
-  
+
   // Parse time range
-  const startTime = queryParams.startTime 
+  const startTime = queryParams.startTime
     ? parseInt(queryParams.startTime, 10)
     : Math.floor(Date.now() / 1000) - (24 * 60 * 60); // Default: last 24 hours
-  
+
   const endTime = queryParams.endTime
     ? parseInt(queryParams.endTime, 10)
     : Math.floor(Date.now() / 1000);
-  
+
   // CRITICAL FIX: Validate time range
   const timeValidation = validateTimeRange(startTime, endTime);
   if (!timeValidation.valid) {
@@ -839,13 +627,13 @@ async function getClinicAnalytics(
       body: JSON.stringify(timeValidation.error)
     };
   }
-  
+
   // CRITICAL FIX #15: Pagination token validation with cryptographic signature verification
   let exclusiveStartKey: any = undefined;
   if (queryParams.lastEvaluatedKey) {
     // Use signed token verification
     const tokenResult = verifyPaginationToken(queryParams.lastEvaluatedKey, `clinic:${clinicId}`);
-    
+
     if (!tokenResult.valid) {
       console.warn('[getClinicAnalytics] Token verification failed:', {
         error: tokenResult.error,
@@ -854,38 +642,38 @@ async function getClinicAnalytics(
       return {
         statusCode: 400,
         headers: corsHeaders,
-        body: JSON.stringify({ 
+        body: JSON.stringify({
           message: `Invalid pagination token: ${tokenResult.error}`,
           error: 'INVALID_PAGINATION_TOKEN'
         })
       };
     }
-    
+
     exclusiveStartKey = tokenResult.data;
-    
+
     // Validate the structure has required keys
     if (!exclusiveStartKey || typeof exclusiveStartKey !== 'object') {
       return {
         statusCode: 400,
         headers: corsHeaders,
-        body: JSON.stringify({ 
+        body: JSON.stringify({
           message: 'Invalid pagination token: malformed structure',
           error: 'INVALID_PAGINATION_TOKEN'
         })
       };
     }
-    
+
     if (!exclusiveStartKey.clinicId || !exclusiveStartKey.timestamp) {
       return {
         statusCode: 400,
         headers: corsHeaders,
-        body: JSON.stringify({ 
+        body: JSON.stringify({
           message: 'Invalid pagination token: missing required fields (clinicId, timestamp)',
           error: 'INVALID_PAGINATION_TOKEN'
         })
       };
     }
-    
+
     // Additional validation: Validate token belongs to requested clinic
     if (exclusiveStartKey.clinicId !== clinicId) {
       console.warn('[getClinicAnalytics] Token clinic mismatch:', {
@@ -895,7 +683,7 @@ async function getClinicAnalytics(
       return {
         statusCode: 400,
         headers: corsHeaders,
-        body: JSON.stringify({ 
+        body: JSON.stringify({
           message: 'Invalid pagination token: does not match requested clinic',
           error: 'INVALID_PAGINATION_TOKEN'
         })
@@ -960,7 +748,7 @@ async function getClinicAnalytics(
 
   const queryResult = await ddb.send(new QueryCommand(queryCommand));
   const analytics = queryResult.Items || [];
-  
+
   return {
     statusCode: 200,
     headers: corsHeaders,
@@ -987,7 +775,7 @@ async function getAgentAnalytics(
 ): Promise<APIGatewayProxyResult> {
   const agentId = event.pathParameters?.agentId;
   const queryParams = event.queryStringParameters || {};
-  
+
   if (!agentId) {
     return {
       statusCode: 400,
@@ -995,12 +783,12 @@ async function getAgentAnalytics(
       body: JSON.stringify({ message: 'Missing agentId parameter' })
     };
   }
-  
+
   // Get allowed clinics and check admin status from authorizer context
   const requestingAgentId = userPerms.email;
   const allowedClinics = getAllowedClinicIds(userPerms.clinicRoles, userPerms.isSuperAdmin, userPerms.isGlobalSuperAdmin);
   const isAdmin = isAdminUser(userPerms.clinicRoles, userPerms.isSuperAdmin, userPerms.isGlobalSuperAdmin);
-  
+
   if (!isAdmin && requestingAgentId !== agentId) {
     console.warn('[getAgentAnalytics] Unauthorized access attempt', {
       requestingAgentId,
@@ -1010,13 +798,13 @@ async function getAgentAnalytics(
     return {
       statusCode: 403,
       headers: corsHeaders,
-      body: JSON.stringify({ 
+      body: JSON.stringify({
         message: 'Forbidden: You can only view your own analytics',
         error: 'INSUFFICIENT_PERMISSIONS'
       })
     };
   }
-  
+
   // FIX #6: Verify agent belongs to an authorized clinic (prevents cross-clinic data leak)
   if (isAdmin) {
     // For admins, verify the target agent belongs to one of their authorized clinics
@@ -1026,7 +814,7 @@ async function getAgentAnalytics(
     let lastEvaluatedKey: any = undefined;
     let pageCount = 0;
     const MAX_PAGES = 10; // Check up to 1000 calls (100 per page)
-    
+
     do {
       const sampleQuery = await ddb.send(new QueryCommand({
         TableName: ANALYTICS_TABLE_NAME,
@@ -1037,7 +825,7 @@ async function getAgentAnalytics(
         Limit: 100,
         ExclusiveStartKey: lastEvaluatedKey
       }));
-      
+
       // Collect all unique clinics
       if (sampleQuery.Items) {
         sampleQuery.Items.forEach(item => {
@@ -1046,21 +834,21 @@ async function getAgentAnalytics(
           }
         });
       }
-      
+
       lastEvaluatedKey = sampleQuery.LastEvaluatedKey;
       pageCount++;
-      
+
     } while (lastEvaluatedKey && pageCount < MAX_PAGES);
-    
+
     const sampleQuery = { Items: Array.from(agentClinicsSet).map(clinicId => ({ clinicId })) };
-    
+
     // SECURITY FIX: If agent has NO calls, check AgentPresence table for their clinic assignment
     if (!sampleQuery.Items || sampleQuery.Items.length === 0) {
       console.warn('[getAgentAnalytics] Agent has no call history, checking presence table', {
         requestingAgentId,
         requestedAgentId: agentId
       });
-      
+
       // Query AgentPresence table to get clinic assignment
       const AGENT_PRESENCE_TABLE = process.env.AGENT_PRESENCE_TABLE_NAME;
       if (AGENT_PRESENCE_TABLE) {
@@ -1069,7 +857,7 @@ async function getAgentAnalytics(
             TableName: AGENT_PRESENCE_TABLE,
             Key: { agentId }
           }));
-          
+
           if (presenceResult.Item && presenceResult.Item.clinicId) {
             const agentClinicId = presenceResult.Item.clinicId;
             if (!hasClinicAccess(allowedClinics, agentClinicId)) {
@@ -1082,7 +870,7 @@ async function getAgentAnalytics(
               return {
                 statusCode: 403,
                 headers: corsHeaders,
-                body: JSON.stringify({ 
+                body: JSON.stringify({
                   message: 'Forbidden: Agent belongs to a clinic you do not have access to',
                   error: 'CROSS_CLINIC_ACCESS_DENIED'
                 })
@@ -1093,7 +881,7 @@ async function getAgentAnalytics(
             return {
               statusCode: 404,
               headers: corsHeaders,
-              body: JSON.stringify({ 
+              body: JSON.stringify({
                 message: 'Agent not found or has no clinic assignment',
                 error: 'AGENT_NOT_FOUND'
               })
@@ -1107,7 +895,7 @@ async function getAgentAnalytics(
     } else {
       // SECURITY FIX: Verify ALL clinics agent has worked at are authorized
       const agentClinics = new Set(sampleQuery.Items.map(item => item.clinicId).filter(Boolean));
-      
+
       for (const agentClinicId of agentClinics) {
         if (!hasClinicAccess(allowedClinics, agentClinicId)) {
           console.warn('[getAgentAnalytics] Admin attempted cross-clinic access', {
@@ -1120,7 +908,7 @@ async function getAgentAnalytics(
           return {
             statusCode: 403,
             headers: corsHeaders,
-            body: JSON.stringify({ 
+            body: JSON.stringify({
               message: 'Forbidden: Agent has worked at clinics you do not have access to',
               error: 'CROSS_CLINIC_ACCESS_DENIED',
               hint: 'Agent may have transferred between clinics. You must have access to all clinics they worked at.'
@@ -1130,22 +918,22 @@ async function getAgentAnalytics(
       }
     }
   }
-  
+
   // Parse time range
-  const startTime = queryParams.startTime 
+  const startTime = queryParams.startTime
     ? parseInt(queryParams.startTime, 10)
     : Math.floor(Date.now() / 1000) - (7 * 24 * 60 * 60); // Default: last 7 days
-  
+
   const endTime = queryParams.endTime
     ? parseInt(queryParams.endTime, 10)
     : Math.floor(Date.now() / 1000);
-  
+
   // CRITICAL FIX #15: Pagination token validation with cryptographic signature verification
   let exclusiveStartKey: any = undefined;
   if (queryParams.lastEvaluatedKey) {
     // Use signed token verification
     const tokenResult = verifyPaginationToken(queryParams.lastEvaluatedKey, `agent:${agentId}`);
-    
+
     if (!tokenResult.valid) {
       console.warn('[getAgentAnalytics] Token verification failed:', {
         error: tokenResult.error,
@@ -1154,38 +942,38 @@ async function getAgentAnalytics(
       return {
         statusCode: 400,
         headers: corsHeaders,
-        body: JSON.stringify({ 
+        body: JSON.stringify({
           message: `Invalid pagination token: ${tokenResult.error}`,
           error: 'INVALID_PAGINATION_TOKEN'
         })
       };
     }
-    
+
     exclusiveStartKey = tokenResult.data;
-    
+
     // Validate the structure
     if (!exclusiveStartKey || typeof exclusiveStartKey !== 'object') {
       return {
         statusCode: 400,
         headers: corsHeaders,
-        body: JSON.stringify({ 
+        body: JSON.stringify({
           message: 'Invalid pagination token: malformed structure',
           error: 'INVALID_PAGINATION_TOKEN'
         })
       };
     }
-    
+
     if (!exclusiveStartKey.agentId || !exclusiveStartKey.timestamp) {
       return {
         statusCode: 400,
         headers: corsHeaders,
-        body: JSON.stringify({ 
+        body: JSON.stringify({
           message: 'Invalid pagination token: missing required fields (agentId, timestamp)',
           error: 'INVALID_PAGINATION_TOKEN'
         })
       };
     }
-    
+
     // Additional validation: Validate token belongs to requested agent
     if (exclusiveStartKey.agentId !== agentId) {
       console.warn('[getAgentAnalytics] Token agent mismatch:', {
@@ -1196,7 +984,7 @@ async function getAgentAnalytics(
       return {
         statusCode: 400,
         headers: corsHeaders,
-        body: JSON.stringify({ 
+        body: JSON.stringify({
           message: 'Invalid pagination token: does not match requested agent',
           error: 'INVALID_PAGINATION_TOKEN'
         })
@@ -1205,7 +993,7 @@ async function getAgentAnalytics(
   }
 
   const limit = Math.min(parseInt(queryParams.limit || '100', 10), 100);
-  
+
   // Query analytics for agent
   const queryResult = await ddb.send(new QueryCommand({
     TableName: ANALYTICS_TABLE_NAME,
@@ -1222,7 +1010,7 @@ async function getAgentAnalytics(
   }));
 
   const analytics = queryResult.Items || [];
-  
+
   if (analytics.length === 0) {
     return {
       statusCode: 200,
@@ -1237,13 +1025,13 @@ async function getAgentAnalytics(
       })
     };
   }
-  
+
   // CRITICAL FIX: Detect if this is paginated data
   const isPaginated = !!queryParams.lastEvaluatedKey || !!queryResult.LastEvaluatedKey;
-  
+
   // Calculate aggregate metrics from current page
   const pageMetrics = calculateAgentMetrics(analytics);
-  
+
   // For paginated results, try to get pre-aggregated metrics from AgentPerformance table
   let fullMetrics = null;
   if (isPaginated && AGENT_PERFORMANCE_TABLE_NAME) {
@@ -1258,7 +1046,7 @@ async function getAgentAnalytics(
           ':end': new Date(endTime * 1000).toISOString().split('T')[0]
         }
       }));
-      
+
       if (perfResult.Items && perfResult.Items.length > 0) {
         // Aggregate performance records from AgentPerformance table
         fullMetrics = aggregatePerformanceRecords(perfResult.Items);
@@ -1277,7 +1065,7 @@ async function getAgentAnalytics(
       }
     }
   }
-  
+
   return {
     statusCode: 200,
     headers: corsHeaders,
@@ -1288,7 +1076,7 @@ async function getAgentAnalytics(
       // CRITICAL FIX: Distinguish between page-level and total counts with better clarity
       callsInPage: analytics.length,
       totalCalls: fullMetrics?.totalCalls !== undefined ? fullMetrics.totalCalls : analytics.length,
-      totalCallsNote: fullMetrics?.totalCalls !== undefined 
+      totalCallsNote: fullMetrics?.totalCalls !== undefined
         ? 'Complete total from pre-aggregated data'
         : 'Showing page total only - use pagination to get all records',
       // Provide both page-level and full metrics when available
@@ -1331,7 +1119,7 @@ async function getAnalyticsSummary(
 ): Promise<APIGatewayProxyResult> {
   const queryParams = event.queryStringParameters || {};
   const clinicId = queryParams.clinicId;
-  
+
   // Check authorization if clinicId specified
   if (clinicId) {
     const allowedClinics = getAllowedClinicIds(userPerms.clinicRoles, userPerms.isSuperAdmin, userPerms.isGlobalSuperAdmin);
@@ -1349,25 +1137,25 @@ async function getAnalyticsSummary(
       body: JSON.stringify({ message: 'clinicId required for summary' })
     };
   }
-  
+
   // Parse time range
-  const startTime = queryParams.startTime 
+  const startTime = queryParams.startTime
     ? parseInt(queryParams.startTime, 10)
     : Math.floor(Date.now() / 1000) - (24 * 60 * 60); // Default: last 24 hours
-  
+
   const endTime = queryParams.endTime
     ? parseInt(queryParams.endTime, 10)
     : Math.floor(Date.now() / 1000);
-  
+
   // **FIXED: Add pagination support for large result sets to prevent timeout**
   const limit = Math.min(parseInt(queryParams.limit || '1000', 10), 1000); // Max 1000 per request
   let exclusiveStartKey: any = undefined;
-  
+
   // CRITICAL FIX #5.1: Use signed pagination tokens for summary endpoint (matching clinic/agent endpoints)
   if (queryParams.lastEvaluatedKey) {
     // Use signed token verification for consistency and security
     const tokenResult = verifyPaginationToken(queryParams.lastEvaluatedKey, `summary:${clinicId}`);
-    
+
     if (!tokenResult.valid) {
       console.warn('[getAnalyticsSummary] Token verification failed:', {
         error: tokenResult.error,
@@ -1376,26 +1164,26 @@ async function getAnalyticsSummary(
       return {
         statusCode: 400,
         headers: corsHeaders,
-        body: JSON.stringify({ 
+        body: JSON.stringify({
           message: `Invalid pagination token: ${tokenResult.error}`,
           error: 'INVALID_PAGINATION_TOKEN'
         })
       };
     }
-    
+
     exclusiveStartKey = tokenResult.data;
-    
+
     if (!exclusiveStartKey?.clinicId || !exclusiveStartKey?.timestamp) {
       return {
         statusCode: 400,
         headers: corsHeaders,
-        body: JSON.stringify({ 
+        body: JSON.stringify({
           message: 'Invalid pagination token: missing required fields',
           error: 'INVALID_PAGINATION_TOKEN'
         })
       };
     }
-    
+
     // CRITICAL FIX #5.1: Validate token matches requested clinic (prevent cross-clinic access)
     if (exclusiveStartKey.clinicId !== clinicId) {
       console.warn('[getAnalyticsSummary] Token clinic mismatch - possible security issue:', {
@@ -1405,14 +1193,14 @@ async function getAnalyticsSummary(
       return {
         statusCode: 400,
         headers: corsHeaders,
-        body: JSON.stringify({ 
+        body: JSON.stringify({
           message: 'Invalid pagination token: clinic mismatch',
           error: 'INVALID_PAGINATION_TOKEN'
         })
       };
     }
   }
-  
+
   // Query analytics with pagination
   const queryResult = await ddb.send(new QueryCommand({
     TableName: ANALYTICS_TABLE_NAME,
@@ -1429,11 +1217,11 @@ async function getAnalyticsSummary(
   }));
 
   const analytics = queryResult.Items || [];
-  
+
   // CRITICAL FIX: Detect partial data and provide clear warnings to client
   const isPartialData = !!queryResult.LastEvaluatedKey;
   const hitLimit = analytics.length >= limit;
-  
+
   if (hitLimit && !queryParams.lastEvaluatedKey) {
     console.warn('[getAnalyticsSummary] Large result set detected. Client receiving partial data.', {
       clinicId,
@@ -1441,10 +1229,10 @@ async function getAnalyticsSummary(
       limit
     });
   }
-  
+
   // Calculate summary metrics
   const summary = calculateSummaryMetrics(analytics);
-  
+
   // Add metadata about data completeness
   const dataCompleteness = {
     isComplete: !isPartialData,
@@ -1452,46 +1240,46 @@ async function getAnalyticsSummary(
     recordsAnalyzed: analytics.length,
     estimatedTotalRecords: isPartialData ? '>' + analytics.length : analytics.length,
     dataQuality: isPartialData ? 'PARTIAL' : 'COMPLETE',
-    warning: isPartialData 
+    warning: isPartialData
       ? 'This summary is calculated from partial data. Metrics may not reflect complete picture. Use pagination to retrieve all records.'
       : null
   };
-  
-    // CRITICAL FIX #5.2: Add warning header for partial results
-    const responseHeaders = {
-      ...corsHeaders,
-      ...(isPartialData && {
-        'X-Data-Partial': 'true',
-        'X-Data-Warning': 'Results are partial. Use pagination to get complete data.'
-      })
-    };
-    
-    return {
-      statusCode: 200,
-      headers: responseHeaders,
-      body: JSON.stringify({
-        clinicId,
-        startTime,
-        endTime,
-        summary: {
-          ...summary,
-          // CRITICAL: Add warning flags directly to summary object
-          _isPartial: isPartialData,
-          _warning: dataCompleteness.warning
-        },
-        dataCompleteness,
-        pagination: {
-          hasMore: !!queryResult.LastEvaluatedKey,
-          // CRITICAL FIX #5.1: Use signed pagination tokens for summary
-          lastEvaluatedKey: queryResult.LastEvaluatedKey
-            ? signPaginationToken(queryResult.LastEvaluatedKey, `summary:${clinicId}`)
-            : null,
-          recordsInPage: analytics.length,
-          limit
-        }
-      })
-    };
-  }
+
+  // CRITICAL FIX #5.2: Add warning header for partial results
+  const responseHeaders = {
+    ...corsHeaders,
+    ...(isPartialData && {
+      'X-Data-Partial': 'true',
+      'X-Data-Warning': 'Results are partial. Use pagination to get complete data.'
+    })
+  };
+
+  return {
+    statusCode: 200,
+    headers: responseHeaders,
+    body: JSON.stringify({
+      clinicId,
+      startTime,
+      endTime,
+      summary: {
+        ...summary,
+        // CRITICAL: Add warning flags directly to summary object
+        _isPartial: isPartialData,
+        _warning: dataCompleteness.warning
+      },
+      dataCompleteness,
+      pagination: {
+        hasMore: !!queryResult.LastEvaluatedKey,
+        // CRITICAL FIX #5.1: Use signed pagination tokens for summary
+        lastEvaluatedKey: queryResult.LastEvaluatedKey
+          ? signPaginationToken(queryResult.LastEvaluatedKey, `summary:${clinicId}`)
+          : null,
+        recordsInPage: analytics.length,
+        limit
+      }
+    })
+  };
+}
 
 /**
  * CRITICAL FIX #14: Fallback function to fetch all call analytics when pre-aggregated data unavailable
@@ -1512,7 +1300,7 @@ async function fetchAllAgentCallAnalytics(
   const startTimeMs = Date.now();
   let hitLimit = false;
   let hitTimeout = false;
-  
+
   try {
     do {
       // CRITICAL FIX #14: Check elapsed time before each query to prevent Lambda timeout
@@ -1527,7 +1315,7 @@ async function fetchAllAgentCallAnalytics(
         });
         break;
       }
-      
+
       const queryResult = await ddb.send(new QueryCommand({
         TableName: ANALYTICS_TABLE_NAME,
         IndexName: 'agentId-timestamp-index',
@@ -1541,14 +1329,14 @@ async function fetchAllAgentCallAnalytics(
         Limit: 100,
         ExclusiveStartKey: lastEvaluatedKey
       }));
-      
+
       if (queryResult.Items) {
         allAnalytics.push(...queryResult.Items);
       }
-      
+
       lastEvaluatedKey = queryResult.LastEvaluatedKey;
       pageCount++;
-      
+
       // Safety check to prevent infinite loops
       if (pageCount >= MAX_PAGES) {
         hitLimit = true;
@@ -1560,15 +1348,15 @@ async function fetchAllAgentCallAnalytics(
         break;
       }
     } while (lastEvaluatedKey);
-    
+
     // Calculate metrics from all fetched calls
     const isIncomplete = hitLimit || hitTimeout;
-    const incompleteReason = hitTimeout 
+    const incompleteReason = hitTimeout
       ? 'Query timeout - consider using a shorter time range'
-      : hitLimit 
+      : hitLimit
         ? 'Data incomplete: Agent has >2000 calls in range. Metrics calculated from first 2000 calls only.'
         : null;
-    
+
     // CRITICAL FIX #5.2: Log warning for incomplete data to CloudWatch for monitoring
     if (isIncomplete) {
       console.warn('[fetchAllAgentCallAnalytics] INCOMPLETE_DATA_WARNING', {
@@ -1577,12 +1365,12 @@ async function fetchAllAgentCallAnalytics(
         hitTimeout,
         hitLimit,
         elapsedMs: Date.now() - startTimeMs,
-        recommendation: hitTimeout 
+        recommendation: hitTimeout
           ? 'Consider reducing time range or increasing Lambda memory'
           : 'Consider using pre-aggregated AgentPerformance table'
       });
     }
-    
+
     return {
       ...calculateAgentMetrics(allAnalytics),
       totalCalls: allAnalytics.length,
@@ -1604,7 +1392,7 @@ async function fetchAllAgentCallAnalytics(
 
 function calculateAgentMetrics(analytics: any[]): any {
   const totalCalls = analytics.length;
-  
+
   if (totalCalls === 0) {
     return {
       averageDuration: 0,
@@ -1616,19 +1404,19 @@ function calculateAgentMetrics(analytics: any[]): any {
       weightedSentimentScore: 0
     };
   }
-  
+
   const totalDuration = analytics.reduce((sum, a) => sum + (a.totalDuration || 0), 0);
-  const totalTalkPercentage = analytics.reduce((sum, a) => 
+  const totalTalkPercentage = analytics.reduce((sum, a) =>
     sum + (a.speakerMetrics?.agentTalkPercentage || 0), 0
   );
-  
+
   // CRITICAL FIX: Track both counts AND weighted scores for sentiment
   const sentimentCounts = analytics.reduce((acc: any, a: any) => {
     const sentiment = a.overallSentiment || 'NEUTRAL';
     acc[sentiment] = (acc[sentiment] || 0) + 1;
     return acc;
   }, {} as Record<string, number>);
-  
+
   // CRITICAL FIX: Calculate weighted sentiment score (0-100 scale)
   // Uses actual sentiment scores from each call, not just categories
   const sentimentScores = analytics
@@ -1642,30 +1430,30 @@ function calculateAgentMetrics(analytics: any[]): any {
       if (scores.mixed > 0.4) return 50 + ((scores.positive - scores.negative) * 25);
       return 50; // Neutral default
     });
-  
+
   const weightedSentimentScore = sentimentScores.length > 0
     ? Math.round(sentimentScores.reduce((sum, score) => sum + score, 0) / sentimentScores.length)
     : 50;
-  
+
   // Calculate category breakdown
   const categoryCounts = analytics.reduce((acc: any, a: any) => {
     const category = a.callCategory || 'uncategorized';
     acc[category] = (acc[category] || 0) + 1;
     return acc;
   }, {} as Record<string, number>);
-  
-  const totalIssues = analytics.reduce((sum, a) => 
+
+  const totalIssues = analytics.reduce((sum, a) =>
     sum + (a.detectedIssues?.length || 0), 0
   );
-  
+
   const qualityScores = analytics
     .filter(a => a.audioQuality?.qualityScore)
     .map(a => a.audioQuality.qualityScore);
-  
+
   const averageQualityScore = qualityScores.length > 0
     ? qualityScores.reduce((sum, score) => sum + score, 0) / qualityScores.length
     : 0;
-  
+
   return {
     // FIX: Ensure division by zero is handled (totalCalls checked at start but adding safety)
     averageDuration: totalCalls > 0 ? Math.round(totalDuration / totalCalls) : 0,
@@ -1679,19 +1467,19 @@ function calculateAgentMetrics(analytics: any[]): any {
     sentimentAnalysis: {
       categoryCounts: sentimentCounts,
       weightedScore: weightedSentimentScore,
-      scoreInterpretation: 
+      scoreInterpretation:
         weightedSentimentScore >= 75 ? 'Highly Positive' :
-        weightedSentimentScore >= 60 ? 'Positive' :
-        weightedSentimentScore >= 40 ? 'Neutral/Mixed' :
-        weightedSentimentScore >= 25 ? 'Negative' :
-        'Highly Negative'
+          weightedSentimentScore >= 60 ? 'Positive' :
+            weightedSentimentScore >= 40 ? 'Neutral/Mixed' :
+              weightedSentimentScore >= 25 ? 'Negative' :
+                'Highly Negative'
     }
   };
 }
 
 function calculateSummaryMetrics(analytics: any[]): any {
   const totalCalls = analytics.length;
-  
+
   // CRITICAL FIX: Early return with proper structure if no data
   if (totalCalls === 0) {
     return {
@@ -1709,7 +1497,7 @@ function calculateSummaryMetrics(analytics: any[]): any {
       callVolumeByHour: new Array(24).fill(0).map((count, hour) => ({ hour, count }))
     };
   }
-  
+
   // Count inbound/outbound calls
   let inboundCalls = 0;
   let outboundCalls = 0;
@@ -1721,10 +1509,10 @@ function calculateSummaryMetrics(analytics: any[]): any {
       inboundCalls++;
     }
   });
-  
+
   // Reuse agent metrics calculation
   const baseMetrics = calculateAgentMetrics(analytics);
-  
+
   // Calculate top issues
   const issuesCounts = analytics.reduce((acc: any, a: any) => {
     (a.detectedIssues || []).forEach((issue: string) => {
@@ -1732,24 +1520,24 @@ function calculateSummaryMetrics(analytics: any[]): any {
     });
     return acc;
   }, {} as Record<string, number>);
-  
+
   const topIssues = Object.entries(issuesCounts)
     .sort(([, a], [, b]) => (b as number) - (a as number))
     .slice(0, 5)
     .map(([issue, count]) => ({ issue, count }));
-  
+
   // **FIXED: Add null safety and timezone support for callStartTime**
   const volumeByHour = new Array(24).fill(0);
-  
+
   // CRITICAL FIX: Validate analytics array before accessing first element
   if (analytics.length === 0) {
     // Return early with empty volume data
     return volumeByHour.map((count, hour) => ({ hour, count }));
   }
-  
+
   // CRITICAL FIX #10: Get clinic timezone with proper validation
   const clinicTimezone = analytics[0]?.clinicTimezone || analytics[0]?.timezone || 'UTC';
-  
+
   // CRITICAL FIX #10: Validate timezone is a valid IANA timezone
   const validTimezone = (() => {
     try {
@@ -1764,7 +1552,7 @@ function calculateSummaryMetrics(analytics: any[]): any {
       return 'UTC';
     }
   })();
-  
+
   // CRITICAL FIX: DST handling - detect and normalize DST transitions
   let dstTransitionDetected = false;
   const hourCounts = new Map<number, number>();
@@ -1774,13 +1562,13 @@ function calculateSummaryMetrics(analytics: any[]): any {
     fallBack: false,      // Repeated hour (1am happens twice)
     affectedHour: -1
   };
-  
+
   analytics.forEach(a => {
     if (a.callStartTime) {
       try {
         // Convert to clinic's local timezone for accurate hour calculation
         const callDate = new Date(a.callStartTime);
-        
+
         // CRITICAL FIX #10: Validate date before timezone conversion
         if (isNaN(callDate.getTime())) {
           console.warn('[calculateSummaryMetrics] Invalid date:', {
@@ -1789,7 +1577,7 @@ function calculateSummaryMetrics(analytics: any[]): any {
           });
           return;
         }
-        
+
         // CRITICAL FIX #10: Use validated timezone for conversion
         const hour = parseInt(
           new Intl.DateTimeFormat('en-US', {
@@ -1799,7 +1587,7 @@ function calculateSummaryMetrics(analytics: any[]): any {
           }).format(callDate),
           10
         );
-        
+
         // CRITICAL FIX #10: Enhanced hour validation with DST handling
         if (!isNaN(hour) && hour >= 0 && hour < 24) {
           volumeByHour[hour]++;
@@ -1833,13 +1621,13 @@ function calculateSummaryMetrics(analytics: any[]): any {
       }
     }
   });
-  
+
   // CRITICAL FIX: Detect and flag DST transition days
   if (hourCounts.size === 23) {
     // Spring forward: one hour is missing (typically 2am)
     dstMetadata.isDSTDay = true;
     dstMetadata.springForward = true;
-    
+
     // Find missing hour
     for (let h = 0; h < 24; h++) {
       if (!hourCounts.has(h)) {
@@ -1847,7 +1635,7 @@ function calculateSummaryMetrics(analytics: any[]): any {
         break;
       }
     }
-    
+
     console.warn('[calculateSummaryMetrics] DST Spring Forward detected:', {
       timezone: validTimezone,
       missingHour: dstMetadata.affectedHour,
@@ -1857,14 +1645,14 @@ function calculateSummaryMetrics(analytics: any[]): any {
     // Fall back: one hour repeats (typically 1am happens twice)
     dstMetadata.isDSTDay = true;
     dstMetadata.fallBack = true;
-    
+
     console.warn('[calculateSummaryMetrics] DST Fall Back detected:', {
       timezone: validTimezone,
       uniqueHours: hourCounts.size,
       note: 'Hour-based metrics show 25 hours for this day'
     });
   }
-  
+
   return {
     totalCalls,
     // FIX: Add inbound/outbound counts (expected by frontend)
@@ -1886,7 +1674,7 @@ function calculateSummaryMetrics(analytics: any[]): any {
       type: dstMetadata.springForward ? 'spring_forward' : 'fall_back',
       affectedHour: dstMetadata.affectedHour,
       expectedHours: dstMetadata.springForward ? 23 : 25,
-      warning: dstMetadata.springForward 
+      warning: dstMetadata.springForward
         ? `DST spring forward: Hour ${dstMetadata.affectedHour} does not exist on this day`
         : 'DST fall back: One hour is repeated on this day'
     } : null
@@ -1909,7 +1697,7 @@ function aggregatePerformanceRecords(records: any[]): any {
       averageQualityScore: 0
     };
   }
-  
+
   // Sum up all metrics across daily records
   const totals = records.reduce((acc, record) => ({
     totalCalls: acc.totalCalls + (record.totalCalls || 0),
@@ -1931,18 +1719,18 @@ function aggregatePerformanceRecords(records: any[]): any {
     totalHandleTime: 0,
     sentimentScores: { positive: 0, negative: 0, neutral: 0, mixed: 0 }
   });
-  
+
   // Calculate averages
-  const averageDuration = totals.totalCalls > 0 
+  const averageDuration = totals.totalCalls > 0
     ? Math.round(totals.totalHandleTime / totals.totalCalls)
     : 0;
-  
-  const totalSentimentCalls = 
-    totals.sentimentScores.positive + 
-    totals.sentimentScores.negative + 
-    totals.sentimentScores.neutral + 
+
+  const totalSentimentCalls =
+    totals.sentimentScores.positive +
+    totals.sentimentScores.negative +
+    totals.sentimentScores.neutral +
     totals.sentimentScores.mixed;
-  
+
   return {
     totalCalls: totals.totalCalls,
     inboundCalls: totals.inboundCalls,
@@ -1979,43 +1767,43 @@ async function getAgentRankings(
 ): Promise<APIGatewayProxyResult> {
   const queryParams = event.queryStringParameters || {};
   const clinicId = queryParams.clinicId;
-  
+
   if (!clinicId) {
     return {
       statusCode: 400,
       headers: corsHeaders,
-      body: JSON.stringify({ 
+      body: JSON.stringify({
         message: 'clinicId query parameter is required',
         error: 'MISSING_CLINIC_ID'
       })
     };
   }
-  
+
   // Check authorization
   const allowedClinics = getAllowedClinicIds(userPerms.clinicRoles, userPerms.isSuperAdmin, userPerms.isGlobalSuperAdmin);
   if (!hasClinicAccess(allowedClinics, clinicId)) {
     return {
       statusCode: 403,
       headers: corsHeaders,
-      body: JSON.stringify({ 
+      body: JSON.stringify({
         message: 'Forbidden: You do not have access to this clinic',
         error: 'INSUFFICIENT_PERMISSIONS'
       })
     };
   }
-  
+
   // Parse ranking options
   const period = (queryParams.period || 'weekly') as RankingPeriod;
   const criteria = (queryParams.criteria || 'performanceScore') as RankingCriteria;
   const limit = Math.min(parseInt(queryParams.limit || '50', 10), 100);
   const includeInactive = queryParams.includeInactive === 'true';
-  
+
   // Calculate time range based on period
   const now = Math.floor(Date.now() / 1000);
   let startTime: number;
   let endTime = now;
   let periodLabel: string;
-  
+
   if (period === 'custom') {
     startTime = queryParams.startTime ? parseInt(queryParams.startTime, 10) : now - (7 * 24 * 60 * 60);
     endTime = queryParams.endTime ? parseInt(queryParams.endTime, 10) : now;
@@ -2026,7 +1814,7 @@ async function getAgentRankings(
     endTime = periodConfig.endTime;
     periodLabel = periodConfig.label;
   }
-  
+
   // Validate time range
   const timeValidation = validateTimeRange(startTime, endTime);
   if (!timeValidation.valid) {
@@ -2036,7 +1824,7 @@ async function getAgentRankings(
       body: JSON.stringify(timeValidation.error)
     };
   }
-  
+
   console.log('[getAgentRankings] Fetching rankings', {
     clinicId,
     period,
@@ -2045,11 +1833,11 @@ async function getAgentRankings(
     endTime,
     limit
   });
-  
+
   try {
     // Fetch all call analytics for the clinic in the time range
     const allAnalytics = await fetchClinicCallAnalytics(clinicId, startTime, endTime);
-    
+
     if (allAnalytics.length === 0) {
       return {
         statusCode: 200,
@@ -2077,22 +1865,22 @@ async function getAgentRankings(
         } as AgentRankingsResponse)
       };
     }
-    
+
     // Group analytics by agent
     const agentAnalyticsMap = new Map<string, any[]>();
     allAnalytics.forEach(record => {
       if (!record.agentId) return;
-      
+
       if (!agentAnalyticsMap.has(record.agentId)) {
         agentAnalyticsMap.set(record.agentId, []);
       }
       agentAnalyticsMap.get(record.agentId)!.push(record);
     });
-    
+
     // Get today's timestamp range for today-specific metrics
     const todayStart = getTodayStartTimestamp();
     const todayEnd = now;
-    
+
     // Fetch today's analytics for each agent
     const todayAnalytics = await fetchClinicCallAnalytics(clinicId, todayStart, todayEnd);
     const agentTodayMap = new Map<string, any[]>();
@@ -2103,62 +1891,62 @@ async function getAgentRankings(
       }
       agentTodayMap.get(record.agentId)!.push(record);
     });
-    
+
     // Fetch agent presence data (status)
     const agentIds = Array.from(agentAnalyticsMap.keys());
     const agentPresenceMap = await fetchAgentPresenceData(agentIds, clinicId);
-    
+
     // Fetch agent names from staff table
     const agentNamesMap = await fetchAgentNames(agentIds);
-    
+
     // Calculate metrics for each agent
     const agentMetrics: AgentRankingEntry[] = [];
-    
+
     for (const [agentId, agentCalls] of agentAnalyticsMap.entries()) {
       if (agentCalls.length === 0 && !includeInactive) continue;
-      
+
       const todayCalls = agentTodayMap.get(agentId) || [];
       const presence = agentPresenceMap.get(agentId);
       const nameInfo = agentNamesMap.get(agentId);
-      
+
       const metrics = calculateAgentRankingMetrics(
-        agentId, 
-        agentCalls, 
-        clinicId, 
+        agentId,
+        agentCalls,
+        clinicId,
         todayCalls,
         presence,
         nameInfo
       );
       agentMetrics.push(metrics);
     }
-    
+
     // Sort by the specified criteria
     const sortedMetrics = sortAgentsByCriteria(agentMetrics, criteria);
-    
+
     // Assign ranks and rank labels
     sortedMetrics.forEach((agent, index) => {
       agent.rank = index + 1;
       agent.rankLabel = formatRankLabel(index + 1);
     });
-    
+
     // Apply limit
     const topAgents = sortedMetrics.slice(0, limit);
-    
+
     // Assign badges
     topAgents.forEach(agent => {
       agent.badges = calculateAgentBadges(agent, sortedMetrics);
     });
-    
+
     // Calculate clinic-wide stats
     const clinicStats = calculateClinicStats(allAnalytics);
-    
+
     // Calculate highlights
     const highlights = calculateHighlights(sortedMetrics);
-    
+
     // Fetch previous period data for trend calculation
     const previousPeriod = getPreviousPeriod(period, startTime, endTime);
     const previousAnalytics = await fetchClinicCallAnalytics(clinicId, previousPeriod.startTime, previousPeriod.endTime);
-    
+
     // Calculate trends
     if (previousAnalytics.length > 0) {
       const previousAgentMap = new Map<string, any[]>();
@@ -2169,25 +1957,25 @@ async function getAgentRankings(
         }
         previousAgentMap.get(record.agentId)!.push(record);
       });
-      
-      const previousMetrics = Array.from(previousAgentMap.entries()).map(([agentId, calls]) => 
+
+      const previousMetrics = Array.from(previousAgentMap.entries()).map(([agentId, calls]) =>
         calculateAgentRankingMetrics(agentId, calls, clinicId)
       );
       const previousSorted = sortAgentsByCriteria(previousMetrics, criteria);
       previousSorted.forEach((agent, index) => {
         agent.rank = index + 1;
       });
-      
+
       // Update trends for current agents
       topAgents.forEach(agent => {
         const previousAgent = previousSorted.find(p => p.agentId === agent.agentId);
         if (previousAgent) {
           const rankChange = previousAgent.rank - agent.rank;
           const scoreChange = agent.performanceScore - previousAgent.performanceScore;
-          
+
           agent.trend = {
             direction: rankChange > 0 ? 'up' : rankChange < 0 ? 'down' : 'stable',
-            changePercent: previousAgent.performanceScore > 0 
+            changePercent: previousAgent.performanceScore > 0
               ? Math.round((scoreChange / previousAgent.performanceScore) * 100)
               : 0,
             previousRank: previousAgent.rank
@@ -2195,7 +1983,7 @@ async function getAgentRankings(
         }
       });
     }
-    
+
     const response: AgentRankingsResponse = {
       clinicId,
       period: {
@@ -2211,17 +1999,17 @@ async function getAgentRankings(
       highlights,
       generatedAt: new Date().toISOString(),
       dataCompleteness: allAnalytics.length >= 2000 ? 'partial' : 'complete',
-      warning: allAnalytics.length >= 2000 
+      warning: allAnalytics.length >= 2000
         ? 'Large dataset - results may be incomplete. Consider using a shorter time period.'
         : undefined
     };
-    
+
     return {
       statusCode: 200,
       headers: corsHeaders,
       body: JSON.stringify(response)
     };
-    
+
   } catch (error: any) {
     console.error('[getAgentRankings] Error:', error);
     return {
@@ -2247,7 +2035,7 @@ async function fetchClinicCallAnalytics(
   let lastEvaluatedKey: any = undefined;
   let pageCount = 0;
   const MAX_PAGES = 20; // Safety limit
-  
+
   do {
     const queryResult = await ddb.send(new QueryCommand({
       TableName: ANALYTICS_TABLE_NAME,
@@ -2262,16 +2050,16 @@ async function fetchClinicCallAnalytics(
       Limit: 100,
       ExclusiveStartKey: lastEvaluatedKey
     }));
-    
+
     if (queryResult.Items) {
       allAnalytics.push(...queryResult.Items);
     }
-    
+
     lastEvaluatedKey = queryResult.LastEvaluatedKey;
     pageCount++;
-    
+
   } while (lastEvaluatedKey && pageCount < MAX_PAGES);
-  
+
   return allAnalytics;
 }
 
@@ -2289,16 +2077,16 @@ function calculateAgentRankingMetrics(
   const totalCalls = calls.length;
   const completedCalls = calls.filter(c => c.callStatus === 'completed').length;
   const missedCalls = calls.filter(c => c.callStatus === 'abandoned' || c.callStatus === 'failed').length;
-  
+
   // Today's specific metrics
   const callsToday = todayCalls.length;
   const missedToday = todayCalls.filter(c => c.callStatus === 'abandoned' || c.callStatus === 'failed').length;
-  
+
   // Duration metrics
   const totalDuration = calls.reduce((sum, c) => sum + (c.totalDuration || 0), 0);
   const totalTalkTime = calls.reduce((sum, c) => sum + (c.talkTime || c.speakerMetrics?.agentTalkPercentage / 100 * (c.totalDuration || 0) || 0), 0);
   const totalHoldTime = calls.reduce((sum, c) => sum + (c.holdTime || 0), 0);
-  
+
   // Sentiment breakdown
   const sentimentCounts = { positive: 0, negative: 0, neutral: 0, mixed: 0 };
   calls.forEach(c => {
@@ -2307,29 +2095,29 @@ function calculateAgentRankingMetrics(
       sentimentCounts[sentiment as keyof typeof sentimentCounts]++;
     }
   });
-  
+
   const totalSentimentCalls = sentimentCounts.positive + sentimentCounts.negative + sentimentCounts.neutral + sentimentCounts.mixed;
-  
+
   // Calculate weighted sentiment score (0-100)
   // Positive = 100, Neutral = 50, Mixed = 50, Negative = 0
   const sentimentScore = totalSentimentCalls > 0
     ? Math.round((
-        (sentimentCounts.positive * 100) +
-        (sentimentCounts.neutral * 50) +
-        (sentimentCounts.mixed * 50) +
-        (sentimentCounts.negative * 0)
-      ) / totalSentimentCalls)
+      (sentimentCounts.positive * 100) +
+      (sentimentCounts.neutral * 50) +
+      (sentimentCounts.mixed * 50) +
+      (sentimentCounts.negative * 0)
+    ) / totalSentimentCalls)
     : 50;
-  
+
   // Calculate satisfaction rating (positive calls percentage with minimum threshold)
   // Uses a slightly more generous formula: positive + (neutral * 0.7) to account for neutral being OK
   const satisfactionRating = totalSentimentCalls > 0
     ? Math.round(((sentimentCounts.positive + sentimentCounts.neutral * 0.7) / totalSentimentCalls) * 100)
     : 50;
-  
+
   // Issue count
   const issueCount = calls.reduce((sum, c) => sum + (c.detectedIssues?.length || 0), 0);
-  
+
   // Audio quality average
   const qualityScores = calls
     .filter(c => c.audioQuality?.qualityScore)
@@ -2337,34 +2125,34 @@ function calculateAgentRankingMetrics(
   const qualityScore = qualityScores.length > 0
     ? Math.round((qualityScores.reduce((a, b) => a + b, 0) / qualityScores.length) * 10) / 10
     : 3; // Default to 3 (average)
-  
+
   // Calculate performance score (0-100)
   // Factors: completion rate (40%), sentiment (30%), efficiency (20%), quality (10%)
   const completionRate = totalCalls > 0 ? (completedCalls / totalCalls) * 100 : 0;
   const issueFreeFactor = totalCalls > 0 ? Math.max(0, 100 - (issueCount / totalCalls * 50)) : 100;
   const qualityFactor = ((qualityScore - 1) / 4) * 100; // Convert 1-5 to 0-100
-  
+
   const performanceScore = Math.round(
     (completionRate * 0.4) +
     (sentimentScore * 0.3) +
     (issueFreeFactor * 0.2) +
     (qualityFactor * 0.1)
   );
-  
+
   // Calculate average handle time
   const avgHandleTime = totalCalls > 0 ? Math.round(totalDuration / totalCalls) : 0;
-  
+
   // Format agent name and initials
   const firstName = nameInfo?.givenName || '';
   const lastName = nameInfo?.familyName || '';
-  const agentName = firstName && lastName 
-    ? `${firstName} ${lastName}` 
+  const agentName = firstName && lastName
+    ? `${firstName} ${lastName}`
     : firstName || lastName || agentId.split('@')[0];
   const initials = getInitials(firstName, lastName, agentId);
-  
+
   // Get agent status
   const { status, statusLabel } = formatAgentStatus(presence?.status);
-  
+
   return {
     rank: 0, // Will be assigned after sorting
     rankLabel: '', // Will be assigned after sorting
@@ -2416,7 +2204,7 @@ function sortAgentsByCriteria(agents: AgentRankingEntry[], criteria: RankingCrit
       return efficiencyB - efficiencyA;
     }
   };
-  
+
   return [...agents].sort(sortFns[criteria] || sortFns.performanceScore);
 }
 
@@ -2426,43 +2214,43 @@ function sortAgentsByCriteria(agents: AgentRankingEntry[], criteria: RankingCrit
 function calculateAgentBadges(agent: AgentRankingEntry, allAgents: AgentRankingEntry[]): AgentBadge[] {
   const badges: AgentBadge[] = [];
   const earnedAt = new Date().toISOString();
-  
+
   // Top Performer - Rank #1
   if (agent.rank === 1) {
     badges.push({ ...AGENT_BADGES.TOP_PERFORMER, earnedAt });
   }
-  
+
   // Call Champion - 100+ calls
   if (agent.totalCalls >= 100) {
     badges.push({ ...AGENT_BADGES.CALL_CHAMPION, earnedAt });
   }
-  
+
   // Sentiment Star - 90%+ positive
   if (agent.positiveCallsPercent >= 90) {
     badges.push({ ...AGENT_BADGES.SENTIMENT_STAR, earnedAt });
   }
-  
+
   // Speed Demon - Below average handle time with good quality
   const avgHandleTime = allAgents.reduce((sum, a) => sum + a.avgHandleTime, 0) / allAgents.length;
   if (agent.avgHandleTime < avgHandleTime * 0.8 && agent.qualityScore >= 3.5) {
     badges.push({ ...AGENT_BADGES.SPEED_DEMON, earnedAt });
   }
-  
+
   // Rising Star - Improved 20%+
   if (agent.trend.direction === 'up' && agent.trend.changePercent >= 20) {
     badges.push({ ...AGENT_BADGES.RISING_STAR, earnedAt });
   }
-  
+
   // Zero Issues - Flawless
   if (agent.totalCalls >= 10 && agent.issueCount === 0) {
     badges.push({ ...AGENT_BADGES.ZERO_ISSUES, earnedAt });
   }
-  
+
   // Customer Favorite - 95%+ satisfaction
   if (agent.positiveCallsPercent >= 95 && agent.totalCalls >= 20) {
     badges.push({ ...AGENT_BADGES.CUSTOMER_FAVORITE, earnedAt });
   }
-  
+
   return badges;
 }
 
@@ -2478,10 +2266,10 @@ function calculateClinicStats(analytics: any[]): AgentRankingsResponse['clinicSt
       avgHandleTime: 0
     };
   }
-  
+
   const totalCalls = analytics.length;
   const totalDuration = analytics.reduce((sum, c) => sum + (c.totalDuration || 0), 0);
-  
+
   // Sentiment breakdown
   const sentimentCounts = { positive: 0, negative: 0, neutral: 0, mixed: 0 };
   analytics.forEach(c => {
@@ -2490,22 +2278,22 @@ function calculateClinicStats(analytics: any[]): AgentRankingsResponse['clinicSt
       sentimentCounts[sentiment as keyof typeof sentimentCounts]++;
     }
   });
-  
+
   const totalSentimentCalls = Object.values(sentimentCounts).reduce((a, b) => a + b, 0);
   const avgSentimentScore = totalSentimentCalls > 0
     ? Math.round((
-        (sentimentCounts.positive * 100) +
-        (sentimentCounts.neutral * 50) +
-        (sentimentCounts.mixed * 50) +
-        (sentimentCounts.negative * 0)
-      ) / totalSentimentCalls)
+      (sentimentCounts.positive * 100) +
+      (sentimentCounts.neutral * 50) +
+      (sentimentCounts.mixed * 50) +
+      (sentimentCounts.negative * 0)
+    ) / totalSentimentCalls)
     : 50;
-  
+
   // Calculate average performance (simplified - just use sentiment and completion)
   const completedCalls = analytics.filter(c => c.callStatus === 'completed').length;
   const completionRate = (completedCalls / totalCalls) * 100;
   const avgPerformanceScore = Math.round((completionRate * 0.5) + (avgSentimentScore * 0.5));
-  
+
   return {
     avgPerformanceScore,
     totalCalls,
@@ -2526,23 +2314,23 @@ function calculateHighlights(sortedAgents: AgentRankingEntry[]): AgentRankingsRe
       sentimentLeader: null
     };
   }
-  
+
   // Top performer is already first in the sorted list
   const topPerformer = sortedAgents[0];
-  
+
   // Most improved - highest positive trend change
   const mostImproved = [...sortedAgents]
     .filter(a => a.trend.direction === 'up')
     .sort((a, b) => b.trend.changePercent - a.trend.changePercent)[0] || null;
-  
+
   // Call leader - most calls
   const callLeader = [...sortedAgents]
     .sort((a, b) => b.totalCalls - a.totalCalls)[0] || null;
-  
+
   // Sentiment leader - highest sentiment score
   const sentimentLeader = [...sortedAgents]
     .sort((a, b) => b.sentimentScore - a.sentimentScore)[0] || null;
-  
+
   return {
     topPerformer,
     mostImproved,
@@ -2556,7 +2344,7 @@ function calculateHighlights(sortedAgents: AgentRankingEntry[]): AgentRankingsRe
  */
 function getPeriodConfig(period: RankingPeriod, now: number): { startTime: number; endTime: number; label: string } {
   const nowDate = new Date(now * 1000);
-  
+
   switch (period) {
     case 'daily': {
       const startOfDay = new Date(nowDate);
@@ -2567,7 +2355,7 @@ function getPeriodConfig(period: RankingPeriod, now: number): { startTime: numbe
         label: `Today (${nowDate.toLocaleDateString()})`
       };
     }
-    
+
     case 'weekly': {
       const startOfWeek = new Date(nowDate);
       startOfWeek.setDate(startOfWeek.getDate() - startOfWeek.getDay());
@@ -2578,7 +2366,7 @@ function getPeriodConfig(period: RankingPeriod, now: number): { startTime: numbe
         label: `Week of ${startOfWeek.toLocaleDateString()}`
       };
     }
-    
+
     case 'monthly': {
       const startOfMonth = new Date(nowDate.getFullYear(), nowDate.getMonth(), 1);
       return {
@@ -2587,7 +2375,7 @@ function getPeriodConfig(period: RankingPeriod, now: number): { startTime: numbe
         label: `${nowDate.toLocaleString('default', { month: 'long' })} ${nowDate.getFullYear()}`
       };
     }
-    
+
     case 'quarterly': {
       const quarter = Math.floor(nowDate.getMonth() / 3);
       const startOfQuarter = new Date(nowDate.getFullYear(), quarter * 3, 1);
@@ -2597,7 +2385,7 @@ function getPeriodConfig(period: RankingPeriod, now: number): { startTime: numbe
         label: `Q${quarter + 1} ${nowDate.getFullYear()}`
       };
     }
-    
+
     case 'yearly': {
       const startOfYear = new Date(nowDate.getFullYear(), 0, 1);
       return {
@@ -2606,7 +2394,7 @@ function getPeriodConfig(period: RankingPeriod, now: number): { startTime: numbe
         label: `${nowDate.getFullYear()}`
       };
     }
-    
+
     default:
       // Default to weekly
       const defaultStart = new Date(nowDate);
@@ -2628,7 +2416,7 @@ function getPreviousPeriod(
   currentEnd: number
 ): { startTime: number; endTime: number } {
   const duration = currentEnd - currentStart;
-  
+
   return {
     startTime: currentStart - duration,
     endTime: currentStart - 1
@@ -2652,21 +2440,21 @@ async function fetchAgentPresenceData(
   clinicId: string
 ): Promise<Map<string, { status: string }>> {
   const presenceMap = new Map<string, { status: string }>();
-  
+
   if (!AGENT_PRESENCE_TABLE_NAME || agentIds.length === 0) {
     return presenceMap;
   }
-  
+
   try {
     // Batch get presence data (DynamoDB BatchGetItem supports up to 100 items)
     const batches: string[][] = [];
     for (let i = 0; i < agentIds.length; i += 100) {
       batches.push(agentIds.slice(i, i + 100));
     }
-    
+
     for (const batch of batches) {
       const keys = batch.map(agentId => ({ agentId }));
-      
+
       const result = await ddb.send(new BatchGetCommand({
         RequestItems: {
           [AGENT_PRESENCE_TABLE_NAME]: {
@@ -2676,25 +2464,25 @@ async function fetchAgentPresenceData(
           }
         }
       }));
-      
+
       const responses = result.Responses?.[AGENT_PRESENCE_TABLE_NAME] || [];
       responses.forEach((item: any) => {
         presenceMap.set(item.agentId, { status: item.status || 'Offline' });
       });
     }
-    
+
     // Set Offline for agents not found in presence table
     agentIds.forEach(agentId => {
       if (!presenceMap.has(agentId)) {
         presenceMap.set(agentId, { status: 'Offline' });
       }
     });
-    
+
   } catch (error: any) {
     console.error('[fetchAgentPresenceData] Error:', error.message);
     // Return empty map, agents will show as Offline
   }
-  
+
   return presenceMap;
 }
 
@@ -2706,21 +2494,21 @@ async function fetchAgentNames(
   agentIds: string[]
 ): Promise<Map<string, { givenName?: string; familyName?: string }>> {
   const namesMap = new Map<string, { givenName?: string; familyName?: string }>();
-  
+
   if (!STAFF_USER_TABLE_NAME || agentIds.length === 0) {
     return namesMap;
   }
-  
+
   try {
     // Batch get staff user data
     const batches: string[][] = [];
     for (let i = 0; i < agentIds.length; i += 100) {
       batches.push(agentIds.slice(i, i + 100));
     }
-    
+
     for (const batch of batches) {
       const keys = batch.map(email => ({ email: email.toLowerCase() }));
-      
+
       try {
         const result = await ddb.send(new BatchGetCommand({
           RequestItems: {
@@ -2730,7 +2518,7 @@ async function fetchAgentNames(
             }
           }
         }));
-        
+
         const responses = result.Responses?.[STAFF_USER_TABLE_NAME] || [];
         responses.forEach((item: any) => {
           namesMap.set(item.email, {
@@ -2738,7 +2526,7 @@ async function fetchAgentNames(
             familyName: item.familyName
           });
         });
-        
+
         // CRITICAL FIX #5.3: Handle unprocessed keys
         const unprocessedKeys = result.UnprocessedKeys?.[STAFF_USER_TABLE_NAME]?.Keys;
         if (unprocessedKeys && unprocessedKeys.length > 0) {
@@ -2747,7 +2535,7 @@ async function fetchAgentNames(
             totalInBatch: batch.length
           });
         }
-        
+
       } catch (batchErr: any) {
         // CRITICAL FIX #5.3: Handle schema mismatch errors specifically
         if (batchErr.name === 'ValidationException' && batchErr.message.includes('key')) {
@@ -2762,7 +2550,7 @@ async function fetchAgentNames(
         throw batchErr;
       }
     }
-    
+
   } catch (error: any) {
     console.error('[fetchAgentNames] Error fetching agent names:', {
       error: error.message,
@@ -2771,7 +2559,7 @@ async function fetchAgentNames(
     });
     // Return empty map, names will fall back to email
   }
-  
+
   return namesMap;
 }
 
@@ -2790,11 +2578,11 @@ function formatRankLabel(rank: number): string {
  */
 function formatDuration(seconds: number): string {
   if (seconds < 0) return '0:00';
-  
+
   const hours = Math.floor(seconds / 3600);
   const minutes = Math.floor((seconds % 3600) / 60);
   const secs = seconds % 60;
-  
+
   if (hours > 0) {
     return `${hours}:${minutes.toString().padStart(2, '0')}:${secs.toString().padStart(2, '0')}`;
   }
@@ -2824,7 +2612,7 @@ function getInitials(firstName: string, lastName: string, email: string): string
  */
 function formatAgentStatus(status?: string): { status: AgentStatus; statusLabel: string } {
   const normalizedStatus = status?.toLowerCase() || 'offline';
-  
+
   switch (normalizedStatus) {
     case 'online':
       return { status: 'Available', statusLabel: 'Available' };
@@ -2864,16 +2652,16 @@ interface QueueCallEntry {
   statusLabel: string;
   priority: 'vip' | 'high' | 'normal' | 'low';
   priorityLabel: string;
-  
+
   // Time metrics
   waitTime: number;  // seconds
   waitTimeFormatted: string;  // "M:SS"
   queuedAt: string;  // ISO date
-  
+
   // Assignment info
   assignedAgentId?: string;
   assignedAgentName?: string;
-  
+
   // Call metadata
   direction: 'inbound' | 'outbound';
   isVip: boolean;
@@ -2885,13 +2673,13 @@ interface QueueCallEntry {
  */
 interface QueueCallsResponse {
   clinicId: string;
-  
+
   // Calls by status
   queuedCalls: QueueCallEntry[];
   ringingCalls: QueueCallEntry[];
   activeCalls: QueueCallEntry[];
   onHoldCalls: QueueCallEntry[];
-  
+
   // Summary counts
   summary: {
     totalQueued: number;
@@ -2903,7 +2691,7 @@ interface QueueCallsResponse {
     longestWait: number;
     longestWaitFormatted: string;
   };
-  
+
   // Metadata
   generatedAt: string;
 }
@@ -2924,57 +2712,57 @@ async function getQueueCalls(
 ): Promise<APIGatewayProxyResult> {
   const queryParams = event.queryStringParameters || {};
   const clinicId = queryParams.clinicId;
-  
+
   if (!clinicId) {
     return {
       statusCode: 400,
       headers: corsHeaders,
-      body: JSON.stringify({ 
+      body: JSON.stringify({
         message: 'clinicId query parameter is required',
         error: 'MISSING_CLINIC_ID'
       })
     };
   }
-  
+
   // Check authorization
   const allowedClinics = getAllowedClinicIds(userPerms.clinicRoles, userPerms.isSuperAdmin, userPerms.isGlobalSuperAdmin);
   if (!hasClinicAccess(allowedClinics, clinicId)) {
     return {
       statusCode: 403,
       headers: corsHeaders,
-      body: JSON.stringify({ 
+      body: JSON.stringify({
         message: 'Forbidden: You do not have access to this clinic',
         error: 'INSUFFICIENT_PERMISSIONS'
       })
     };
   }
-  
+
   // Check if CallQueue table is configured
   if (!CALL_QUEUE_TABLE_NAME) {
     return {
       statusCode: 500,
       headers: corsHeaders,
-      body: JSON.stringify({ 
+      body: JSON.stringify({
         message: 'Call queue table not configured',
         error: 'MISSING_CONFIGURATION'
       })
     };
   }
-  
+
   const statusFilter = queryParams.status || 'all';
   const limit = Math.min(parseInt(queryParams.limit || '100', 10), 500);
-  
+
   console.log('[getQueueCalls] Fetching queue calls', {
     clinicId,
     statusFilter,
     limit
   });
-  
+
   try {
     // Query all calls for this clinic from CallQueue table
     const allCalls: any[] = [];
     let lastEvaluatedKey: any = undefined;
-    
+
     do {
       const queryResult = await ddb.send(new QueryCommand({
         TableName: CALL_QUEUE_TABLE_NAME,
@@ -2985,53 +2773,53 @@ async function getQueueCalls(
         Limit: 200,
         ExclusiveStartKey: lastEvaluatedKey
       }));
-      
+
       if (queryResult.Items) {
         allCalls.push(...queryResult.Items);
       }
-      
+
       lastEvaluatedKey = queryResult.LastEvaluatedKey;
-      
+
       // Stop if we have enough calls
       if (allCalls.length >= limit * 2) break;
-      
+
     } while (lastEvaluatedKey);
-    
+
     const now = Date.now();
-    
+
     // Process and categorize calls
     const queuedCalls: QueueCallEntry[] = [];
     const ringingCalls: QueueCallEntry[] = [];
     const activeCalls: QueueCallEntry[] = [];
     const onHoldCalls: QueueCallEntry[] = [];
-    
+
     let totalWaitTime = 0;
     let waitingCount = 0;
     let longestWait = 0;
-    
+
     for (const call of allCalls) {
       const callStatus = call.status?.toLowerCase() || 'unknown';
-      
+
       // Skip completed/ended calls
       if (['completed', 'ended', 'abandoned', 'failed', 'hungup'].includes(callStatus)) {
         continue;
       }
-      
+
       // Calculate wait time
-      const queueEntryTime = call.queueEntryTime 
-        ? (typeof call.queueEntryTime === 'number' 
-            ? (call.queueEntryTime > 9999999999 ? call.queueEntryTime : call.queueEntryTime * 1000)
-            : new Date(call.queueEntryTime).getTime())
-        : call.queueEntryTimeIso 
-          ? new Date(call.queueEntryTimeIso).getTime() 
+      const queueEntryTime = call.queueEntryTime
+        ? (typeof call.queueEntryTime === 'number'
+          ? (call.queueEntryTime > 9999999999 ? call.queueEntryTime : call.queueEntryTime * 1000)
+          : new Date(call.queueEntryTime).getTime())
+        : call.queueEntryTimeIso
+          ? new Date(call.queueEntryTimeIso).getTime()
           : now;
-      
+
       const waitTime = Math.max(0, Math.floor((now - queueEntryTime) / 1000));
-      
+
       // Determine priority
       const isVip = call.isVip || call.priority === 'vip' || call.vipStatus === true;
       const priority = isVip ? 'vip' : (call.priority || 'normal');
-      
+
       const queueCall: QueueCallEntry = {
         callId: call.callId,
         phoneNumber: call.phoneNumber || call.callerPhone || 'Unknown',
@@ -3050,7 +2838,7 @@ async function getQueueCalls(
         isVip,
         callbackRequested: call.callbackRequested || false
       };
-      
+
       // Categorize by status
       switch (callStatus) {
         case 'queued':
@@ -3073,7 +2861,7 @@ async function getQueueCalls(
           break;
       }
     }
-    
+
     // Sort queued calls by position and priority
     queuedCalls.sort((a, b) => {
       // VIP calls first
@@ -3082,10 +2870,10 @@ async function getQueueCalls(
       // Then by queue position
       return a.queuePosition - b.queuePosition;
     });
-    
+
     // Apply status filter if specified
     let response: QueueCallsResponse;
-    
+
     if (statusFilter !== 'all') {
       const filteredCalls = {
         queued: statusFilter === 'queued' ? queuedCalls.slice(0, limit) : [],
@@ -3093,7 +2881,7 @@ async function getQueueCalls(
         active: statusFilter === 'active' ? activeCalls.slice(0, limit) : [],
         on_hold: statusFilter === 'on_hold' ? onHoldCalls.slice(0, limit) : []
       };
-      
+
       response = {
         clinicId,
         queuedCalls: filteredCalls.queued,
@@ -3132,13 +2920,13 @@ async function getQueueCalls(
         generatedAt: new Date().toISOString()
       };
     }
-    
+
     return {
       statusCode: 200,
       headers: corsHeaders,
       body: JSON.stringify(response)
     };
-    
+
   } catch (error: any) {
     console.error('[getQueueCalls] Error:', error);
     return {

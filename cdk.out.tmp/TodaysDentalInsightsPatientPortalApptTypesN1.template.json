@@ -1211,7 +1211,7 @@
    "Properties": {
     "Code": {
      "S3Bucket": "cdk-tdi3-assets-851620242036-us-east-1",
-     "S3Key": "40a76d63ec09abdf47d177cf94334e7b6874141fdc3264a554661f9efa246941.zip"
+     "S3Key": "96f875218adbcacfa1d18fae210f592832201d048c965aa1c1eaab13399a495d.zip"
     },
     "Environment": {
      "Variables": {
@@ -1257,7 +1257,7 @@
    ],
    "Metadata": {
     "aws:cdk:path": "TodaysDentalInsightsPatientPortalApptTypesN1/ApptTypesHandler/Resource",
-    "aws:asset:path": "asset.40a76d63ec09abdf47d177cf94334e7b6874141fdc3264a554661f9efa246941",
+    "aws:asset:path": "asset.96f875218adbcacfa1d18fae210f592832201d048c965aa1c1eaab13399a495d",
     "aws:asset:is-bundled": true,
     "aws:asset:property": "Code"
    }
