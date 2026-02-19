@@ -556,19 +556,18 @@ async function addNegativeKeywords(
       // Campaign level negative keywords use CampaignCriterionService
       const client = await getGoogleAdsClient(customerId);
 
-      const operations = keywords.map(kw => ({
-        create: {
-          campaign: campaignResourceName,
-          negative: true,
-          keyword: {
-            text: kw.text.trim(),
-            match_type: kw.matchType ? (kw.matchType === 'EXACT' ? 2 : kw.matchType === 'PHRASE' ? 3 : 4) : 3,
-          },
+      // The library's .create() method auto-wraps in {create: ...}, so pass resources directly
+      const resources = keywords.map(kw => ({
+        campaign: campaignResourceName,
+        negative: true,
+        keyword: {
+          text: kw.text.trim(),
+          match_type: kw.matchType ? (kw.matchType === 'EXACT' ? 2 : kw.matchType === 'PHRASE' ? 3 : 4) : 3,
         },
       }));
 
-      console.log('[GoogleAdsKeywords] Campaign-level negative keyword operations:', JSON.stringify(operations));
-      await (client as any).campaignCriteria.create(operations);
+      console.log('[GoogleAdsKeywords] Campaign-level negative keyword resources:', JSON.stringify(resources));
+      await (client as any).campaignCriteria.create(resources);
     }
 
     return {
