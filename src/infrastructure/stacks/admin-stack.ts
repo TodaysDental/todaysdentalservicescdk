@@ -839,13 +839,7 @@ export class AdminStack extends Stack {
         methodResponses: [{ statusCode: '200' }],
       });
 
-      // GET /analytics/live?callId={callId} - Real-time/live call analytics with query params
-      const liveRes = analyticsRes.addResource('live');
-      liveRes.addMethod('GET', new apigw.LambdaIntegration(this.getAnalyticsFn), {
-        authorizer: this.authorizer,
-        authorizationType: apigw.AuthorizationType.CUSTOM,
-        methodResponses: [{ statusCode: '200' }],
-      });
+      // NOTE: /analytics/live endpoint removed (live call analytics feature removed)
 
       // GET /analytics/rankings?clinicId={clinicId} - Agent rankings/leaderboard
       const rankingsRes = analyticsRes.addResource('rankings');

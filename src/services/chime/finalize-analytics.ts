@@ -10,7 +10,7 @@
 import { DynamoDBDocumentClient, ScanCommand, UpdateCommand, GetCommand, TransactWriteCommand, QueryCommand } from '@aws-sdk/lib-dynamodb';
 import { getDynamoDBClient } from '../shared/utils/dynamodb-manager';
 import { trackEnhancedCallMetrics } from '../shared/utils/enhanced-agent-metrics';
-import { generateCallCoachingSummary } from './real-time-coaching';
+
 import { sendToPerformanceDLQ, AgentPerformanceFailure } from '../shared/utils/agent-performance-dlq';
 import { AnalyticsState } from '../../types/analytics-state-machine';
 import { transitionAnalyticsState, acquireAnalyticsLock, releaseAnalyticsLock, cleanupExpiredLock } from '../shared/utils/analytics-state-manager';
@@ -58,12 +58,12 @@ async function getCircuitBreakerState(breakerKey: string): Promise<PersistentCir
     isOpen: false,
     lastUpdated: Date.now()
   };
-  
+
   if (!CIRCUIT_BREAKER_TABLE) {
     console.warn('[CircuitBreaker] No table configured, using default state');
     return defaultState;
   }
-  
+
   try {
     // CRITICAL FIX #8: Use eventId as partition key (matches dedup table schema)
     const result = await ddb.send(new GetCommand({
@@ -72,7 +72,7 @@ async function getCircuitBreakerState(breakerKey: string): Promise<PersistentCir
         eventId: `__circuit_breaker__${breakerKey}` // Uses dedup table's partition key
       }
     }));
-    
+
     if (result.Item) {
       return {
         failures: result.Item.failures || 0,
@@ -84,7 +84,7 @@ async function getCircuitBreakerState(breakerKey: string): Promise<PersistentCir
   } catch (err: any) {
     console.warn('[CircuitBreaker] Failed to read state:', err.message);
   }
-  
+
   return defaultState;
 }
 
@@ -93,13 +93,13 @@ async function getCircuitBreakerState(breakerKey: string): Promise<PersistentCir
  * CRITICAL FIX #8: Uses dedup table with eventId as partition key
  */
 async function updateCircuitBreakerState(
-  breakerKey: string, 
+  breakerKey: string,
   state: PersistentCircuitBreakerState
 ): Promise<void> {
   if (!CIRCUIT_BREAKER_TABLE) {
     return;
   }
-  
+
   try {
     // CRITICAL FIX #8: Use PutCommand for dedup table (simpler schema)
     await ddb.send(new UpdateCommand({
@@ -134,14 +134,14 @@ async function sendToPerformanceDLQWithCircuitBreaker(
   clinicId: string
 ): Promise<void> {
   const breakerKey = `dlq-${agentId}`;
-  
+
   // CRITICAL FIX: Load state from DynamoDB instead of in-memory map
   let breaker = await getCircuitBreakerState(breakerKey);
-  
+
   // Check if circuit is open
   if (breaker.isOpen) {
     const timeSinceLastFailure = Date.now() - breaker.lastFailure;
-    
+
     if (timeSinceLastFailure < CIRCUIT_BREAKER_TIMEOUT) {
       console.error('[finalize-analytics] Circuit breaker OPEN - skipping DLQ send', {
         callId,
@@ -149,7 +149,7 @@ async function sendToPerformanceDLQWithCircuitBreaker(
         failureCount: breaker.failures,
         cooldownRemaining: CIRCUIT_BREAKER_TIMEOUT - timeSinceLastFailure
       });
-      
+
       // Log to CloudWatch for recovery
       console.error('PERFORMANCE_METRICS_LOSS', JSON.stringify({
         type: 'METRICS_TRACKING_FAILURE',
@@ -166,35 +166,35 @@ async function sendToPerformanceDLQWithCircuitBreaker(
       }));
       return;
     }
-    
+
     // Timeout expired - move to half-open
     console.log('[finalize-analytics] Circuit breaker entering HALF-OPEN state:', { agentId });
     breaker.isOpen = false;
     await updateCircuitBreakerState(breakerKey, breaker);
   }
-  
+
   // Attempt to send to DLQ
   try {
     await sendToPerformanceDLQ(failure);
-    
+
     // Success - reset circuit breaker
     breaker.failures = 0;
     breaker.lastFailure = 0;
     breaker.isOpen = false;
     await updateCircuitBreakerState(breakerKey, breaker);
     console.log('[finalize-analytics] DLQ send successful, circuit breaker reset:', { agentId });
-    
+
   } catch (dlqErr: any) {
     breaker.failures++;
     breaker.lastFailure = Date.now();
-    
+
     console.error('[finalize-analytics] DLQ send failed', {
       callId,
       agentId,
       failureCount: breaker.failures,
       error: dlqErr.message
     });
-    
+
     // Check if we should open the circuit
     if (breaker.failures >= CIRCUIT_BREAKER_THRESHOLD) {
       breaker.isOpen = true;
@@ -204,10 +204,10 @@ async function sendToPerformanceDLQWithCircuitBreaker(
         threshold: CIRCUIT_BREAKER_THRESHOLD
       });
     }
-    
+
     // Persist the updated state
     await updateCircuitBreakerState(breakerKey, breaker);
-    
+
     // Last resort: Log to CloudWatch for recovery
     console.error('PERFORMANCE_METRICS_LOSS', JSON.stringify({
       type: 'METRICS_TRACKING_FAILURE',
@@ -245,7 +245,7 @@ if (!TRANSCRIPT_BUFFER_TABLE) {
 }
 
 // Initialize transcript buffer manager for cleanup (only if table is configured)
-const transcriptManager = TRANSCRIPT_BUFFER_TABLE 
+const transcriptManager = TRANSCRIPT_BUFFER_TABLE
   ? getTranscriptBufferManager(ddb, TRANSCRIPT_BUFFER_TABLE)
   : null;
 
@@ -279,13 +279,13 @@ export const handler = async (event: any = {}): Promise<void> => {
   // CRITICAL FIX #3.1: Track continuation depth to prevent infinite loops
   const continuationDepth = event.continuationDepth || 0;
   const continuationToken = event.continuationToken;
-  
+
   console.log('[finalize-analytics] Starting finalization sweep', {
     continuationDepth,
     maxDepth: MAX_CONTINUATION_DEPTH,
     hasContinuationToken: !!continuationToken
   });
-  
+
   // CRITICAL FIX #3.1: Prevent infinite continuation loops
   if (continuationDepth >= MAX_CONTINUATION_DEPTH) {
     console.error('[finalize-analytics] CRITICAL: Max continuation depth reached - stopping to prevent infinite loop', {
@@ -295,12 +295,12 @@ export const handler = async (event: any = {}): Promise<void> => {
     });
     return;
   }
-  
+
   const now = Date.now();
   let finalizedCount = 0;
   let errorCount = 0;
   const BATCH_SIZE = 50; // Process 50 records per invocation
-  
+
   try {
     // Validate required environment variables
     if (!ANALYTICS_TABLE) {
@@ -319,26 +319,26 @@ export const handler = async (event: any = {}): Promise<void> => {
       },
       Limit: BATCH_SIZE
     };
-    
+
     if (continuationToken) {
       queryParams.ExclusiveStartKey = JSON.parse(
         Buffer.from(continuationToken, 'base64').toString('utf-8')
       );
     }
-    
+
     const scanResult = await ddb.send(new QueryCommand(queryParams));
     const records = scanResult.Items || [];
-    
+
     if (records.length === 0) {
       console.log('[finalize-analytics] No records pending finalization');
       return;
     }
-    
+
     console.log(`[finalize-analytics] Found ${records.length} records to process`);
-    
+
     // CRITICAL FIX: Process only BATCH_SIZE records to avoid timeout
     const recordsToProcess = records.slice(0, BATCH_SIZE);
-    
+
     // Process records that are ready for finalization
     for (const record of recordsToProcess as AnalyticsRecord[]) {
       try {
@@ -354,21 +354,21 @@ export const handler = async (event: any = {}): Promise<void> => {
         // Continue processing other records even if one fails
       }
     }
-    
+
     console.log('[finalize-analytics] Finalization sweep complete:', {
       finalized: finalizedCount,
       errors: errorCount,
       hasMore: !!scanResult.LastEvaluatedKey || records.length > BATCH_SIZE
     });
-    
+
     // CRITICAL FIX #3.1: If more records remain, invoke self for continuation WITH depth tracking
     if (scanResult.LastEvaluatedKey) {
       const nextToken = Buffer.from(
         JSON.stringify(scanResult.LastEvaluatedKey)
       ).toString('base64');
-      
+
       const nextDepth = continuationDepth + 1;
-      
+
       // CRITICAL FIX #3.1: Check if we should continue
       if (nextDepth >= MAX_CONTINUATION_DEPTH) {
         console.warn('[finalize-analytics] Approaching max depth, stopping continuation chain', {
@@ -378,34 +378,34 @@ export const handler = async (event: any = {}): Promise<void> => {
         });
         return;
       }
-      
+
       console.log('[finalize-analytics] More records remain, scheduling continuation', {
         currentDepth: continuationDepth,
         nextDepth,
         maxDepth: MAX_CONTINUATION_DEPTH
       });
-      
+
       // Import Lambda client for self-invocation
       const { LambdaClient, InvokeCommand } = await import('@aws-sdk/client-lambda');
       const lambda = new LambdaClient({});
-      
+
       try {
         await lambda.send(new InvokeCommand({
           FunctionName: process.env.AWS_LAMBDA_FUNCTION_NAME,
           InvocationType: 'Event', // Async invocation
-          Payload: JSON.stringify({ 
+          Payload: JSON.stringify({
             continuationToken: nextToken,
             continuationDepth: nextDepth  // CRITICAL FIX #3.1: Pass depth for tracking
           })
         }));
-        
+
         console.log('[finalize-analytics] Continuation scheduled successfully', { nextDepth });
       } catch (invokeErr: any) {
         console.error('[finalize-analytics] Failed to invoke continuation:', invokeErr.message);
         // Non-fatal - next scheduled run will pick up remaining records
       }
     }
-    
+
   } catch (err: any) {
     console.error('[finalize-analytics] Fatal error during finalization sweep:', {
       error: err.message,
@@ -421,18 +421,18 @@ export const handler = async (event: any = {}): Promise<void> => {
  */
 async function finalizeRecord(callId: string, timestamp: number): Promise<void> {
   const requestId = `finalize-${callId}-${Date.now()}`;
-  
+
   try {
     // FIX #13: Try to cleanup expired locks first
     await cleanupExpiredLock(ddb, ANALYTICS_TABLE!, callId, timestamp);
-    
+
     // CRITICAL FIX #3.4: Acquire lock with retry and exponential backoff
     let lockAcquired = false;
     let lockAttempt = 0;
-    
+
     while (!lockAcquired && lockAttempt < LOCK_RETRY_ATTEMPTS) {
       lockAcquired = await acquireAnalyticsLock(ddb, ANALYTICS_TABLE!, callId, timestamp, requestId);
-      
+
       if (!lockAcquired) {
         lockAttempt++;
         if (lockAttempt < LOCK_RETRY_ATTEMPTS) {
@@ -447,7 +447,7 @@ async function finalizeRecord(callId: string, timestamp: number): Promise<void> 
         }
       }
     }
-    
+
     if (!lockAcquired) {
       console.warn('[finalize-analytics] Failed to acquire lock after retries - will retry on next sweep:', {
         callId,
@@ -455,12 +455,12 @@ async function finalizeRecord(callId: string, timestamp: number): Promise<void> 
       });
       return;
     }
-    
+
     try {
       // CRITICAL FIX: Validate timestamp is reasonable before processing
       const now = Math.floor(Date.now() / 1000); // Current time in epoch seconds
       const ninetyDaysAgo = now - (90 * 24 * 60 * 60);
-      
+
       // Reject future timestamps (with 1 minute grace for clock skew)
       if (timestamp > now + 60) {
         console.error('[finalize-analytics] Future timestamp detected, skipping:', {
@@ -472,7 +472,7 @@ async function finalizeRecord(callId: string, timestamp: number): Promise<void> 
         });
         return;
       }
-      
+
       // Warn about very old timestamps (>90 days)
       if (timestamp < ninetyDaysAgo) {
         console.warn('[finalize-analytics] Very old timestamp (>90 days):', {
@@ -483,231 +483,231 @@ async function finalizeRecord(callId: string, timestamp: number): Promise<void> 
         });
         // Continue processing but log warning
       }
-    
-    // Get full analytics record
-    const { Item: analytics } = await ddb.send(new GetCommand({
-      TableName: ANALYTICS_TABLE,
-      Key: { callId, timestamp }
-    }));
 
-    if (!analytics) {
-      console.warn(`[finalize-analytics] Record not found: ${callId}`);
-      return;
-    }
+      // Get full analytics record
+      const { Item: analytics } = await ddb.send(new GetCommand({
+        TableName: ANALYTICS_TABLE,
+        Key: { callId, timestamp }
+      }));
 
-    // Check state machine - should be in FINALIZING state
-    const currentState = analytics.analyticsState || AnalyticsState.FINALIZING;
-    
-    if (currentState !== AnalyticsState.FINALIZING) {
-      console.warn(`[finalize-analytics] Record not in FINALIZING state: ${callId}`, {
-        currentState
-      });
-      return;
-    }
-    
-    // Additional validation: Check if call has actually ended
-    if (!analytics.callEndTime && !analytics.callEndTimestamp) {
-      console.error('[finalize-analytics] Attempting to finalize active call:', {
-        callId,
-        timestamp,
-        callStatus: analytics.callStatus,
-        callStartTime: analytics.callStartTime
-      });
-      // Don't finalize active calls
-      return;
-    }
-
-    // Generate coaching summary
-    let coachingSummary;
-    try {
-      coachingSummary = await generateCallCoachingSummary(analytics);
-    } catch (err: any) {
-      console.error('[finalize-analytics] Error generating coaching summary:', {
-        error: err.message,
-        callId
-      });
-      coachingSummary = { score: 50, strengths: [], improvements: [] };
-    }
-
-    // Transition to FINALIZED state
-    const stateTransition = await transitionAnalyticsState(
-      ddb,
-      ANALYTICS_TABLE!,
-      callId,
-      timestamp,
-      AnalyticsState.FINALIZED,
-      'Finalization complete',
-      requestId
-    );
-    
-    if (!stateTransition.success) {
-      console.warn(`[finalize-analytics] Failed to transition to FINALIZED: ${stateTransition.error}`, {
-        callId
-      });
-      if (stateTransition.currentState === AnalyticsState.FINALIZED) {
-        console.log(`[finalize-analytics] Already finalized: ${callId}`);
+      if (!analytics) {
+        console.warn(`[finalize-analytics] Record not found: ${callId}`);
         return;
       }
-      throw new Error(`Failed to finalize: ${stateTransition.error}`);
-    }
-    
-    // CRITICAL FIX #9 & #10: Use atomic conditional update to prevent duplicate agent metrics
-    // The previous approach had two issues:
-    // 1. transactionItems array was built but never used in a TransactWriteCommand
-    // 2. Check-then-update pattern allowed race conditions between Get and Update
-    // 
-    // New approach: Use conditional update that atomically checks and sets the marker
-    
-    let metricsAlreadyTracked = false;
-    
-    if (analytics.agentId && AGENT_PERFORMANCE_TABLE) {
-      try {
-        // CRITICAL FIX #10: Atomic check-and-set using conditional update
-        // This eliminates the race condition between check and mark
-        await ddb.send(new UpdateCommand({
-          TableName: ANALYTICS_TABLE,
-          Key: { callId, timestamp },
-          UpdateExpression: 'SET agentMetricsTracking = :tracking, agentMetricsTrackingStartedAt = :now',
-          ConditionExpression: 'attribute_not_exists(agentMetricsTracking) AND attribute_not_exists(agentMetricsTracked)',
-          ExpressionAttributeValues: {
-            ':tracking': true,
-            ':now': Date.now()
-          }
-        }));
-        
-        console.log('[finalize-analytics] Acquired metrics tracking lock for:', callId);
-        
-      } catch (err: any) {
-        if (err.name === 'ConditionalCheckFailedException') {
-          console.log('[finalize-analytics] Agent metrics already being tracked or tracked, skipping:', callId);
-          metricsAlreadyTracked = true;
-        } else {
-          console.warn('[finalize-analytics] Error acquiring metrics tracking lock:', err.message);
-          // Continue anyway - worst case is duplicate metrics which is better than missing
-        }
+
+      // Check state machine - should be in FINALIZING state
+      const currentState = analytics.analyticsState || AnalyticsState.FINALIZING;
+
+      if (currentState !== AnalyticsState.FINALIZING) {
+        console.warn(`[finalize-analytics] Record not in FINALIZING state: ${callId}`, {
+          currentState
+        });
+        return;
       }
-    }
-    
-    // CRITICAL FIX #7: Validate agent exists before tracking metrics
-    let agentExists = false;
-    if (analytics.agentId && AGENT_PERFORMANCE_TABLE && !metricsAlreadyTracked) {
-      // Validate agent exists by checking if they have any presence or historical data
-      try {
-        const AGENT_PRESENCE_TABLE = process.env.AGENT_PRESENCE_TABLE_NAME;
-        if (AGENT_PRESENCE_TABLE) {
-          const presenceCheck = await ddb.send(new GetCommand({
-            TableName: AGENT_PRESENCE_TABLE,
-            Key: { agentId: analytics.agentId }
-          }));
-          agentExists = !!presenceCheck.Item;
-        } else {
-          // No presence table - assume agent exists (backward compatibility)
-          agentExists = true;
-        }
-        
-        if (!agentExists) {
-          console.error('[finalize-analytics] Agent not found in presence table:', {
-            callId,
-            agentId: analytics.agentId,
-            clinicId: analytics.clinicId
-          });
-          // Don't track metrics for non-existent agents
-        }
-      } catch (validateErr: any) {
-        console.warn('[finalize-analytics] Could not validate agent existence:', validateErr.message);
-        // If validation fails, assume agent exists (fail open)
-        agentExists = true;
+
+      // Additional validation: Check if call has actually ended
+      if (!analytics.callEndTime && !analytics.callEndTimestamp) {
+        console.error('[finalize-analytics] Attempting to finalize active call:', {
+          callId,
+          timestamp,
+          callStatus: analytics.callStatus,
+          callStartTime: analytics.callStartTime
+        });
+        // Don't finalize active calls
+        return;
       }
-    }
-    
-    // Update coaching summary and conditionally track agent metrics
-    if (analytics.agentId && AGENT_PERFORMANCE_TABLE && !metricsAlreadyTracked && agentExists) {
-      const MAX_RETRIES = 3;
-      let lastError: any = null;
-      let metricsTracked = false;
-      
-      // CRITICAL FIX: Implement retry logic with exponential backoff and circuit breaker
-      for (let attempt = 0; attempt < MAX_RETRIES; attempt++) {
+
+
+      // Transition to FINALIZED state
+      const stateTransition = await transitionAnalyticsState(
+        ddb,
+        ANALYTICS_TABLE!,
+        callId,
+        timestamp,
+        AnalyticsState.FINALIZED,
+        'Finalization complete',
+        requestId
+      );
+
+      if (!stateTransition.success) {
+        console.warn(`[finalize-analytics] Failed to transition to FINALIZED: ${stateTransition.error}`, {
+          callId
+        });
+        if (stateTransition.currentState === AnalyticsState.FINALIZED) {
+          console.log(`[finalize-analytics] Already finalized: ${callId}`);
+          return;
+        }
+        throw new Error(`Failed to finalize: ${stateTransition.error}`);
+      }
+
+      // CRITICAL FIX #9 & #10: Use atomic conditional update to prevent duplicate agent metrics
+      // The previous approach had two issues:
+      // 1. transactionItems array was built but never used in a TransactWriteCommand
+      // 2. Check-then-update pattern allowed race conditions between Get and Update
+      // 
+      // New approach: Use conditional update that atomically checks and sets the marker
+
+      let metricsAlreadyTracked = false;
+
+      if (analytics.agentId && AGENT_PERFORMANCE_TABLE) {
         try {
-          // Track agent metrics with idempotency
-          await trackEnhancedCallMetrics(ddb, AGENT_PERFORMANCE_TABLE, {
-            agentId: analytics.agentId,
-            clinicId: analytics.clinicId,
-            callId,
-            direction: analytics.direction || 'inbound',
-            duration: analytics.totalDuration || 0,
-            talkTime: analytics.totalDuration || 0,
-            holdTime: analytics.holdTime || 0,
-            sentiment: analytics.overallSentiment,
-            sentimentScore: analytics.averageSentiment,
-            transferred: analytics.detectedIssues?.includes('call-transferred'),
-            escalated: analytics.detectedIssues?.includes('escalation-request'),
-            issues: analytics.detectedIssues || [],
-            speakerMetrics: analytics.speakerMetrics,
-            timestamp: analytics.callEndTimestamp || Date.now()
-          });
-          
-          metricsTracked = true;
-          console.log('[finalize-analytics] Successfully tracked agent metrics for', callId);
-          break;
-        } catch (err: any) {
-          lastError = err;
-          console.error('[finalize-analytics] Error tracking enhanced metrics:', {
-            error: err.message,
-            callId,
-            agentId: analytics.agentId,
-            attempt: attempt + 1
-          });
-          
-          // If this was the last attempt, send to DLQ with circuit breaker
-          if (attempt === MAX_RETRIES - 1) {
-            const failure: AgentPerformanceFailure = {
-              callId,
-              agentId: analytics.agentId,
-              clinicId: analytics.clinicId,
-              error: {
-                message: err.message,
-                stack: err.stack,
-                code: err.code || err.name
-              },
-              metrics: {
-                direction: analytics.direction || 'inbound',
-                duration: analytics.totalDuration || 0,
-                sentiment: analytics.overallSentiment,
-                sentimentScore: analytics.averageSentiment
-              },
-              timestamp: new Date().toISOString(),
-              attemptCount: MAX_RETRIES
-            };
-            
-            // FIX #8: Add circuit breaker for DLQ failures
-            await sendToPerformanceDLQWithCircuitBreaker(failure, callId, analytics.agentId, analytics.clinicId);
-          } else {
-            // Wait before retry with exponential backoff: 500ms, 1000ms, 2000ms
-            await new Promise(resolve => setTimeout(resolve, 500 * Math.pow(2, attempt)));
-          }
-        }
-      }
-      
-      // CRITICAL FIX #10: Atomically mark metrics as tracked and remove tracking lock
-      if (metricsTracked) {
-        try {
+          // CRITICAL FIX #10: Atomic check-and-set using conditional update
+          // This eliminates the race condition between check and mark
           await ddb.send(new UpdateCommand({
             TableName: ANALYTICS_TABLE,
             Key: { callId, timestamp },
-            UpdateExpression: 'SET coachingSummary = :coaching, agentMetricsTracked = :true, agentMetricsTrackedAt = :now REMOVE agentMetricsTracking',
+            UpdateExpression: 'SET agentMetricsTracking = :tracking, agentMetricsTrackingStartedAt = :now',
+            ConditionExpression: 'attribute_not_exists(agentMetricsTracking) AND attribute_not_exists(agentMetricsTracked)',
             ExpressionAttributeValues: {
-              ':coaching': coachingSummary,
-              ':true': true,
+              ':tracking': true,
               ':now': Date.now()
             }
           }));
-        } catch (updateErr: any) {
-          console.error('[finalize-analytics] Error updating coaching summary:', {
-            error: updateErr.message,
-            callId
-          });
-          // Still try to release the tracking lock even if update failed
+
+          console.log('[finalize-analytics] Acquired metrics tracking lock for:', callId);
+
+        } catch (err: any) {
+          if (err.name === 'ConditionalCheckFailedException') {
+            console.log('[finalize-analytics] Agent metrics already being tracked or tracked, skipping:', callId);
+            metricsAlreadyTracked = true;
+          } else {
+            console.warn('[finalize-analytics] Error acquiring metrics tracking lock:', err.message);
+            // Continue anyway - worst case is duplicate metrics which is better than missing
+          }
+        }
+      }
+
+      // CRITICAL FIX #7: Validate agent exists before tracking metrics
+      let agentExists = false;
+      if (analytics.agentId && AGENT_PERFORMANCE_TABLE && !metricsAlreadyTracked) {
+        // Validate agent exists by checking if they have any presence or historical data
+        try {
+          const AGENT_PRESENCE_TABLE = process.env.AGENT_PRESENCE_TABLE_NAME;
+          if (AGENT_PRESENCE_TABLE) {
+            const presenceCheck = await ddb.send(new GetCommand({
+              TableName: AGENT_PRESENCE_TABLE,
+              Key: { agentId: analytics.agentId }
+            }));
+            agentExists = !!presenceCheck.Item;
+          } else {
+            // No presence table - assume agent exists (backward compatibility)
+            agentExists = true;
+          }
+
+          if (!agentExists) {
+            console.error('[finalize-analytics] Agent not found in presence table:', {
+              callId,
+              agentId: analytics.agentId,
+              clinicId: analytics.clinicId
+            });
+            // Don't track metrics for non-existent agents
+          }
+        } catch (validateErr: any) {
+          console.warn('[finalize-analytics] Could not validate agent existence:', validateErr.message);
+          // If validation fails, assume agent exists (fail open)
+          agentExists = true;
+        }
+      }
+
+      // Update coaching summary and conditionally track agent metrics
+      if (analytics.agentId && AGENT_PERFORMANCE_TABLE && !metricsAlreadyTracked && agentExists) {
+        const MAX_RETRIES = 3;
+        let lastError: any = null;
+        let metricsTracked = false;
+
+        // CRITICAL FIX: Implement retry logic with exponential backoff and circuit breaker
+        for (let attempt = 0; attempt < MAX_RETRIES; attempt++) {
+          try {
+            // Track agent metrics with idempotency
+            await trackEnhancedCallMetrics(ddb, AGENT_PERFORMANCE_TABLE, {
+              agentId: analytics.agentId,
+              clinicId: analytics.clinicId,
+              callId,
+              direction: analytics.direction || 'inbound',
+              duration: analytics.totalDuration || 0,
+              talkTime: analytics.totalDuration || 0,
+              holdTime: analytics.holdTime || 0,
+              sentiment: analytics.overallSentiment,
+              sentimentScore: analytics.averageSentiment,
+              transferred: analytics.detectedIssues?.includes('call-transferred'),
+              escalated: analytics.detectedIssues?.includes('escalation-request'),
+              issues: analytics.detectedIssues || [],
+              speakerMetrics: analytics.speakerMetrics,
+              timestamp: analytics.callEndTimestamp || Date.now()
+            });
+
+            metricsTracked = true;
+            console.log('[finalize-analytics] Successfully tracked agent metrics for', callId);
+            break;
+          } catch (err: any) {
+            lastError = err;
+            console.error('[finalize-analytics] Error tracking enhanced metrics:', {
+              error: err.message,
+              callId,
+              agentId: analytics.agentId,
+              attempt: attempt + 1
+            });
+
+            // If this was the last attempt, send to DLQ with circuit breaker
+            if (attempt === MAX_RETRIES - 1) {
+              const failure: AgentPerformanceFailure = {
+                callId,
+                agentId: analytics.agentId,
+                clinicId: analytics.clinicId,
+                error: {
+                  message: err.message,
+                  stack: err.stack,
+                  code: err.code || err.name
+                },
+                metrics: {
+                  direction: analytics.direction || 'inbound',
+                  duration: analytics.totalDuration || 0,
+                  sentiment: analytics.overallSentiment,
+                  sentimentScore: analytics.averageSentiment
+                },
+                timestamp: new Date().toISOString(),
+                attemptCount: MAX_RETRIES
+              };
+
+              // FIX #8: Add circuit breaker for DLQ failures
+              await sendToPerformanceDLQWithCircuitBreaker(failure, callId, analytics.agentId, analytics.clinicId);
+            } else {
+              // Wait before retry with exponential backoff: 500ms, 1000ms, 2000ms
+              await new Promise(resolve => setTimeout(resolve, 500 * Math.pow(2, attempt)));
+            }
+          }
+        }
+
+        // CRITICAL FIX #10: Atomically mark metrics as tracked and remove tracking lock
+        if (metricsTracked) {
+          try {
+            await ddb.send(new UpdateCommand({
+              TableName: ANALYTICS_TABLE,
+              Key: { callId, timestamp },
+              UpdateExpression: 'SET agentMetricsTracked = :true, agentMetricsTrackedAt = :now REMOVE agentMetricsTracking',
+              ExpressionAttributeValues: {
+                ':true': true,
+                ':now': Date.now()
+              }
+            }));
+          } catch (updateErr: any) {
+            console.error('[finalize-analytics] Error updating coaching summary:', {
+              error: updateErr.message,
+              callId
+            });
+            // Still try to release the tracking lock even if update failed
+            try {
+              await ddb.send(new UpdateCommand({
+                TableName: ANALYTICS_TABLE,
+                Key: { callId, timestamp },
+                UpdateExpression: 'REMOVE agentMetricsTracking'
+              }));
+            } catch (releaseErr: any) {
+              console.warn('[finalize-analytics] Could not release tracking lock:', releaseErr.message);
+            }
+          }
+        } else {
+          // Metrics tracking failed - release the lock
           try {
             await ddb.send(new UpdateCommand({
               TableName: ANALYTICS_TABLE,
@@ -715,62 +715,34 @@ async function finalizeRecord(callId: string, timestamp: number): Promise<void> 
               UpdateExpression: 'REMOVE agentMetricsTracking'
             }));
           } catch (releaseErr: any) {
-            console.warn('[finalize-analytics] Could not release tracking lock:', releaseErr.message);
+            console.warn('[finalize-analytics] Could not release tracking lock after failure:', releaseErr.message);
           }
         }
       } else {
-        // Metrics tracking failed - release the lock
+        // No agent metrics to track or already tracked
+        console.log('[finalize-analytics] No agent metrics to track or already tracked:', callId);
+      }
+
+      // CRITICAL FIX #3: Cleanup transcript buffer after successful finalization
+      // This prevents DynamoDB from accumulating old transcript data
+      if (transcriptManager) {
         try {
-          await ddb.send(new UpdateCommand({
-            TableName: ANALYTICS_TABLE,
-            Key: { callId, timestamp },
-            UpdateExpression: 'REMOVE agentMetricsTracking'
-          }));
-        } catch (releaseErr: any) {
-          console.warn('[finalize-analytics] Could not release tracking lock after failure:', releaseErr.message);
+          await transcriptManager.delete(callId);
+          console.log(`[finalize-analytics] Cleaned up transcript buffer for ${callId}`);
+        } catch (cleanupErr: any) {
+          console.error('[finalize-analytics] Error cleaning up transcript buffer:', {
+            callId,
+            error: cleanupErr.message
+          });
+          // Non-fatal error - buffer will be cleaned up by TTL
         }
+      } else {
+        console.log(`[finalize-analytics] Skipping transcript cleanup - manager not configured`);
       }
-    } else {
-      // No agent metrics to track or already tracked - just update coaching summary
-      try {
-        await ddb.send(new UpdateCommand({
-          TableName: ANALYTICS_TABLE,
-          Key: { callId, timestamp },
-          UpdateExpression: 'SET coachingSummary = :coaching',
-          ExpressionAttributeValues: {
-            ':coaching': coachingSummary
-          }
-        }));
-      } catch (updateErr: any) {
-        console.error('[finalize-analytics] Error updating coaching summary:', {
-          error: updateErr.message,
-          callId
-        });
-        throw updateErr;
-      }
-    }
-    
-    // CRITICAL FIX #3: Cleanup transcript buffer after successful finalization
-    // This prevents DynamoDB from accumulating old transcript data
-    if (transcriptManager) {
-      try {
-        await transcriptManager.delete(callId);
-        console.log(`[finalize-analytics] Cleaned up transcript buffer for ${callId}`);
-      } catch (cleanupErr: any) {
-        console.error('[finalize-analytics] Error cleaning up transcript buffer:', {
-          callId,
-          error: cleanupErr.message
-        });
-        // Non-fatal error - buffer will be cleaned up by TTL
-      }
-    } else {
-      console.log(`[finalize-analytics] Skipping transcript cleanup - manager not configured`);
-    }
-    
-    console.log(`[finalize-analytics] Finalized analytics for call ${callId}`, {
-      coachingScore: coachingSummary?.score,
-      sentiment: analytics.overallSentiment
-    });
+
+      console.log(`[finalize-analytics] Finalized analytics for call ${callId}`, {
+        sentiment: analytics.overallSentiment
+      });
     } finally {
       // Always release the lock
       await releaseAnalyticsLock(ddb, ANALYTICS_TABLE!, callId, timestamp, requestId);
@@ -780,7 +752,7 @@ async function finalizeRecord(callId: string, timestamp: number): Promise<void> 
       error: err.message,
       stack: err.stack
     });
-    
+
     // Try to transition to FAILED state
     try {
       await transitionAnalyticsState(
@@ -795,7 +767,7 @@ async function finalizeRecord(callId: string, timestamp: number): Promise<void> 
     } catch (stateErr) {
       console.error('[finalize-analytics] Failed to transition to FAILED state:', stateErr);
     }
-    
+
     throw err; // Re-throw to be caught by the main handler
   }
 }

@@ -32,7 +32,7 @@ const ddb = getDynamoDBClient();
 const ANALYTICS_TABLE = process.env.CALL_ANALYTICS_TABLE_NAME;
 
 if (!ANALYTICS_TABLE) {
-  throw new Error('CALL_ANALYTICS_TABLE_NAME environment variable is required');
+    throw new Error('CALL_ANALYTICS_TABLE_NAME environment variable is required');
 }
 
 // CRITICAL FIX: Use unified deduplication strategy
@@ -40,10 +40,10 @@ const DEDUP_TABLE = getDedupTableName(ANALYTICS_TABLE);
 
 // CRITICAL FIX: Circuit breaker for OpenDental API to prevent cascading failures
 const openDentalCircuitBreaker = getCircuitBreaker('OpenDentalAPI', {
-  failureThreshold: 5,      // Open circuit after 5 failures
-  successThreshold: 3,      // Need 3 successes to close
-  timeout: 120000,          // Wait 2 minutes before retry
-  monitoringPeriod: 300000  // Track failures over 5 minutes
+    failureThreshold: 5,      // Open circuit after 5 failures
+    successThreshold: 3,      // Need 3 successes to close
+    timeout: 120000,          // Wait 2 minutes before retry
+    monitoringPeriod: 300000  // Track failures over 5 minutes
 });
 
 interface CallAnalytics {
@@ -53,29 +53,29 @@ interface CallAnalytics {
     clinicId: string;
     agentId?: string;
     status: string;
-    
+
     // Duration metrics (in seconds)
     totalDuration: number;
     queueDuration: number;
     ringDuration: number;
     holdDuration: number;
     talkDuration: number;
-    
+
     // Call characteristics
     wasTransferred: boolean;
     wasAbandoned: boolean;
     wasCallback: boolean;
     wasVip: boolean;
-    
+
     // Metadata
     rejectionCount: number;
     transferCount: number;
     holdCount: number;
-    
+
     // Source info
     phoneNumber?: string;
     direction: 'inbound' | 'outbound';
-    
+
     // Patient data (from OpenDental)
     patientData?: {
         PatNum: number;
@@ -94,10 +94,10 @@ interface CallAnalytics {
         EstBalance?: number;
         BalTotal?: number;
     };
-    
+
     // Commlog tracking
     commlogNum?: number;
-    
+
     // Processing info
     processedAt: string;
     sourceEvent: string;
@@ -144,7 +144,7 @@ export const handler = async (event: DynamoDBStreamEvent): Promise<void> => {
             } catch (unmarshalErr) {
                 // Ignore unmarshal errors for error logging
             }
-            
+
             console.error('[AnalyticsStream] Error processing record:', {
                 error: err.message,
                 stack: err.stack,
@@ -173,9 +173,9 @@ async function processStreamRecord(
         console.error('[processStreamRecord] Missing dynamodb data in record');
         return 'SKIPPED';
     }
-    
+
     const { NewImage, OldImage } = record.dynamodb;
-    
+
     // CRITICAL FIX #9: Validate required fields exist
     if (!NewImage) {
         console.warn('[processStreamRecord] No NewImage in record, skipping');
@@ -186,7 +186,7 @@ async function processStreamRecord(
         return 'SKIPPED';
     }
 
-    const newImage = record.dynamodb?.NewImage 
+    const newImage = record.dynamodb?.NewImage
         ? unmarshall(record.dynamodb.NewImage as any)
         : null;
     const oldImage = record.dynamodb?.OldImage
@@ -194,23 +194,18 @@ async function processStreamRecord(
         : null;
 
     // Determine if this is a call completion event
-    const wasCompleted = 
-        oldImage?.status !== 'completed' && 
+    const wasCompleted =
+        oldImage?.status !== 'completed' &&
         newImage?.status === 'completed';
 
-    const wasAbandoned = 
-        oldImage?.status !== 'abandoned' && 
+    const wasAbandoned =
+        oldImage?.status !== 'abandoned' &&
         newImage?.status === 'abandoned';
 
     const wasRemoved = record.eventName === 'REMOVE' && oldImage;
-    
-    // NEW: Detect when call becomes active (for live analytics support)
-    const wasActivated = 
-        oldImage?.status !== 'active' && 
-        newImage?.status === 'active';
 
-    // Only process completion/abandonment/activation events
-    if (!wasCompleted && !wasAbandoned && !wasRemoved && !wasActivated) {
+    // Only process completion/abandonment events
+    if (!wasCompleted && !wasAbandoned && !wasRemoved) {
         return 'SKIPPED';
     }
 
@@ -228,14 +223,8 @@ async function processStreamRecord(
         eventName: record.eventName,
         wasCompleted,
         wasAbandoned,
-        wasRemoved,
-        wasActivated
+        wasRemoved
     });
-
-    // NEW: Handle call activation (create initial analytics for live endpoint)
-    if (wasActivated) {
-        return await handleCallActivation(callData, record);
-    }
 
     // Determine state transition for later deduplication
     const stateTransition = wasCompleted ? 'completed' : wasAbandoned ? 'abandoned' : 'removed';
@@ -249,7 +238,7 @@ async function processStreamRecord(
 
     // Store with deduplication (includes its own "post-call" dedup check)
     const stored = await storeAnalyticsWithDedup(analytics, record.eventID!);
-    
+
     // If storage failed due to duplicate, return early
     if (!stored) {
         console.log('[AnalyticsStream] Analytics already stored, skipping duplicate');
@@ -312,127 +301,6 @@ async function processStreamRecord(
     return stored ? 'PROCESSED' : 'DUPLICATE';
 }
 
-/**
- * Handle call activation - create initial analytics record for live endpoint support
- * This allows the /admin/analytics/live endpoint to return data during active calls
- * 
- * CRITICAL FIX: Use consistent timestamp for both existence check and record creation
- * to prevent race condition where GetCommand and PutCommand use different keys.
- */
-async function handleCallActivation(
-    callData: any,
-    record: DynamoDBRecord
-): Promise<'PROCESSED' | 'SKIPPED' | 'DUPLICATE'> {
-    const callId = callData.callId;
-    
-    // CRITICAL FIX: Calculate timestamp ONCE and use consistently throughout
-    // Use callStartTime if available, otherwise use current time
-    // Convert to epoch seconds for the partition key
-    const rawCallStartTime = callData.callStartTime || callData.queueEntryTime;
-    let timestamp: number;
-    
-    if (rawCallStartTime) {
-        // Parse the timestamp (could be ISO string or epoch)
-        const parsed = parseTimestamp(rawCallStartTime);
-        timestamp = parsed ? Math.floor(parsed / 1000) : Math.floor(Date.now() / 1000);
-    } else {
-        timestamp = Math.floor(Date.now() / 1000);
-    }
-    
-    const ttl = timestamp + (90 * 24 * 60 * 60); // 90 days retention
-    
-    // Check if analytics already initialized for this call using SAME timestamp
-    const existingCheck = await ddb.send(new GetCommand({
-        TableName: ANALYTICS_TABLE,
-        Key: {
-            callId,
-            timestamp // Use the consistent timestamp calculated above
-        }
-    }));
-    
-    if (existingCheck.Item) {
-        console.log('[handleCallActivation] Analytics already exist for active call:', {
-            callId,
-            existingTimestamp: existingCheck.Item.timestamp,
-            queriedTimestamp: timestamp
-        });
-        return 'DUPLICATE';
-    }
-    
-    // Create initial analytics record using SAME timestamp
-    const initialAnalytics = {
-        // Primary keys - CRITICAL: Use same timestamp as the existence check
-        callId,
-        timestamp,
-        
-        // Call status
-        callStatus: 'active',
-        analyticsState: 'INITIALIZING', // Will transition to ACTIVE when Kinesis events arrive
-        
-        // Core metadata
-        clinicId: callData.clinicId || 'unknown',
-        agentId: callData.agentId || null,
-        direction: callData.direction || 'inbound',
-        customerPhone: callData.from || callData.to || 'unknown',
-        
-        // Timestamps - use the consistent timestamp
-        callStartTime: new Date(timestamp * 1000).toISOString(),
-        callStartTimestamp: timestamp * 1000, // Convert back to milliseconds for consistency
-        
-        // Initial counts (will be updated by real-time analytics)
-        transcriptCount: 0,
-        latestTranscripts: [],
-        sentimentDataPoints: 0,
-        latestSentiment: [],
-        detectedIssues: [],
-        keywords: [],
-        keyPhrases: [],
-        entities: [],
-        
-        // Categorization
-        callCategory: 'uncategorized',
-        categoryScores: {},
-        
-        // Processing metadata
-        createdAt: new Date().toISOString(),
-        updatedAt: new Date().toISOString(),
-        processedAt: new Date().toISOString(),
-        sourceEvent: 'call-activation',
-        ttl,
-        
-        // Flags
-        isLiveCall: true,
-        _note: 'Initial record for live analytics. Will be enriched with transcripts and sentiment in real-time.'
-    };
-    
-    try {
-        // CRITICAL FIX: Use conditional write with both callId AND timestamp
-        // This ensures atomicity and prevents duplicate records with same key
-        await ddb.send(new PutCommand({
-            TableName: ANALYTICS_TABLE,
-            Item: initialAnalytics,
-            ConditionExpression: 'attribute_not_exists(callId) AND attribute_not_exists(#ts)',
-            ExpressionAttributeNames: {
-                '#ts': 'timestamp'
-            }
-        }));
-        
-        console.log('[handleCallActivation] Created initial analytics for live call:', {
-            callId,
-            clinicId: initialAnalytics.clinicId,
-            agentId: initialAnalytics.agentId,
-            timestamp
-        });
-        
-        return 'PROCESSED';
-    } catch (err: any) {
-        if (err.name === 'ConditionalCheckFailedException') {
-            console.log('[handleCallActivation] Analytics already exist (race condition):', callId);
-            return 'DUPLICATE';
-        }
-        throw err;
-    }
-}
 
 /**
  * Generate analytics from call data
@@ -442,7 +310,7 @@ async function handleCallActivation(
  * CRITICAL FIX #9: Added validation for all required fields
  */
 async function generateCallAnalytics(
-    callData: any, 
+    callData: any,
     record: DynamoDBRecord
 ): Promise<CallAnalytics> {
     // CRITICAL FIX #9: Validate required fields exist
@@ -452,13 +320,13 @@ async function generateCallAnalytics(
     if (!callData.clinicId) {
         throw new Error('Missing required field: clinicId');
     }
-    
+
     // CRITICAL FIX #9: Validate timestamp format and range
     const now = Date.now();
     const oneYearAgo = now - (365 * 24 * 60 * 60 * 1000);
-    
+
     let timestamp = parseTimestamp(callData.timestamp || callData.callStartTime || Date.now());
-    
+
     if (timestamp && timestamp > now + 60000) { // Future timestamp (1 min grace for clock skew)
         console.warn('[generateCallAnalytics] Future timestamp detected, using current time:', {
             originalTimestamp: timestamp,
@@ -466,7 +334,7 @@ async function generateCallAnalytics(
         });
         timestamp = now;
     }
-    
+
     if (timestamp && timestamp < oneYearAgo) {
         console.warn('[generateCallAnalytics] Very old timestamp (>1 year), may be invalid:', {
             timestamp,
@@ -474,7 +342,7 @@ async function generateCallAnalytics(
             ageInDays: Math.floor((now - timestamp) / (24 * 60 * 60 * 1000))
         });
     }
-    
+
     // CRITICAL FIX #9: Validate phone number format
     if (callData.phoneNumber) {
         const phoneRegex = /^\+?[1-9]\d{1,14}$/;
@@ -671,9 +539,9 @@ async function storeAnalyticsWithDedup(
         const mergedItem: Record<string, any> = {
             ...preservedFields,
             ...analytics,
-            callStatus: analytics.status === 'completed' ? 'completed' 
-                : analytics.status === 'abandoned' ? 'abandoned' 
-                : 'failed'
+            callStatus: analytics.status === 'completed' ? 'completed'
+                : analytics.status === 'abandoned' ? 'abandoned'
+                    : 'failed'
         };
 
         // Restore preserved fields that are missing/default in the new analytics
@@ -754,12 +622,12 @@ async function enrichWithPatientData(
 
         // First, try to get PatNum from call metadata
         let patNum = extractPatNumFromCallData(callData);
-        
+
         // If no PatNum but we have a phone number, search for patient
         if (!patNum && analytics.phoneNumber) {
             console.log(`[AnalyticsStream] Searching for patient by phone: ${analytics.phoneNumber}`);
             try {
-                const patient = await openDentalCircuitBreaker.execute(() => 
+                const patient = await openDentalCircuitBreaker.execute(() =>
                     searchPatientByPhone(analytics.phoneNumber!, analytics.clinicId)
                 );
                 if (patient?.PatNum) {
@@ -779,7 +647,7 @@ async function enrichWithPatientData(
                 const patientDetails = await openDentalCircuitBreaker.execute(() =>
                     getPatientByPatNum(patNum!, analytics.clinicId)
                 );
-                
+
                 // Store relevant patient data
                 analytics.patientData = {
                     PatNum: patientDetails.PatNum,
@@ -832,7 +700,7 @@ async function createCallCommlog(analytics: CallAnalytics): Promise<void> {
         }
 
         const note = generateCallSummary(analytics, analytics.patientData);
-        
+
         // Determine commType based on call characteristics
         let commType = 'Misc';
         if (analytics.wasCallback) {
