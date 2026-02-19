@@ -887,20 +887,23 @@ async function reopenTicket(event: APIGatewayProxyEvent, ticketId: string): Prom
     await ddb.send(new UpdateCommand({
         TableName: TICKETS_TABLE,
         Key: { ticketId },
-        UpdateExpression: 'SET #status = :status, updatedAt = :now REMOVE resolution, resolvedAt, resolvedBy, resolvedByName, resolvedByEmail, assignmentType, groupDetails',
+        UpdateExpression: 'SET #status = :status, updatedAt = :now, assigneeId = :unassigned, assigneeName = :unassignedName REMOVE resolution, resolvedAt, resolvedBy, resolvedByName, resolvedByEmail, assigneeEmail, assignmentType, groupDetails',
         ExpressionAttributeNames: { '#status': 'status' },
         ExpressionAttributeValues: {
             ':status': TicketStatus.REOPENED,
             ':now': now,
+            ':unassigned': 'unassigned',
+            ':unassignedName': 'Unassigned',
         },
     }));
 
-    const updated: any = { ...ticket, status: TicketStatus.REOPENED, updatedAt: now };
+    const updated: any = { ...ticket, status: TicketStatus.REOPENED, updatedAt: now, assigneeId: 'unassigned', assigneeName: 'Unassigned' };
     delete updated.resolution;
     delete updated.resolvedAt;
     delete updated.resolvedBy;
     delete updated.resolvedByName;
     delete updated.resolvedByEmail;
+    delete updated.assigneeEmail;
     delete updated.assignmentType;
     delete updated.groupDetails;
 
