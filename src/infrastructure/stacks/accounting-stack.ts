@@ -252,7 +252,7 @@ export class AccountingStack extends Stack {
       handler: 'handler',
       runtime: lambda.Runtime.NODEJS_20_X,
       memorySize: 512,
-      timeout: Duration.seconds(60),
+      timeout: Duration.seconds(120),
       bundling: { format: lambdaNode.OutputFormat.ESM, target: 'node20' },
       environment: {
         INVOICES_TABLE: this.invoicesTable.tableName,
@@ -330,7 +330,9 @@ export class AccountingStack extends Stack {
     // API ROUTES
     // ========================================
 
-    const lambdaIntegration = new apigw.LambdaIntegration(this.accountingFn);
+    const lambdaIntegration = new apigw.LambdaIntegration(this.accountingFn, {
+      timeout: Duration.seconds(29),
+    });
     const authOptions = {
       authorizer: this.authorizer,
       authorizationType: apigw.AuthorizationType.CUSTOM,

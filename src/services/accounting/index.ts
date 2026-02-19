@@ -49,7 +49,9 @@ const COLUMN_CONFIG_TABLE = process.env.COLUMN_CONFIG_TABLE!;
 const DOCUMENTS_BUCKET = process.env.DOCUMENTS_BUCKET!;
 
 // AWS Clients
-const ddb = DynamoDBDocumentClient.from(new DynamoDBClient({}));
+const ddb = DynamoDBDocumentClient.from(new DynamoDBClient({}), {
+  marshallOptions: { removeUndefinedValues: true },
+});
 const s3 = new S3Client({});
 const textract = new TextractClient({});
 
@@ -632,27 +634,36 @@ async function fetchOpenDentalPayments(
 
     console.log(`[Accounting] ${filteredPayments.length} payments within date range ${dateStart} to ${dateEnd}`);
 
-    // 4. Fetch patient names for unique PatNums (in batches to avoid overwhelming the API)
+    // 4. Fetch patient names - try bulk first, skip if too slow
     const uniquePatNums = [...new Set(filteredPayments.map((p: any) => p.PatNum || p.patNum).filter(Boolean))];
     const patientNameCache = new Map<number, string>();
 
-    // Fetch patient names in batches of 10
-    const BATCH_SIZE = 10;
-    for (let i = 0; i < uniquePatNums.length; i += BATCH_SIZE) {
-      const batch = uniquePatNums.slice(i, i + BATCH_SIZE);
-      const patientPromises = batch.map(async (patNum: number) => {
-        try {
-          const patient = await callOpenDentalApi('GET', `/patients/${patNum}`, authHeader);
-          // OpenDental patient response: { PatNum, LName, FName, ... } or { patNum, lName, fName, ... }
-          const fName = patient?.FName || patient?.fName || '';
-          const lName = patient?.LName || patient?.lName || '';
-          patientNameCache.set(patNum, `${lName}, ${fName}`.trim());
-        } catch (err) {
-          console.warn(`[Accounting] Failed to fetch patient ${patNum}:`, err);
-          patientNameCache.set(patNum, `Patient #${patNum}`);
+    // Try fetching patients in one bulk call (OpenDental supports comma-separated PatNums)
+    if (uniquePatNums.length > 0) {
+      try {
+        // Attempt bulk fetch - if this fails or takes too long, fall back to patient numbers
+        const BULK_BATCH_SIZE = 50;
+        for (let i = 0; i < uniquePatNums.length; i += BULK_BATCH_SIZE) {
+          const batchNums = uniquePatNums.slice(i, i + BULK_BATCH_SIZE);
+          const patients = await callOpenDentalApi(
+            'GET',
+            `/patients?PatNums=${batchNums.join(',')}`,
+            authHeader
+          );
+          if (Array.isArray(patients)) {
+            for (const patient of patients) {
+              const pn = patient.PatNum || patient.patNum;
+              const fName = patient?.FName || patient?.fName || '';
+              const lName = patient?.LName || patient?.lName || '';
+              if (pn) patientNameCache.set(pn, `${lName}, ${fName}`.trim());
+            }
+          }
         }
-      });
-      await Promise.all(patientPromises);
+        console.log(`[Accounting] Fetched ${patientNameCache.size} patient names`);
+      } catch (err) {
+        console.warn('[Accounting] Bulk patient fetch failed, using patient numbers:', err);
+        // Fall through - will use "Patient #X" for any missing names
+      }
     }
 
     // 5. Map payments to OpenDentalPaymentRow format
@@ -890,35 +901,24 @@ async function generateReconciliation(
           return payDate <= dateEnd;
         });
 
-        // Fetch patient names
-        const uniquePatNums = [...new Set(filteredPayments.map((p: any) => p.PatNum || p.patNum).filter(Boolean))];
-        const patientNameCache = new Map<number, string>();
-        const BATCH_SIZE = 10;
-        for (let i = 0; i < uniquePatNums.length; i += BATCH_SIZE) {
-          const batch = uniquePatNums.slice(i, i + BATCH_SIZE);
-          await Promise.all(batch.map(async (patNum: number) => {
-            try {
-              const patient = await callOpenDentalApi('GET', `/patients/${patNum}`, authHeader);
-              const fName = patient?.FName || patient?.fName || '';
-              const lName = patient?.LName || patient?.lName || '';
-              patientNameCache.set(patNum, `${lName}, ${fName}`.trim());
-            } catch {
-              patientNameCache.set(patNum, `Patient #${patNum}`);
-            }
-          }));
-        }
-
+        // Map payments to rows (skip patient name lookups to avoid timeout)
         openDentalRows = filteredPayments.map((p: any) => {
           const patNum = p.PatNum || p.patNum || 0;
           const payAmt = p.PayAmt || p.payAmt || 0;
           const payDate = (p.PayDate || p.payDate || '').substring(0, 10);
           const payNum = p.PayNum || p.payNum || 0;
           const payNote = p.PayNote || p.payNote || '';
+          // Use FName/LName if available from the payments endpoint
+          const fName = p.FName || p.fName || '';
+          const lName = p.LName || p.lName || '';
+          const patientName = (fName || lName)
+            ? `${lName}, ${fName}`.trim()
+            : `Patient #${patNum}`;
 
           return {
             rowId: `od-${payNum}`,
             patNum,
-            patientName: patientNameCache.get(patNum) || `Patient #${patNum}`,
+            patientName,
             paymentDate: payDate,
             expectedAmount: Number(payAmt),
             paymentMode,
