@@ -36,168 +36,224 @@ export async function sendResolutionEmail(ticket: Ticket): Promise<boolean> {
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <style>
-    :root {
-      --bg-color: #f8f9fa;
-      --container-bg: #ffffff;
-      --glass-tile: rgba(255, 255, 255, 0.6);
-      --glass-border: rgba(209, 213, 219, 0.3);
-      --text-primary: #1a1a1a;
-      --text-secondary: #6b7280;
-      --text-muted: #9ca3af;
-      --accent-gray: #f3f4f6;
-    }
-
     body {
       font-family: -apple-system, BlinkMacSystemFont, 'SF Pro Display', 'Segoe UI', Roboto, sans-serif;
       margin: 0;
       padding: 0;
-      background-color: var(--bg-color);
-      color: var(--text-primary);
+      background-color: #f4f4f4;
+      color: #1a1a1a;
       -webkit-font-smoothing: antialiased;
     }
 
     .outer {
-      padding: 60px 20px;
-      background: radial-gradient(circle at top left, #ffffff, #f0f2f5);
-      min-height: 100vh;
+      padding: 40px 20px;
+      background-color: #f4f4f4;
     }
 
     .wrapper {
-      max-width: 580px;
+      max-width: 600px;
       margin: 0 auto;
-      background: var(--container-bg);
-      border-radius: 32px;
+      background: #ffffff;
+      border-radius: 16px;
       overflow: hidden;
-      /* Smooth Layered Shadow */
-      box-shadow: 
-        0 4px 6px -1px rgba(0, 0, 0, 0.05), 
-        0 10px 15px -3px rgba(0, 0, 0, 0.03),
-        0 20px 25px -5px rgba(0, 0, 0, 0.02);
-      border: 1px solid rgba(0, 0, 0, 0.02);
+      box-shadow: 0 2px 12px rgba(0, 0, 0, 0.08);
     }
 
-    /* ── Header ── */
+    /* ── Dark Header ── */
     .header {
-      padding: 48px 40px 32px;
+      background-color: #2d2d2d;
+      padding: 40px 40px 32px;
       text-align: center;
     }
 
-    .badge {
-      display: inline-block;
-      background: var(--accent-gray);
-      color: var(--text-primary);
-      font-size: 11px;
-      font-weight: 700;
-      letter-spacing: 0.05em;
-      text-transform: uppercase;
-      padding: 6px 16px;
-      border-radius: 50px;
-      margin-bottom: 20px;
-      border: 1px solid rgba(0, 0, 0, 0.05);
-    }
-
     .header h1 {
-      margin: 0 0 12px;
-      font-size: 32px;
-      font-weight: 800;
-      color: var(--text-primary);
-      letter-spacing: -0.04em;
+      margin: 0 0 8px;
+      font-size: 28px;
+      font-weight: 700;
+      color: #ffffff;
+      letter-spacing: -0.02em;
     }
 
-    .subtitle {
-      font-size: 16px;
-      color: var(--text-secondary);
+    .header-subtitle {
+      font-size: 14px;
+      color: #9ca3af;
       margin: 0;
-      line-height: 1.5;
     }
 
-    .subtitle strong {
-      color: var(--text-primary);
+    /* ── Body ── */
+    .body-content {
+      padding: 36px 40px;
     }
 
-    /* ── Data Grid (Glass Tiles) ── */
-    .data-grid {
-      padding: 0 40px 24px;
-      display: grid;
-      grid-template-columns: 1fr 1fr;
-      gap: 12px;
+    .greeting {
+      font-size: 16px;
+      color: #374151;
+      margin: 0 0 8px;
+      line-height: 1.6;
     }
 
-    .data-cell {
-      padding: 20px;
-      background: var(--glass-tile);
-      backdrop-filter: blur(10px);
-      -webkit-backdrop-filter: blur(10px);
-      border: 1px solid var(--glass-border);
-      border-radius: 20px;
-      transition: transform 0.2s ease;
+    .greeting strong {
+      color: #1a1a1a;
     }
 
-    /* Subject span full width */
-    .subject-tile {
-      grid-column: span 2;
+    .intro {
+      font-size: 15px;
+      color: #4b5563;
+      margin: 0 0 28px;
+      line-height: 1.6;
     }
 
-    .data-label {
+    .intro strong {
+      color: #1a1a1a;
+    }
+
+    /* ── Dark Summary Bar ── */
+    .summary-bar {
+      background-color: #2d2d2d;
+      border-radius: 12px;
+      padding: 20px 28px;
+      margin-bottom: 28px;
+    }
+
+    .summary-bar table {
+      width: 100%;
+      border-collapse: collapse;
+    }
+
+    .summary-bar td {
+      text-align: center;
+      vertical-align: top;
+      padding: 0 8px;
+    }
+
+    .summary-label {
       display: block;
       font-size: 10px;
       font-weight: 700;
       text-transform: uppercase;
-      letter-spacing: 0.1em;
-      color: var(--text-muted);
+      letter-spacing: 0.08em;
+      color: #9ca3af;
       margin-bottom: 6px;
     }
 
-    .data-value {
+    .summary-value {
       display: block;
-      font-size: 15px;
-      font-weight: 600;
-      color: var(--text-primary);
+      font-size: 16px;
+      font-weight: 700;
+      color: #ffffff;
     }
 
-    /* ── Resolution Section ── */
+    /* ── Detail Table ── */
+    .detail-table {
+      width: 100%;
+      border-collapse: collapse;
+      margin-bottom: 28px;
+    }
+
+    .detail-table thead th {
+      font-size: 11px;
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: 0.06em;
+      color: #6b7280;
+      padding: 10px 16px;
+      text-align: left;
+      border-bottom: 2px solid #e5e7eb;
+    }
+
+    .detail-table tbody td {
+      font-size: 14px;
+      color: #374151;
+      padding: 14px 16px;
+      border-bottom: 1px solid #f3f4f6;
+    }
+
+    .detail-table tbody tr:last-child td {
+      border-bottom: none;
+    }
+
+    /* ── Resolution Block ── */
     .resolution-wrap {
-      padding: 0 40px 40px;
+      margin-bottom: 28px;
     }
 
     .resolution {
-      padding: 28px;
-      background: var(--accent-gray);
-      border-radius: 24px;
-      position: relative;
-      overflow: hidden;
-    }
-
-    .resolution::before {
-      content: "";
-      position: absolute;
-      left: 0;
-      top: 0;
-      bottom: 0;
-      width: 4px;
-      background: var(--text-primary);
+      background-color: #f9fafb;
+      border-radius: 12px;
+      padding: 24px 28px;
+      border-left: 4px solid #2d2d2d;
     }
 
     .resolution-title {
       font-size: 11px;
       font-weight: 800;
       text-transform: uppercase;
-      letter-spacing: 0.1em;
-      color: var(--text-primary);
+      letter-spacing: 0.08em;
+      color: #1a1a1a;
       margin: 0 0 10px;
     }
 
     .resolution-text {
-      font-size: 15px;
-      color: var(--text-secondary);
+      font-size: 14px;
+      color: #4b5563;
       line-height: 1.7;
       margin: 0;
     }
 
+    /* ── Dark Total Bar ── */
+    .total-bar {
+      background-color: #2d2d2d;
+      border-radius: 12px;
+      padding: 16px 28px;
+      margin-bottom: 32px;
+    }
+
+    .total-bar table {
+      width: 100%;
+      border-collapse: collapse;
+    }
+
+    .total-bar td {
+      vertical-align: middle;
+      padding: 0;
+    }
+
+    .total-label {
+      font-size: 14px;
+      font-weight: 700;
+      color: #ffffff;
+      text-transform: uppercase;
+      letter-spacing: 0.04em;
+    }
+
+    .total-value {
+      font-size: 14px;
+      font-weight: 700;
+      color: #ffffff;
+      text-align: right;
+    }
+
+    /* ── CTA Button ── */
+    .cta-wrap {
+      text-align: center;
+      padding: 0 0 8px;
+    }
+
+    .cta-btn {
+      display: inline-block;
+      background-color: #2d2d2d;
+      color: #ffffff;
+      font-size: 14px;
+      font-weight: 600;
+      padding: 14px 36px;
+      border-radius: 50px;
+      text-decoration: none;
+      letter-spacing: 0.02em;
+    }
+
     /* ── Footer ── */
     .footer {
-      padding: 32px 40px;
-      background: #fafafa;
+      padding: 28px 40px;
       text-align: center;
       border-top: 1px solid #f0f0f0;
     }
@@ -205,62 +261,109 @@ export async function sendResolutionEmail(ticket: Ticket): Promise<boolean> {
     .footer p {
       margin: 0;
       font-size: 12px;
-      color: var(--text-muted);
+      color: #9ca3af;
       line-height: 1.6;
     }
 
     @media (max-width: 600px) {
-      .data-grid { grid-template-columns: 1fr; }
-      .subject-tile { grid-column: span 1; }
-      .header { padding: 40px 24px 24px; }
-      .body { padding: 0 24px; }
+      .body-content { padding: 28px 20px; }
+      .header { padding: 32px 20px 24px; }
+      .summary-bar { padding: 16px 16px; }
     }
   </style>
 </head>
 <body>
   <div class="outer">
     <div class="wrapper">
-      
+
+      <!-- Dark Header -->
       <div class="header">
-        <div class="badge">Ticket Completion</div>
         <h1>Issue Resolved</h1>
-        <p class="subtitle">Hi <strong>${ticket.reporterName}</strong>, the request you filed has been successfully processed by our team.</p>
+        <p class="header-subtitle">Today's Dental Insights</p>
       </div>
 
-      <div class="data-grid">
-        <div class="data-cell subject-tile">
-          <span class="data-label">Subject</span>
-          <span class="data-value">${ticket.title}</span>
+      <!-- Body -->
+      <div class="body-content">
+        <p class="greeting">Hello <strong>${ticket.reporterName}</strong>,</p>
+        <p class="intro">Your <strong>${typeLabel}</strong> has been resolved. Review the details below.</p>
+
+        <!-- Dark Summary Bar -->
+        <div class="summary-bar">
+          <table>
+            <tr>
+              <td style="text-align:left;">
+                <span class="summary-label">Reference</span>
+                <span class="summary-value">#${ticket.ticketId.slice(-8).toUpperCase()}</span>
+              </td>
+              <td>
+                <span class="summary-label">Module</span>
+                <span class="summary-value">${ticket.module}</span>
+              </td>
+              <td style="text-align:right;">
+                <span class="summary-label">Priority</span>
+                <span class="summary-value">${priorityLabel}</span>
+              </td>
+            </tr>
+          </table>
         </div>
-        <div class="data-cell">
-          <span class="data-label">Reference</span>
-          <span class="data-value">#${ticket.ticketId.slice(-8).toUpperCase()}</span>
+
+        <!-- Detail Table -->
+        <table class="detail-table">
+          <thead>
+            <tr>
+              <th>Field</th>
+              <th>Details</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td style="font-weight:600;">Subject</td>
+              <td>${ticket.title}</td>
+            </tr>
+            <tr>
+              <td style="font-weight:600;">Handled by</td>
+              <td>${ticket.assigneeName || 'IT Team'}</td>
+            </tr>
+            <tr>
+              <td style="font-weight:600;">Submitted</td>
+              <td>${createdDate}</td>
+            </tr>
+            <tr>
+              <td style="font-weight:600;">Resolved on</td>
+              <td>${resolvedDate}</td>
+            </tr>
+          </tbody>
+        </table>
+
+        ${ticket.resolution ? `
+        <!-- Resolution Note -->
+        <div class="resolution-wrap">
+          <div class="resolution">
+            <p class="resolution-title">Resolution Note</p>
+            <p class="resolution-text">${ticket.resolution.replace(/\\n/g, '<br/>')}</p>
+          </div>
         </div>
-        <div class="data-cell">
-          <span class="data-label">System Module</span>
-          <span class="data-value">${ticket.module}</span>
+        ` : ''}
+
+        <!-- Dark Total Bar -->
+        <div class="total-bar">
+          <table>
+            <tr>
+              <td><span class="total-label">Status</span></td>
+              <td><span class="total-value">✅ Resolved</span></td>
+            </tr>
+          </table>
         </div>
-        <div class="data-cell">
-          <span class="data-label">Handled by</span>
-          <span class="data-value">${ticket.assigneeName || 'IT Team'}</span>
-        </div>
-        <div class="data-cell">
-          <span class="data-label">Resolved on</span>
-          <span class="data-value">${resolvedDate}</span>
+
+        <!-- CTA Button -->
+        <div class="cta-wrap">
+          <a href="https://todaysdentalinsights.com" class="cta-btn">View Your Tickets</a>
         </div>
       </div>
 
-      ${ticket.resolution ? `
-      <div class="resolution-wrap">
-        <div class="resolution">
-          <p class="resolution-title">Resolution Note</p>
-          <p class="resolution-text">${ticket.resolution.replace(/\\n/g, '<br/>')}</p>
-        </div>
-      </div>
-      ` : ''}
-
+      <!-- Footer -->
       <div class="footer">
-        <p>© 2026 Today's Dental Services<br/>System-generated status notification</p>
+        <p>This is an automated notification from TodaysDentalInsights.<br/>Please do not reply to this email.</p>
       </div>
     </div>
   </div>
