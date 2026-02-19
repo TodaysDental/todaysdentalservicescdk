@@ -1050,9 +1050,9 @@ export async function createBudgetViaRest(
     operations: [{
       create: {
         name: budgetResource.name,
-        amount_micros: String(budgetResource.amount_micros),
-        delivery_method: deliveryMethodMap[budgetResource.delivery_method] || 'STANDARD',
-        explicitly_shared: budgetResource.explicitly_shared ?? false,
+        amountMicros: String(budgetResource.amount_micros),
+        deliveryMethod: deliveryMethodMap[budgetResource.delivery_method] || 'STANDARD',
+        explicitlyShared: budgetResource.explicitly_shared ?? false,
       },
     }],
   };
@@ -1111,45 +1111,60 @@ export async function createCampaignViaRest(
     13: 'PERFORMANCE_MAX',
   };
 
-  // Build REST campaign object — ALL fields must use snake_case
+  // Build REST campaign object
+  // Google Ads REST API uses JSON transcoding (camelCase field names)
+  // Field names must match the official Campaign proto definition:
+  // https://github.com/googleapis/googleapis/blob/master/google/ads/googleads/v22/resources/campaign.proto
   const campaign: any = {
     name: campaignResource.name,
     status: statusMap[campaignResource.status] || 'PAUSED',
-    advertising_channel_type: channelTypeMap[campaignResource.advertisingChannelType] || 'SEARCH',
-    campaign_budget: campaignResource.campaignBudget,
+    advertisingChannelType: channelTypeMap[campaignResource.advertisingChannelType] || 'SEARCH',
+    campaignBudget: campaignResource.campaignBudget,
     // CRITICAL: This field is REQUIRED since Google Ads API v22 (Sept 3, 2025)
     // It's an ENUM, not a boolean. The gRPC library's proto defs don't include this enum.
-    contains_eu_political_advertising: 'DOES_NOT_CONTAIN_EU_POLITICAL_ADVERTISING',
+    containsEuPoliticalAdvertising: 'DOES_NOT_CONTAIN_EU_POLITICAL_ADVERTISING',
   };
 
-  // Add network settings (snake_case)
+  // For Performance Max campaigns, disable Brand Guidelines (defaults to true in v22)
+  // When enabled, it requires business name and square logo as CampaignAssets
+  const channelType = channelTypeMap[campaignResource.advertisingChannelType];
+  if (channelType === 'PERFORMANCE_MAX') {
+    campaign.brandGuidelinesEnabled = false;
+  }
+
+  // Add network settings
   if (campaignResource.networkSettings) {
-    campaign.network_settings = {
-      target_google_search: campaignResource.networkSettings.targetGoogleSearch ?? true,
-      target_search_network: campaignResource.networkSettings.targetSearchNetwork ?? true,
+    campaign.networkSettings = {
+      targetGoogleSearch: campaignResource.networkSettings.targetGoogleSearch ?? true,
+      targetSearchNetwork: campaignResource.networkSettings.targetSearchNetwork ?? true,
     };
   }
 
-  // Build bidding strategy (snake_case field names)
-  // NOTE: Enhanced CPC (enhanced_cpc_enabled) is DEPRECATED by Google (context_error: 2)
+  // Build bidding strategy — field names from the campaign_bidding_strategy oneof in Campaign proto:
+  //   manual_cpc, manual_cpm, manual_cpv, maximize_conversions, maximize_conversion_value,
+  //   target_cpa, target_roas, target_spend, target_impression_share, percent_cpc,
+  //   target_cpm, fixed_cpm, commission
+  // NOTE: There is NO "maximize_clicks" field! MAXIMIZE_CLICKS uses "target_spend" instead.
+  // NOTE: Enhanced CPC (enhanced_cpc_enabled) is DEPRECATED by Google.
   switch (campaignResource.biddingStrategy) {
     case 'MANUAL_CPC':
-      campaign.manual_cpc = {};
+      campaign.manualCpc = {};
       break;
     case 'TARGET_CPA':
-      campaign.target_cpa = {
-        target_cpa_micros: String(campaignResource.targetCpaMicros || 0),
+      campaign.targetCpa = {
+        targetCpaMicros: String(campaignResource.targetCpaMicros || 0),
       };
       break;
     case 'MAXIMIZE_CONVERSIONS':
-      campaign.maximize_conversions = {};
+      campaign.maximizeConversions = {};
       break;
     case 'MAXIMIZE_CLICKS':
-      campaign.maximize_clicks = {};
+      // MAXIMIZE_CLICKS maps to "target_spend" in the Campaign proto (no "maximize_clicks" field exists)
+      campaign.targetSpend = {};
       break;
     case 'TARGET_ROAS':
-      campaign.target_roas = {
-        target_roas: campaignResource.targetRoas || 0,
+      campaign.targetRoas = {
+        targetRoas: campaignResource.targetRoas || 0,
       };
       break;
   }
