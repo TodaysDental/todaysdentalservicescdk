@@ -1073,6 +1073,23 @@ export class AiAgentsStack extends Stack {
     // Grant read access to agents table for clinic config lookup
     this.agentsTable.grantReadData(this.insuranceTextractFn);
 
+    // Grant read access to ClinicSecrets table for OpenDental credentials
+    // (insurance-textract-handler uses shared `secrets-helper` which calls DynamoDB GetItem)
+    this.insuranceTextractFn.addToRolePolicy(new iam.PolicyStatement({
+      effect: iam.Effect.ALLOW,
+      actions: ['dynamodb:GetItem'],
+      resources: [clinicSecretsTableArn],
+    }));
+
+    // Optional: allow decrypt if Secrets stack uses a CMK and downstream code needs it
+    if (props.secretsEncryptionKeyArn) {
+      this.insuranceTextractFn.addToRolePolicy(new iam.PolicyStatement({
+        effect: iam.Effect.ALLOW,
+        actions: ['kms:Decrypt', 'kms:DescribeKey'],
+        resources: [props.secretsEncryptionKeyArn],
+      }));
+    }
+
     // ========================================
     // API GATEWAY SETUP
     // ========================================
