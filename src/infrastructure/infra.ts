@@ -46,6 +46,7 @@ import { FeeScheduleSyncStack } from './stacks/fee-schedule-sync-stack';
 import { EmailStack } from './stacks/email-stack';
 import { AccountingStack } from './stacks/accounting-stack';
 import { InsuranceAutomationStack } from './stacks/insurance-automation-stack';
+import { PaymentPostingSalaryStack } from './stacks/payment-posting-salary-stack';
 import { SecretsStack } from './stacks/secrets-stack';
 import { ItTicketStack } from './stacks/it-ticket-stack';
 import { PushNotificationsStack } from './stacks/push-notifications-stack';
@@ -1013,6 +1014,20 @@ const accountingStack = new AccountingStack(app, 'TodaysDentalInsightsAccounting
 });
 accountingStack.addDependency(coreStack); // Explicit - imports AuthorizerFunctionArn
 accountingStack.addDependency(secretsStack); // Explicit - uses GlobalSecrets table for Odoo credentials
+
+// Payment Posting Salary Analytics (Finance workflow)
+// Computes salary earnings by assignee and location using OpenDental SQL queries delivered via SFTP
+const paymentPostingSalaryStack = new PaymentPostingSalaryStack(app, 'TodaysDentalInsightsPaymentPostingSalaryN1', {
+  env,
+  consolidatedTransferServerId: openDentalStack.consolidatedTransferServer.attrServerId,
+  globalSecretsTableName: secretsStack.globalSecretsTable.tableName,
+  clinicSecretsTableName: secretsStack.clinicSecretsTable.tableName,
+  clinicConfigTableName: secretsStack.clinicConfigTable.tableName,
+  secretsEncryptionKeyArn: secretsStack.secretsEncryptionKey.keyArn,
+});
+paymentPostingSalaryStack.addDependency(coreStack); // Explicit - imports AuthorizerFunctionArn + StaffUser table export
+paymentPostingSalaryStack.addDependency(openDentalStack); // Explicit - uses consolidated Transfer server ID
+paymentPostingSalaryStack.addDependency(secretsStack); // Explicit - uses secrets tables for OpenDental creds + SFTP password
 
 // Insurance Automation Stack - Commission tracking and document processing for insurance team
 // Features: Commission tracking, Textract document processing, Note copying between patients
