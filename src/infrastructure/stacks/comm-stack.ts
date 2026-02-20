@@ -11,6 +11,8 @@ import * as s3 from 'aws-cdk-lib/aws-s3';
 import * as sns from 'aws-cdk-lib/aws-sns';
 import * as apigw from 'aws-cdk-lib/aws-apigateway';
 import * as cloudwatch from 'aws-cdk-lib/aws-cloudwatch';
+import * as events from 'aws-cdk-lib/aws-events';
+import * as targets from 'aws-cdk-lib/aws-events-targets';
 
 export interface CommStackProps extends StackProps {
   // Authorizer imported via CloudFormation export
@@ -544,6 +546,57 @@ export class CommStack extends Stack {
         resources: [props.sendPushFunctionArn],
       }));
     }
+
+    // ========================================
+    // DEADLINE REMINDER LAMBDA (Scheduled — Daily at 8 AM EST)
+    // ========================================
+    // Scans the FavorRequests (tasks) table for upcoming and overdue deadlines
+    // and sends email reminders to the assigned users via SES.
+    const deadlineReminderFn = new lambdaNode.NodejsFunction(this, 'DeadlineReminderFn', {
+      entry: path.join(__dirname, '..', '..', 'services', 'comm', 'deadline-reminder.ts'),
+      handler: 'handler',
+      runtime: lambda.Runtime.NODEJS_20_X,
+      memorySize: 256,
+      timeout: Duration.seconds(120), // May need to scan many tasks and send emails
+      bundling: { format: lambdaNode.OutputFormat.ESM, target: 'node20' },
+      environment: {
+        FAVORS_TABLE: this.favorsTable.tableName,
+        SES_SOURCE_EMAIL: 'no-reply@todaysdentalinsights.com',
+        FRONTEND_URL: 'https://todaysdentalinsights.com',
+      },
+    });
+    applyTags(deadlineReminderFn, { Function: 'deadline-reminder' });
+
+    // Grant permissions: Read/Write favors table (scan + update reminder flags)
+    this.favorsTable.grantReadWriteData(deadlineReminderFn);
+
+    // Grant SES SendEmail permissions
+    deadlineReminderFn.addToRolePolicy(new iam.PolicyStatement({
+      actions: ['ses:SendEmail', 'ses:SendRawEmail'],
+      resources: ['*'],
+    }));
+
+    // Grant Cognito AdminGetUser permission for email lookups
+    deadlineReminderFn.addToRolePolicy(new iam.PolicyStatement({
+      actions: ['cognito-idp:AdminGetUser'],
+      resources: ['*'], // User Pool ARN is dynamic / externally managed
+    }));
+
+    // CloudWatch alarms for Deadline Reminder Lambda
+    createLambdaErrorAlarm(deadlineReminderFn, 'deadline-reminder');
+    createLambdaThrottleAlarm(deadlineReminderFn, 'deadline-reminder');
+    createLambdaDurationAlarm(deadlineReminderFn, 'deadline-reminder',
+      Math.floor(Duration.seconds(120).toMilliseconds() * 0.8));
+
+    // EventBridge cron rule: Runs every day at 1:00 PM UTC (8:00 AM EST / 9:00 AM EDT)
+    new events.Rule(this, 'DeadlineReminderSchedule', {
+      ruleName: `${this.stackName}-DeadlineReminderDaily`,
+      description: 'Triggers the Deadline Reminder Lambda daily at 8 AM EST to check for upcoming/overdue tasks',
+      schedule: events.Schedule.cron({ minute: '0', hour: '13', day: '*', month: '*' }),
+      targets: [new targets.LambdaFunction(deadlineReminderFn, {
+        retryAttempts: 2,
+      })],
+    });
 
     // ========================================
     // REST API GATEWAY
