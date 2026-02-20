@@ -2398,6 +2398,14 @@ async function fetchRequests(
             newToken = undefined; // Merging makes DDB pagination token complex/irrelevant
         }
 
+        // Filter out deleted conversations (matches REST API getConversations logic)
+        // - status === 'deleted': permanently deleted for everyone
+        // - deletedBy includes callerID: per-user soft delete
+        items = items.filter((item: any) =>
+            item.status !== 'deleted' &&
+            !(item.deletedBy && Array.isArray(item.deletedBy) && item.deletedBy.includes(callerID))
+        );
+
         // Send the results back to the client
         await sendToClient(apiGwManagement, connectionId, {
             type: 'favorRequestsList',
