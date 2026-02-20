@@ -172,7 +172,7 @@ type SystemModule = typeof SYSTEM_MODULES[number];
 const ddb = DynamoDBDocumentClient.from(new DynamoDBClient({ region: REGION }));
 
 // Types
-type TaskStatus = 'pending' | 'active' | 'in_progress' | 'completed' | 'rejected' | 'forwarded';
+type TaskStatus = 'pending' | 'active' | 'in_progress' | 'completed' | 'rejected' | 'forwarded' | 'deleted';
 type TaskPriority = 'Low' | 'Medium' | 'High' | 'Urgent';
 
 interface ForwardRecord {

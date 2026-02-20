@@ -9,6 +9,7 @@ import {
 import { S3Client, PutObjectCommand } from '@aws-sdk/client-s3';
 import { PollyClient, SynthesizeSpeechCommand, Engine, OutputFormat, VoiceId } from '@aws-sdk/client-polly';
 import { Readable } from 'stream';
+import { parsePhoneNumberFromString } from 'libphonenumber-js';
 import { enrichCallContext } from './utils/agent-selection';
 import { generateUniqueCallPosition } from '../shared/utils/unique-id';
 import { startMediaPipeline, stopMediaPipeline, isRealTimeTranscriptionEnabled } from './utils/media-pipeline-manager';
@@ -16,6 +17,7 @@ import {
     isPushNotificationsEnabled,
     sendIncomingCallToAgents,
     sendMissedCallNotification,
+    sendCallCancelledToAgents,
     sendCallEndedToAgent,
     sendCallAnsweredToAgent,
     type IncomingCallNotification,
@@ -895,6 +897,51 @@ function isValidE164(phoneNumber: string): boolean {
 }
 
 /**
+ * Normalize clinic-config `clinicPhone` (often non-E.164 like "336-802-1894")
+ * into an E.164 phone number for PSTN dialing.
+ *
+ * We default to US numbering when no country code is present.
+ */
+function normalizeClinicPhoneToE164(value: unknown, defaultCountry: 'US' = 'US'): string | null {
+    if (typeof value !== 'string') return null;
+    const trimmed = value.trim();
+    if (!trimmed) return null;
+
+    // Already E.164
+    if (trimmed.startsWith('+')) {
+        return isValidE164(trimmed) ? trimmed : null;
+    }
+
+    // Best-effort parse using libphonenumber-js
+    try {
+        const parsed = parsePhoneNumberFromString(trimmed, defaultCountry);
+        if (parsed && parsed.isValid()) {
+            const e164 = parsed.number; // E.164 (e.g., +13368021894)
+            return isValidE164(e164) ? e164 : null;
+        }
+    } catch (err) {
+        // Fall through to digit-only heuristic below
+    }
+
+    // Fallback: digits-only heuristic for US NANP
+    const digits = trimmed.replace(/\D/g, '');
+    if (digits.length === 10) {
+        const e164 = `+1${digits}`;
+        return isValidE164(e164) ? e164 : null;
+    }
+    if (digits.length === 11 && digits.startsWith('1')) {
+        const e164 = `+${digits}`;
+        return isValidE164(e164) ? e164 : null;
+    }
+
+    console.warn('[normalizeClinicPhoneToE164] Unable to normalize clinicPhone to E.164', {
+        raw: trimmed,
+        digitsLength: digits.length,
+    });
+    return null;
+}
+
+/**
  * FIX #14: Improved PSTN leg detection
  * Priority: LEG-A tag > PSTN call leg type > undefined (no fallback to random participant)
  */
@@ -1254,21 +1301,60 @@ export const handler = async (event: any): Promise<any> => {
                     const ringAttemptTimestamp = new Date().toISOString();
                     let ringingStarted = false;
 
+                    // While agents are ringing, also ring the clinic's real phone (best-effort).
+                    // clinicPhone in config is often non-E.164; normalize before dialing.
+                    const clinicPhoneE164 = (() => {
+                        const rawClinicPhone = (clinic as any)?.clinicPhone;
+                        const normalized = normalizeClinicPhoneToE164(rawClinicPhone, 'US');
+                        if (!normalized) return null;
+                        if (normalized === toPhoneNumber) {
+                            // Avoid infinite loops by accidentally dialing our own inbound DID.
+                            console.warn('[NEW_INBOUND_CALL] clinicPhone matches inbound DID; skipping clinic ring to avoid loop', {
+                                callId,
+                                clinicId,
+                                toPhoneNumber,
+                                rawClinicPhone,
+                            });
+                            return null;
+                        }
+                        return normalized;
+                    })();
+
                     try {
+                        const assignments: string[] = [
+                            '#status = :ringing',
+                            'agentIds = :agentIds',
+                            'ringStartTimeIso = :ts',
+                            'ringStartTime = :now',
+                            'lastStateChange = :ts',
+                            'updatedAt = :ts',
+                        ];
+                        const exprValues: Record<string, any> = {
+                            ':ringing': 'ringing',
+                            ':queued': 'queued',
+                            ':agentIds': uniqueAgentIds,
+                            ':ts': ringAttemptTimestamp,
+                            ':now': Date.now(),
+                        };
+
+                        if (clinicPhoneE164) {
+                            assignments.push(
+                                'clinicPhoneE164 = :clinicPhoneE164',
+                                'clinicPhoneRingEnabled = :clinicPhoneRingEnabled',
+                                'clinicPhoneRingStartTimeIso = :ts',
+                            );
+                            exprValues[':clinicPhoneE164'] = clinicPhoneE164;
+                            exprValues[':clinicPhoneRingEnabled'] = true;
+                        }
+
                         await ddb.send(new UpdateCommand({
                             TableName: CALL_QUEUE_TABLE_NAME,
                             Key: { clinicId, queuePosition: queueEntry.queuePosition },
                             UpdateExpression:
-                                'SET #status = :ringing, agentIds = :agentIds, ringStartTimeIso = :ts, ringStartTime = :now, lastStateChange = :ts, updatedAt = :ts',
+                                `SET ${assignments.join(', ')}`,
                             ConditionExpression: '#status = :queued',
                             ExpressionAttributeNames: { '#status': 'status' },
-                            ExpressionAttributeValues: {
-                                ':ringing': 'ringing',
-                                ':queued': 'queued',
-                                ':agentIds': uniqueAgentIds,
-                                ':ts': ringAttemptTimestamp,
-                                ':now': Date.now(),
-                            },
+                            ExpressionAttributeValues: exprValues,
                         }));
                         ringingStarted = true;
                     } catch (err: any) {
@@ -1303,7 +1389,7 @@ export const handler = async (event: any): Promise<any> => {
                     // Start call recording if enabled
                     const enableRecording = process.env.ENABLE_CALL_RECORDING === 'true';
                     const recordingsBucket = process.env.RECORDINGS_BUCKET;
-                    const actions = [];
+                    const actions: any[] = [];
 
                     if (enableRecording && recordingsBucket && pstnLegCallId) {
                         console.log(`[NEW_INBOUND_CALL] Starting recording for call ${callId}`);
@@ -1325,6 +1411,25 @@ export const handler = async (event: any): Promise<any> => {
                         } catch (recordErr) {
                             console.error('[NEW_INBOUND_CALL] Error updating recording metadata:', recordErr);
                         }
+                    }
+
+                    // If clinicPhone is configured, ring it in parallel with agent offers.
+                    // - If the clinic answers, the CallAndBridge succeeds and we cancel agent ringing.
+                    // - If the clinic does not answer, ACTION_FAILED will fall back to hold music.
+                    if (clinicPhoneE164 && ringingStarted) {
+                        actions.push(
+                            buildSpeakAction('Please hold while we connect you to the clinic.'),
+                            buildCallAndBridgeAction(
+                                toPhoneNumber,
+                                clinicPhoneE164,
+                                {
+                                    'X-Clinic-Id': clinicId,
+                                    'X-Forward-Reason': 'clinic-ring',
+                                    'X-Original-Caller': fromPhoneNumber,
+                                },
+                            ),
+                        );
+                        return buildActions(actions);
                     }
 
                     actions.push(
@@ -1365,21 +1470,57 @@ export const handler = async (event: any): Promise<any> => {
                             // Ring overflow agents (same pattern as primary agents)
                             try {
                                 const ringTs = new Date().toISOString();
+                                const clinicPhoneE164 = (() => {
+                                    const rawClinicPhone = (clinic as any)?.clinicPhone;
+                                    const normalized = normalizeClinicPhoneToE164(rawClinicPhone, 'US');
+                                    if (!normalized) return null;
+                                    if (normalized === toPhoneNumber) {
+                                        console.warn('[NEW_INBOUND_CALL/Overflow] clinicPhone matches inbound DID; skipping clinic ring to avoid loop', {
+                                            callId,
+                                            clinicId,
+                                            toPhoneNumber,
+                                            rawClinicPhone,
+                                        });
+                                        return null;
+                                    }
+                                    return normalized;
+                                })();
+
+                                const assignments: string[] = [
+                                    '#status = :ringing',
+                                    'agentIds = :agentIds',
+                                    'ringStartTimeIso = :ts',
+                                    'ringStartTime = :now',
+                                    'lastStateChange = :ts',
+                                    'updatedAt = :ts',
+                                    'overflowRouted = :true',
+                                ];
+                                const exprValues: Record<string, any> = {
+                                    ':ringing': 'ringing',
+                                    ':queued': 'queued',
+                                    ':agentIds': overflowAgentIds,
+                                    ':ts': ringTs,
+                                    ':now': Date.now(),
+                                    ':true': true,
+                                };
+
+                                if (clinicPhoneE164) {
+                                    assignments.push(
+                                        'clinicPhoneE164 = :clinicPhoneE164',
+                                        'clinicPhoneRingEnabled = :clinicPhoneRingEnabled',
+                                        'clinicPhoneRingStartTimeIso = :ts',
+                                    );
+                                    exprValues[':clinicPhoneE164'] = clinicPhoneE164;
+                                    exprValues[':clinicPhoneRingEnabled'] = true;
+                                }
+
                                 await ddb.send(new UpdateCommand({
                                     TableName: CALL_QUEUE_TABLE_NAME,
                                     Key: { clinicId, queuePosition: queueEntry.queuePosition },
-                                    UpdateExpression:
-                                        'SET #status = :ringing, agentIds = :agentIds, ringStartTimeIso = :ts, ringStartTime = :now, lastStateChange = :ts, updatedAt = :ts, overflowRouted = :true',
+                                    UpdateExpression: `SET ${assignments.join(', ')}`,
                                     ConditionExpression: '#status = :queued',
                                     ExpressionAttributeNames: { '#status': 'status' },
-                                    ExpressionAttributeValues: {
-                                        ':ringing': 'ringing',
-                                        ':queued': 'queued',
-                                        ':agentIds': overflowAgentIds,
-                                        ':ts': ringTs,
-                                        ':now': Date.now(),
-                                        ':true': true,
-                                    },
+                                    ExpressionAttributeValues: exprValues,
                                 }));
 
                                 if (isPushNotificationsEnabled()) {
@@ -1390,6 +1531,21 @@ export const handler = async (event: any): Promise<any> => {
                                         callerPhoneNumber: fromPhoneNumber,
                                         timestamp: ringTs,
                                     }).catch(pushErr => console.warn('[NEW_INBOUND_CALL] Overflow push failed (non-fatal):', pushErr));
+                                }
+
+                                if (clinicPhoneE164) {
+                                    return buildActions([
+                                        buildSpeakAction('Please hold while we connect you to the clinic.'),
+                                        buildCallAndBridgeAction(
+                                            toPhoneNumber,
+                                            clinicPhoneE164,
+                                            {
+                                                'X-Clinic-Id': clinicId,
+                                                'X-Forward-Reason': 'clinic-ring',
+                                                'X-Original-Caller': fromPhoneNumber,
+                                            },
+                                        ),
+                                    ]);
                                 }
 
                                 return buildActions([
@@ -1745,6 +1901,55 @@ export const handler = async (event: any): Promise<any> => {
                 const callRecord = callRecords[0];
                 const { meetingInfo, assignedAgentId, status } = callRecord;
 
+                // ========== INBOUND: CLINIC PHONE ANSWERED (CallAndBridge clinic-ring) ==========
+                // Some CallAndBridge success paths surface as CALL_ANSWERED. If we were ringing the
+                // clinic phone while offering to agents, treat this as "clinic answered" and cancel agent ringing.
+                if (status === 'ringing' && (callRecord as any)?.clinicPhoneRingEnabled === true) {
+                    const clinicId = String((callRecord as any).clinicId || '').trim();
+                    const queuePosition = Number((callRecord as any).queuePosition);
+                    const agentIds: string[] = Array.isArray((callRecord as any).agentIds)
+                        ? ((callRecord as any).agentIds as any[]).filter((v) => typeof v === 'string' && v.length > 0)
+                        : [];
+
+                    if (clinicId && Number.isFinite(queuePosition)) {
+                        const nowIso = new Date().toISOString();
+                        try {
+                            await ddb.send(new UpdateCommand({
+                                TableName: CALL_QUEUE_TABLE_NAME,
+                                Key: { clinicId, queuePosition },
+                                UpdateExpression:
+                                    'SET #status = :connected, connectedAt = :ts, acceptedAt = :ts, answeredBy = :answeredBy, updatedAt = :ts REMOVE agentIds',
+                                ConditionExpression: '#status = :ringing',
+                                ExpressionAttributeNames: { '#status': 'status' },
+                                ExpressionAttributeValues: {
+                                    ':connected': 'connected',
+                                    ':ringing': 'ringing',
+                                    ':ts': nowIso,
+                                    ':answeredBy': 'clinic_phone',
+                                },
+                            }));
+
+                            if (isPushNotificationsEnabled() && agentIds.length > 0) {
+                                await sendCallCancelledToAgents(agentIds, 'clinic', {
+                                    callId,
+                                    clinicId,
+                                    clinicName: String((callRecord as any).clinicName || clinicId),
+                                    callerPhoneNumber: String((callRecord as any).phoneNumber || ''),
+                                    timestamp: nowIso,
+                                }).catch((pushErr) => {
+                                    console.warn('[CALL_ANSWERED/clinic-ring] Failed to send call_cancelled push (non-fatal):', pushErr);
+                                });
+                            }
+                        } catch (err: any) {
+                            if (err?.name !== 'ConditionalCheckFailedException') {
+                                console.warn('[CALL_ANSWERED/clinic-ring] Failed to mark call connected (non-fatal):', err);
+                            }
+                        }
+                    }
+
+                    return buildActions([]);
+                }
+
                 // Check if this is an outbound call connecting
                 if (status === 'dialing' && meetingInfo?.MeetingId && assignedAgentId) {
                     const meetingId = meetingInfo.MeetingId;
@@ -2078,8 +2283,31 @@ export const handler = async (event: any): Promise<any> => {
                         return buildActions([buildHangupAction('Unable to connect your call. Please try again.')]);
                     }
 
+                    // If we were simultaneously ringing the clinic phone (CallAndBridge → LEG-B),
+                    // cancel that outbound leg now so only the agent joins the caller.
+                    const participants = Array.isArray(event?.CallDetails?.Participants)
+                        ? event.CallDetails.Participants
+                        : [];
+                    const outboundLegCallIds = participants
+                        .filter((p: any) =>
+                            typeof p?.CallId === 'string' &&
+                            p.CallId !== pstnLegCallId &&
+                            (p.ParticipantTag === 'LEG-B' || p.Direction === 'Outbound')
+                        )
+                        .map((p: any) => p.CallId as string);
+                    const uniqueOutboundLegCallIds: string[] = Array.from(new Set<string>(outboundLegCallIds));
+
+                    const cancelOutboundLegActions: any[] = uniqueOutboundLegCallIds.map((id: string) => ({
+                        Type: 'Hangup',
+                        Parameters: {
+                            CallId: id,
+                            SipResponseCode: '0',
+                        },
+                    }));
+
                     // Bridge the waiting customer (PSTN) into the agent's meeting
                     return buildActions([
+                        ...cancelOutboundLegActions,
                         buildSpeakAction('An agent will assist you now.'),
                         buildJoinChimeMeetingAction(
                             pstnLegCallId,
@@ -2730,6 +2958,94 @@ export const handler = async (event: any): Promise<any> => {
             case 'ACTION_SUCCESSFUL': {
                 const receivedDigits = event?.ActionData?.ReceivedDigits;
                 const actionType = event?.ActionData?.Type;
+                const actionParams = event?.ActionData?.Parameters || {};
+
+                // If clinicPhone CallAndBridge succeeds, the clinic answered and the call is bridged.
+                // Stop ringing agents by marking the call connected and sending call_cancelled pushes.
+                if (eventType === 'ACTION_SUCCESSFUL' && actionType === 'CallAndBridge') {
+                    const sipHeaders = actionParams?.SipHeaders || {};
+                    const forwardReason = sipHeaders['X-Forward-Reason'];
+
+                    // Prefer SipHeaders marker; fall back to call-record marker if headers are missing.
+                    if (forwardReason === 'clinic-ring' || !forwardReason) {
+                        try {
+                            const { Items: callRecords } = await ddb.send(new QueryCommand({
+                                TableName: CALL_QUEUE_TABLE_NAME,
+                                IndexName: 'callId-index',
+                                KeyConditionExpression: 'callId = :id',
+                                ExpressionAttributeValues: { ':id': callId },
+                                Limit: 1,
+                            }));
+
+                            if (!callRecords || callRecords.length === 0) {
+                                console.warn('[ACTION_SUCCESSFUL/clinic-ring] No call record found; nothing to update', { callId });
+                                return buildActions([]);
+                            }
+
+                            const callRecord: any = callRecords[0];
+                            const clinicRingEnabled = callRecord.clinicPhoneRingEnabled === true;
+                            if (forwardReason !== 'clinic-ring' && !clinicRingEnabled) {
+                                // Not our clinic ring flow; ignore.
+                                return buildActions([]);
+                            }
+                            const clinicId = String(callRecord.clinicId || '').trim();
+                            const queuePosition = Number(callRecord.queuePosition);
+                            const status = String(callRecord.status || '');
+                            const agentIds: string[] = Array.isArray(callRecord.agentIds)
+                                ? callRecord.agentIds.filter((v: any): v is string => typeof v === 'string' && v.length > 0)
+                                : [];
+
+                            // Only transition ringing -> connected here (first answer wins).
+                            if (clinicId && Number.isFinite(queuePosition) && status === 'ringing') {
+                                const nowIso = new Date().toISOString();
+                                try {
+                                    await ddb.send(new UpdateCommand({
+                                        TableName: CALL_QUEUE_TABLE_NAME,
+                                        Key: { clinicId, queuePosition },
+                                        UpdateExpression:
+                                            'SET #status = :connected, connectedAt = :ts, acceptedAt = :ts, answeredBy = :answeredBy, updatedAt = :ts REMOVE agentIds',
+                                        ConditionExpression: '#status = :ringing',
+                                        ExpressionAttributeNames: { '#status': 'status' },
+                                        ExpressionAttributeValues: {
+                                            ':connected': 'connected',
+                                            ':ringing': 'ringing',
+                                            ':ts': nowIso,
+                                            ':answeredBy': 'clinic_phone',
+                                        },
+                                    }));
+
+                                    // Push: cancel ringing UI on all agents (best-effort)
+                                    if (isPushNotificationsEnabled() && agentIds.length > 0) {
+                                        await sendCallCancelledToAgents(agentIds, 'clinic', {
+                                            callId,
+                                            clinicId,
+                                            clinicName: String(callRecord.clinicName || clinicId),
+                                            callerPhoneNumber: String(callRecord.phoneNumber || ''),
+                                            timestamp: nowIso,
+                                        }).catch((pushErr) => {
+                                            console.warn('[ACTION_SUCCESSFUL/clinic-ring] Failed to send call_cancelled push (non-fatal):', pushErr);
+                                        });
+                                    }
+                                } catch (updateErr: any) {
+                                    if (updateErr?.name === 'ConditionalCheckFailedException') {
+                                        // Another party (agent) already claimed/connected the call.
+                                        console.log('[ACTION_SUCCESSFUL/clinic-ring] Call no longer ringing; skipping agent cancel', {
+                                            callId,
+                                            clinicId,
+                                            status,
+                                        });
+                                    } else {
+                                        console.warn('[ACTION_SUCCESSFUL/clinic-ring] Failed to update call record (non-fatal):', updateErr);
+                                    }
+                                }
+                            }
+                        } catch (err) {
+                            console.warn('[ACTION_SUCCESSFUL/clinic-ring] Error handling clinic-ring success (non-fatal):', err);
+                        }
+
+                        return buildActions([]);
+                    }
+                }
 
                 if ((actionType === 'PlayAudioAndGetDigits' || actionType === 'SpeakAndGetDigits') && receivedDigits) {
                     console.log(`[DIGITS_RECEIVED] Customer entered digits: ${receivedDigits} for call ${callId}`, { actionType });
@@ -3010,6 +3326,52 @@ export const handler = async (event: any): Promise<any> => {
                             ),
                             { Type: 'Hangup', Parameters: { SipResponseCode: '0' } }
                         ]);
+                    }
+
+                    // If this was a best-effort clinic ring attempt, fall back to hold music (do NOT end the call).
+                    if (forwardReason === 'clinic-ring') {
+                        console.log('[ACTION_FAILED] Clinic ring attempt failed; falling back to agent hold', {
+                            callId,
+                            clinicId: clinicIdFromHeader,
+                            originalCaller,
+                            errorType,
+                            errorMessage,
+                        });
+
+                        return buildActions([
+                            buildSpeakAction('Please hold while we connect you with an available agent.'),
+                            buildPauseAction(500),
+                            buildPlayAudioAction('hold-music.wav', 999),
+                        ]);
+                    }
+
+                    // Defensive fallback: if SipHeaders are missing but the call record indicates we were
+                    // ringing the clinic phone during an inbound offer, do NOT hang up the caller.
+                    if (!forwardReason) {
+                        try {
+                            const { Items: callRecords } = await ddb.send(new QueryCommand({
+                                TableName: CALL_QUEUE_TABLE_NAME,
+                                IndexName: 'callId-index',
+                                KeyConditionExpression: 'callId = :id',
+                                ExpressionAttributeValues: { ':id': callId },
+                                Limit: 1,
+                            }));
+
+                            const callRecord: any = callRecords?.[0];
+                            if (callRecord && String(callRecord.status || '') === 'ringing' && callRecord.clinicPhoneRingEnabled === true) {
+                                console.log('[ACTION_FAILED] Missing forwardReason but call indicates clinic ring; falling back to agent hold', {
+                                    callId,
+                                    clinicId: callRecord.clinicId,
+                                });
+                                return buildActions([
+                                    buildSpeakAction('Please hold while we connect you with an available agent.'),
+                                    buildPauseAction(500),
+                                    buildPlayAudioAction('hold-music.wav', 999),
+                                ]);
+                            }
+                        } catch (lookupErr) {
+                            console.warn('[ACTION_FAILED] Failed to lookup call record for CallAndBridge failure (non-fatal):', lookupErr);
+                        }
                     }
 
                     // For non-after-hours CallAndBridge failures, inform caller
