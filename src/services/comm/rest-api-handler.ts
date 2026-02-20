@@ -220,6 +220,15 @@ interface FavorRequest {
     lastMessage?: string;
     lastMessageAt?: string;
     lastMessageSenderID?: string;
+
+    // Per-user deletion: list of userIDs who have deleted this conversation from their view
+    deletedBy?: string[];
+
+    // Task badge: true when this conversation was created via task assignment
+    isTask?: boolean;
+
+    // Forwarded badge: true when the task has been forwarded
+    isForwarded?: boolean;
 }
 
 interface Team {
@@ -613,6 +622,10 @@ async function searchConversations(userID: string, params: any, logCtx?: LogCont
     conversations = Array.from(byId.values());
     log.flowCount('searchConversations', 'afterDedupe', conversations.length, fnCtx);
 
+    // Filter out conversations deleted by this user (per-user) or permanently deleted (forEveryone)
+    conversations = conversations.filter(c => c.status !== 'deleted' && !(c.deletedBy && c.deletedBy.includes(userID)));
+    log.flowCount('searchConversations', 'afterDeleteFilter', conversations.length, fnCtx);
+
     // Filter
     if (query) {
         const q = query.toLowerCase();
@@ -694,6 +707,10 @@ async function getConversationProfiles(userID: string, params: any, logCtx?: Log
     }
     items = Array.from(byId.values());
     log.flowCount('getConversationProfiles', 'afterTabFilter', items.length, fnCtx);
+
+    // Filter out conversations deleted by this user (per-user) or permanently deleted (forEveryone)
+    items = items.filter(i => i.status !== 'deleted' && !(i.deletedBy && i.deletedBy.includes(userID)));
+    log.flowCount('getConversationProfiles', 'afterDeleteFilter', items.length, fnCtx);
 
     // Filter by status
     if (status) {
@@ -876,6 +893,7 @@ async function updateConversationDeadline(userID: string, favorRequestID: string
 async function deleteConversation(userID: string, favorRequestID: string, params: any, logCtx?: LogContext): Promise<APIGatewayProxyResult> {
     const fnStart = Date.now();
     const fnCtx = { ...logCtx, function: 'deleteConversation', favorRequestID };
+    const deleteType = params?.deleteType || 'forMe'; // 'forMe' or 'forEveryone'
 
     const dbStart = Date.now();
     log.dbOperation('GetItem', FAVORS_TABLE, { favorRequestID }, fnCtx);
@@ -886,31 +904,70 @@ async function deleteConversation(userID: string, favorRequestID: string, params
     log.dbResult('GetItem', FAVORS_TABLE, favorResult.Item ? 1 : 0, Date.now() - dbStart, fnCtx);
     const favor = favorResult.Item as FavorRequest;
 
-    if (!favor || favor.senderID !== userID) {
-        log.warn('Unauthorized delete attempt', { ...fnCtx, favorExists: !!favor, isCreator: favor?.senderID === userID });
-        return response(403, { success: false, message: 'Unauthorized: Only the creator can delete' });
+    if (!favor) {
+        log.warn('Conversation not found for delete', fnCtx);
+        return response(404, { success: false, message: 'Conversation not found' });
     }
 
-    // Soft delete
+    // Allow any participant (sender, receiver, or current assignee) to delete
+    const isParticipant = favor.senderID === userID || favor.receiverID === userID || favor.currentAssigneeID === userID;
+    if (!isParticipant) {
+        log.warn('Unauthorized delete attempt', { ...fnCtx, isParticipant: false });
+        return response(403, { success: false, message: 'Unauthorized: You are not a participant of this conversation' });
+    }
+
     const nowIso = new Date().toISOString();
-    const updateStart = Date.now();
-    log.dbOperation('UpdateItem', FAVORS_TABLE, { favorRequestID, action: 'soft-delete' }, fnCtx);
-    await ddb.send(new UpdateCommand({
-        TableName: FAVORS_TABLE,
-        Key: { favorRequestID },
-        UpdateExpression: 'SET #s = :status, updatedAt = :ua',
-        ExpressionAttributeNames: { '#s': 'status' },
-        ExpressionAttributeValues: { ':status': 'deleted', ':ua': nowIso },
-    }));
-    log.dbResult('UpdateItem', FAVORS_TABLE, 1, Date.now() - updateStart, fnCtx);
 
-    log.info('deleteConversation completed', { ...fnCtx, durationMs: Date.now() - fnStart });
+    if (deleteType === 'forEveryone') {
+        // === PERMANENT DELETE: Set status to 'deleted' — hides for ALL participants ===
+        const updateStart = Date.now();
+        log.dbOperation('UpdateItem', FAVORS_TABLE, { favorRequestID, action: 'permanent-delete' }, fnCtx);
+        await ddb.send(new UpdateCommand({
+            TableName: FAVORS_TABLE,
+            Key: { favorRequestID },
+            UpdateExpression: 'SET #s = :status, updatedAt = :ua',
+            ExpressionAttributeNames: { '#s': 'status' },
+            ExpressionAttributeValues: { ':status': 'deleted', ':ua': nowIso },
+        }));
+        log.dbResult('UpdateItem', FAVORS_TABLE, 1, Date.now() - updateStart, fnCtx);
 
-    return response(200, {
-        success: true,
-        message: 'Conversation deleted successfully',
-        deleted: { conversationID: favorRequestID },
-    });
+        log.info('deleteConversation completed (forEveryone)', { ...fnCtx, deletedByUser: userID, durationMs: Date.now() - fnStart });
+
+        return response(200, {
+            success: true,
+            message: 'Conversation permanently deleted for everyone',
+            deleted: { conversationID: favorRequestID, deleteType: 'forEveryone' },
+        });
+    } else {
+        // === PER-USER DELETE: Add userID to deletedBy list — hides only for this user ===
+        const currentDeletedBy = favor.deletedBy || [];
+        if (currentDeletedBy.includes(userID)) {
+            return response(200, {
+                success: true,
+                message: 'Conversation already deleted from your view',
+                deleted: { conversationID: favorRequestID, deleteType: 'forMe' },
+            });
+        }
+        const updatedDeletedBy = [...currentDeletedBy, userID];
+
+        const updateStart = Date.now();
+        log.dbOperation('UpdateItem', FAVORS_TABLE, { favorRequestID, action: 'per-user-delete', deletedByUser: userID }, fnCtx);
+        await ddb.send(new UpdateCommand({
+            TableName: FAVORS_TABLE,
+            Key: { favorRequestID },
+            UpdateExpression: 'SET deletedBy = :db, updatedAt = :ua',
+            ExpressionAttributeValues: { ':db': updatedDeletedBy, ':ua': nowIso },
+        }));
+        log.dbResult('UpdateItem', FAVORS_TABLE, 1, Date.now() - updateStart, fnCtx);
+
+        log.info('deleteConversation completed (forMe)', { ...fnCtx, deletedByUser: userID, totalDeletedBy: updatedDeletedBy.length, durationMs: Date.now() - fnStart });
+
+        return response(200, {
+            success: true,
+            message: 'Conversation deleted from your view',
+            deleted: { conversationID: favorRequestID, deleteType: 'forMe' },
+        });
+    }
 }
 
 async function getConversations(userID: string, params: any, logCtx?: LogContext): Promise<APIGatewayProxyResult> {
@@ -950,6 +1007,10 @@ async function getConversations(userID: string, params: any, logCtx?: LogContext
     }
     conversations = Array.from(byId.values());
     log.flowCount('getConversations', 'afterDedupe', conversations.length, fnCtx);
+
+    // Filter out conversations deleted by this user (per-user) or permanently deleted (forEveryone)
+    conversations = conversations.filter(c => c.status !== 'deleted' && !(c.deletedBy && c.deletedBy.includes(userID)));
+    log.flowCount('getConversations', 'afterDeleteFilter', conversations.length, fnCtx);
 
     // Filter
     if (tab === 'single') { conversations = conversations.filter(c => !c.teamID); }
