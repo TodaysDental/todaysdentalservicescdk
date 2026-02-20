@@ -1,5 +1,4 @@
-import { DynamoDBClient } from '@aws-sdk/client-dynamodb';
-import { DynamoDBDocumentClient, QueryCommand, UpdateCommand, PutCommand, GetCommand, DeleteCommand, TransactWriteCommand } from '@aws-sdk/lib-dynamodb';
+import { QueryCommand, UpdateCommand, PutCommand, GetCommand, DeleteCommand, TransactWriteCommand } from '@aws-sdk/lib-dynamodb';
 import {
     ChimeSDKMeetingsClient,
     CreateMeetingCommand,
@@ -10,6 +9,7 @@ import { S3Client, PutObjectCommand } from '@aws-sdk/client-s3';
 import { PollyClient, SynthesizeSpeechCommand, Engine, OutputFormat, VoiceId } from '@aws-sdk/client-polly';
 import { Readable } from 'stream';
 import { parsePhoneNumberFromString } from 'libphonenumber-js';
+import { getDynamoDBClient } from '../shared/utils/dynamodb-manager';
 import { enrichCallContext } from './utils/agent-selection';
 import { generateUniqueCallPosition } from '../shared/utils/unique-id';
 import { startMediaPipeline, stopMediaPipeline, isRealTimeTranscriptionEnabled } from './utils/media-pipeline-manager';
@@ -61,7 +61,9 @@ import {
 // This Lambda is the "brain" for call routing.
 // It is NOT triggered by API Gateway. It is triggered by the Chime SDK SIP Media Application.
 
-const ddb = DynamoDBDocumentClient.from(new DynamoDBClient({}));
+// IMPORTANT: Use our shared DynamoDB client config so undefined values are removed during marshalling.
+// This prevents runtime errors when optional fields (e.g., quality metrics) contain `undefined`.
+const ddb = getDynamoDBClient();
 const ttsS3 = new S3Client({ region: process.env.AWS_REGION || 'us-east-1' });
 const polly = new PollyClient({ region: process.env.AWS_REGION || 'us-east-1' });
 
@@ -1319,6 +1321,8 @@ export const handler = async (event: any): Promise<any> => {
                         }
                         return normalized;
                     })();
+                    const shouldRingClinicPhone =
+                        CHIME_CONFIG.INBOUND.ENABLE_CLINIC_PHONE_RING === true && !!clinicPhoneE164;
 
                     try {
                         const assignments: string[] = [
@@ -1337,7 +1341,7 @@ export const handler = async (event: any): Promise<any> => {
                             ':now': Date.now(),
                         };
 
-                        if (clinicPhoneE164) {
+                        if (shouldRingClinicPhone) {
                             assignments.push(
                                 'clinicPhoneE164 = :clinicPhoneE164',
                                 'clinicPhoneRingEnabled = :clinicPhoneRingEnabled',
@@ -1416,7 +1420,7 @@ export const handler = async (event: any): Promise<any> => {
                     // If clinicPhone is configured, ring it in parallel with agent offers.
                     // - If the clinic answers, the CallAndBridge succeeds and we cancel agent ringing.
                     // - If the clinic does not answer, ACTION_FAILED will fall back to hold music.
-                    if (clinicPhoneE164 && ringingStarted) {
+                    if (shouldRingClinicPhone && ringingStarted) {
                         actions.push(
                             buildSpeakAction('Please hold while we connect you to the clinic.'),
                             buildCallAndBridgeAction(
@@ -1485,6 +1489,8 @@ export const handler = async (event: any): Promise<any> => {
                                     }
                                     return normalized;
                                 })();
+                                const shouldRingClinicPhone =
+                                    CHIME_CONFIG.INBOUND.ENABLE_CLINIC_PHONE_RING === true && !!clinicPhoneE164;
 
                                 const assignments: string[] = [
                                     '#status = :ringing',
@@ -1504,7 +1510,7 @@ export const handler = async (event: any): Promise<any> => {
                                     ':true': true,
                                 };
 
-                                if (clinicPhoneE164) {
+                                if (shouldRingClinicPhone) {
                                     assignments.push(
                                         'clinicPhoneE164 = :clinicPhoneE164',
                                         'clinicPhoneRingEnabled = :clinicPhoneRingEnabled',
@@ -1533,7 +1539,7 @@ export const handler = async (event: any): Promise<any> => {
                                     }).catch(pushErr => console.warn('[NEW_INBOUND_CALL] Overflow push failed (non-fatal):', pushErr));
                                 }
 
-                                if (clinicPhoneE164) {
+                                if (shouldRingClinicPhone) {
                                     return buildActions([
                                         buildSpeakAction('Please hold while we connect you to the clinic.'),
                                         buildCallAndBridgeAction(
@@ -2376,6 +2382,42 @@ export const handler = async (event: any): Promise<any> => {
             case 'CALL_ENDED': {
                 console.log(`[${eventType}] Call ${callId} ended. Cleaning up resources.`);
 
+                // IMPORTANT: In CallAndBridge flows, the remaining call leg does NOT automatically hang up.
+                // If one party hangs up and the other is left connected (often to voicemail), it can leak
+                // active calls and trigger ConcurrentCallLimitBreached.
+                const participants = Array.isArray(event?.CallDetails?.Participants)
+                    ? event.CallDetails.Participants
+                    : [];
+                const hangupEventCallLegId =
+                    typeof event?.ActionData?.Parameters?.CallId === 'string'
+                        ? String(event.ActionData.Parameters.CallId)
+                        : undefined;
+                const orphanLegHangupActions: any[] = [];
+
+                if (hangupEventCallLegId && participants.length > 1) {
+                    const participantCallIds = participants
+                        .map((p: any) => p?.CallId)
+                        .filter((id: any): id is string => typeof id === 'string' && id.length > 0);
+                    const uniqueCallIds = Array.from(new Set<string>(participantCallIds));
+                    const otherCallIds = uniqueCallIds.filter((id) => id !== hangupEventCallLegId);
+
+                    if (otherCallIds.length > 0) {
+                        console.warn(`[${eventType}] Hanging up remaining call legs to prevent leaks`, {
+                            callId,
+                            hangupEventCallLegId,
+                            otherCallIds,
+                            participantTags: participants.map((p: any) => p?.ParticipantTag).filter(Boolean),
+                        });
+
+                        orphanLegHangupActions.push(
+                            ...otherCallIds.map((id: string) => ({
+                                Type: 'Hangup',
+                                Parameters: { CallId: id, SipResponseCode: '0' },
+                            })),
+                        );
+                    }
+                }
+
                 // ========== MARKETING OUTBOUND CALL CLEANUP ==========
                 // MarketingOutbound calls do not create CallQueue table records.
                 // Cleanup the ephemeral meeting using the meetingId passed via ArgumentsMap.
@@ -2438,7 +2480,7 @@ export const handler = async (event: any): Promise<any> => {
                     } else {
                         console.warn(`[${eventType}/MarketingOutbound] No meetingId found in ArgumentsMap; nothing to cleanup`, { callId });
                     }
-                    return buildActions([]);
+                    return buildActions(orphanLegHangupActions);
                 }
 
                 // Extract SIP response code to determine why the call ended
@@ -2447,7 +2489,6 @@ export const handler = async (event: any): Promise<any> => {
                     event?.ActionData?.Parameters?.SipResponseCode ||
                     '0';
                 const hangupSource = event?.ActionData?.Parameters?.Source || 'unknown';
-                const participants = event?.CallDetails?.Participants || [];
                 const sipHeaders = event?.CallDetails?.SipHeaders || {};
 
                 // Check for voicemail indicators
@@ -2610,9 +2651,22 @@ export const handler = async (event: any): Promise<any> => {
 
                     // Determine final status based on call state and end reason
                     let finalStatus: string;
-                    if (status === 'connected' || status === 'on_hold') {
+                    const statusStr = String(status || '');
+                    const terminalStatuses = new Set<string>([
+                        'completed',
+                        'abandoned',
+                        'failed',
+                        'timeout',
+                        'no_agents_available',
+                    ]);
+
+                    // Idempotency: In multi-leg calls (CallAndBridge), we may receive multiple HANGUP events.
+                    // Never "downgrade" an already-terminal status during subsequent cleanup passes.
+                    if (terminalStatuses.has(statusStr)) {
+                        finalStatus = statusStr;
+                    } else if (statusStr === 'connected' || statusStr === 'on_hold') {
                         finalStatus = 'completed';
-                    } else if (status === 'dialing') {
+                    } else if (statusStr === 'dialing') {
                         // Outbound call that never connected
                         finalStatus = callEndReason === 'normal' ? 'completed' : 'failed';
                     } else {
@@ -2724,7 +2778,7 @@ export const handler = async (event: any): Promise<any> => {
                                     ddb,
                                     callId,
                                     clinicId,
-                                    Math.floor(Date.now() / 1000),
+                                    queuePosition,
                                     qualityMetrics,
                                     CALL_QUEUE_TABLE_NAME
                                 );
@@ -2949,7 +3003,7 @@ export const handler = async (event: any): Promise<any> => {
                 }
 
                 console.log(`[${eventType}] Call ${callId} cleanup completed.`);
-                return buildActions([]);
+                return buildActions(orphanLegHangupActions);
             }
 
             // Case 7b: Digits received from customer (DTMF input)

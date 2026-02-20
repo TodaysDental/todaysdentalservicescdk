@@ -81,8 +81,11 @@ export interface ClinicRoleAssignment {
   basePay?: number; // Annual base pay in dollars
   workLocation?: WorkLocation; // Remote/on-premise configuration
   hourlyPay?: number; // Hourly pay rate in dollars
+  perClaimFeeOpenDental?: number; // Fee per claim - OpenDental (Payment Posting role)
+  perClaimFeePortal?: number; // Fee per claim - Portal (Payment Posting role)
+  perPreAuthFee?: number; // Fee per pre-authorization (Payment Posting role)
   moduleAccess?: ModuleAccess[]; // Optional - granular module permissions per clinic
-  
+
   // Open Dental user fields
   UserNum?: number; // Open Dental user number (primary key in userod table)
   UserName?: string; // Open Dental username
@@ -95,7 +98,7 @@ export interface ClinicRoleAssignment {
   emailAddress?: string; // Open Dental email address
   IsHidden?: boolean; // Whether user is hidden/inactive in Open Dental
   UserNumCEMT?: number; // Central Enterprise Management Tool user number
-  
+
   // Legacy aliases (for backward compatibility)
   openDentalUserNum?: number; // Alias for UserNum
   openDentalUsername?: string; // Alias for UserName
