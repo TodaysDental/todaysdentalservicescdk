@@ -464,30 +464,102 @@ async function getAutofillPayload(
         }
     }
 
-    // Add fields from credentials
+    // ── Credential fields ──────────────────────────────────────────────────
+    //
+    // IMPORTANT: credentials are stored FLAT in DynamoDB.
+    // upsertProviderCredential spreads credentialData directly onto the record:
+    //   { providerId, credentialType, ...credentialData, updatedAt }
+    // So dateOfBirth, carrier, licenseNumber etc. sit directly on the cred object.
+    //
+    // Key normalizer maps wizard field names → canonical schema keys the
+    // content-script's FIELD_PATTERNS expects.
+
+    const FIELD_KEY_NORMALIZER: Record<string, string> = {
+        // Identity
+        dob:            'dateOfBirth',
+        birthDate:      'dateOfBirth',
+        // License
+        licenseNumber:  'stateLicenseNumber',
+        licenseState:   'stateLicenseState',
+        licenseType:    'stateLicenseType',
+        // Insurance / Malpractice
+        carrier:        'malpracticeInsurer',
+        policyNumber:   'malpracticePolicyNumber',
+        coverageAmount: 'malpracticeLimitPerClaim',
+        totalAggregate: 'malpracticeLimitAggregate',
+        // Education
+        institution:    'dentalSchoolName',
+        fieldOfStudy:   'primarySpecialty',
+        // Work history
+        employer:       'currentEmployer',
+        position:       'currentEmployerTitle',
+        // Clinic info
+        tinEin:         'taxId',
+        officePhone:    'practicePhone',
+        officeFax:      'practiceFax',
+        officeAddress:  'practiceAddress1',
+        officeCity:     'practiceCity',
+        officeState:    'practiceState',
+        officeZip:      'practiceZip',
+    };
+
+    // DynamoDB / structural keys that are never autofill data
+    const SKIP_KEYS = new Set([
+        'providerId', 'credentialType', 'updatedAt', 'createdAt',
+        'additionalLicenses', 'additionalHistory',
+        'oigCheck', 'npdbCheck', 'stateBoardCheck',
+        'hasExclusions', 'exclusionDetails',
+    ]);
+
     for (const cred of credentials || []) {
-        const credType = cred.credentialType;
+        const credType: string = cred.credentialType || '';
 
-        if (credType === 'identity' && cred.data) {
-            addCredentialFields(fields, cred.data, ['ssn', 'dateOfBirth', 'gender'], 'verified');
+        const confidence: ConfidenceLevel =
+            ['identity', 'license', 'insurance'].includes(credType) ? 'high' : 'medium';
+        const source: SourceType = 'verified';
+
+        // Some keys are ambiguous across credential types (e.g. 'expirationDate')
+        // — resolve them based on which credential type we're reading.
+        const typeNorm: Record<string, string> = {};
+        if (credType === 'insurance') {
+            typeNorm['expirationDate'] = 'malpracticeExpiry';
+            typeNorm['effectiveDate']  = 'malpracticeEffectiveDate';
+            typeNorm['issueDate']      = 'malpracticeEffectiveDate';
+        } else if (credType === 'license') {
+            typeNorm['expirationDate'] = 'stateLicenseExpiry';
+            typeNorm['issueDate']      = 'stateLicenseIssueDate';
+        } else if (credType === 'workHistory') {
+            typeNorm['endDate']   = 'currentEmployerEndDate';
+            typeNorm['startDate'] = 'currentEmployerStartDate';
         }
 
-        if (credType === 'license' && cred.data) {
-            addCredentialFields(fields, cred.data, [
-                'stateLicenseNumber', 'stateLicenseState', 'stateLicenseExpiry'
-            ], 'verified');
+        for (const [rawKey, val] of Object.entries(cred)) {
+            if (SKIP_KEYS.has(rawKey)) continue;
+            if (val === undefined || val === null || val === '') continue;
+            if (typeof val === 'object') continue; // skip nested/array values
+
+            // Resolve canonical key: type-specific → global normalizer → raw key
+            const canonicalKey = typeNorm[rawKey] ?? FIELD_KEY_NORMALIZER[rawKey] ?? rawKey;
+
+            // Don't overwrite a higher-confidence field already added
+            if (fields.some(f => f.schemaKey === canonicalKey)) continue;
+
+            fields.push({ schemaKey: canonicalKey, value: String(val), confidence, source });
         }
 
-        if (credType === 'education' && cred.data) {
-            addCredentialFields(fields, cred.data, [
-                'medicalSchool', 'graduationYear', 'residencyProgram', 'residencyYear'
-            ], 'verified');
-        }
-
-        if (credType === 'insurance' && cred.data) {
-            addCredentialFields(fields, cred.data, [
-                'malpracticeInsurer', 'malpracticePolicyNumber', 'malpracticeLimit', 'malpracticeExpiry'
-            ], 'verified');
+        // Identity credential: override the naive name-split firstName/lastName
+        // from provider.name with the more accurate explicitly-stored values.
+        if (credType === 'identity') {
+            if (cred.firstName) {
+                const f = fields.find(x => x.schemaKey === 'firstName');
+                if (f) f.value = String(cred.firstName);
+                else fields.push({ schemaKey: 'firstName', value: String(cred.firstName), confidence: 'high', source: 'verified' });
+            }
+            if (cred.lastName) {
+                const f = fields.find(x => x.schemaKey === 'lastName');
+                if (f) f.value = String(cred.lastName);
+                else fields.push({ schemaKey: 'lastName', value: String(cred.lastName), confidence: 'high', source: 'verified' });
+            }
         }
     }
 

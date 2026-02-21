@@ -307,12 +307,13 @@ export class AttendanceStack extends Stack {
             handler: 'handler',
             runtime: lambda.Runtime.NODEJS_20_X,
             memorySize: 256,
-            timeout: Duration.seconds(60),
+            timeout: Duration.seconds(120), // Increased from 60s to handle larger orgs with pagination
             bundling: { format: lambdaNode.OutputFormat.ESM, target: 'node20', minify: true },
             environment: {
                 ATTENDANCE_TABLE: this.attendanceTable.tableName,
                 SHIFTS_TABLE: props.shiftsTableName,
                 STAFF_CLINIC_INFO_TABLE: props.staffClinicInfoTableName,
+                GEOFENCE_CONFIG_PARAM: geofenceParam.parameterName, // For per-clinic timezone lookups
                 APP_NAME: 'TodaysDentalInsights',
                 FROM_EMAIL: 'no-reply@todaysdentalinsights.com',
                 SES_REGION: 'us-east-1',
@@ -322,6 +323,7 @@ export class AttendanceStack extends Stack {
 
         // Digest Lambda permissions
         this.attendanceTable.grantReadData(digestFn);
+        geofenceParam.grantRead(digestFn); // SSM read for timezone config
         readOnlyTables.forEach(({ name }) => {
             digestFn.addToRolePolicy(new iam.PolicyStatement({
                 actions: ['dynamodb:GetItem', 'dynamodb:Query', 'dynamodb:Scan'],

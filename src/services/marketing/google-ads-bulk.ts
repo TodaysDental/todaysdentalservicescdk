@@ -271,7 +271,7 @@ interface BulkPublishRequest {
   customerIds: string[];
   campaignTemplate: {
     name: string;
-    type: 'SEARCH' | 'DISPLAY' | 'VIDEO';
+    type: 'SEARCH' | 'DISPLAY' | 'VIDEO' | 'DEMAND_GEN';
     dailyBudget: number;
     status: 'ENABLED' | 'PAUSED';
     // Smart bidding options (parity with single-campaign endpoint)
@@ -281,16 +281,20 @@ interface BulkPublishRequest {
   };
   // Ad group template (required for functional campaigns)
   adGroupTemplate?: {
-    name: string; // Use {{clinicName}} placeholder
+    name: string; // Use {{clinic_name}} placeholder
     cpcBid: number; // REQUIRED: CPC bid in dollars (no default - must be explicit)
   };
-  // Ad template for responsive search ads
+  // Ad template for all campaign types
   adTemplate?: {
-    headlines: string[]; // Use {{clinicName}}, {{city}} placeholders
+    headlines: string[]; // Use {{clinic_name}}, {{clinic_city}} placeholders
     descriptions: string[];
-    finalUrlTemplate: string; // e.g., "https://{{domain}}/schedule"
+    finalUrlTemplate: string; // e.g., "https://{{website}}/schedule"
     path1?: string;
     path2?: string;
+    // Display/Demand Gen specific fields
+    businessName?: string; // Required for Display and Demand Gen
+    longHeadline?: string; // Required for Display (90 chars max)
+    imageUrl?: string; // Marketing image URL for Display/Demand Gen
   };
   // Default keywords to add
   defaultKeywords?: Array<{
@@ -668,15 +672,18 @@ async function bulkPublishCampaigns(
         const adGroupName = replacePlaceholders(adGroupTemplate.name || `${campaignName} - Ad Group`, clinic);
 
         // Get proper ad group type based on campaign type
-        const adGroupType = CAMPAIGN_TYPE_TO_AD_GROUP_TYPE[campaignTemplate.type || 'SEARCH'] || 'SEARCH_STANDARD';
+        // DEMAND_GEN ad groups must NOT have an explicit type — the API infers it from the campaign
+        const adGroupType = CAMPAIGN_TYPE_TO_AD_GROUP_TYPE[campaignTemplate.type || 'SEARCH'];
 
-        const adGroupResource = {
+        const adGroupResource: any = {
           name: adGroupName,
           campaign: campaignResourceName,
           status: 'ENABLED',
-          type: adGroupType,
           cpc_bid_micros: dollarsToMicros(adGroupTemplate.cpcBid),
         };
+        if (adGroupType) {
+          adGroupResource.type = adGroupType;
+        }
 
         const adGroupResponse = await (client as any).adGroups.create([adGroupResource]);
         adGroupResourceName = adGroupResponse.results[0].resource_name;

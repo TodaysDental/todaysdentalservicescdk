@@ -627,7 +627,8 @@ export async function handler(event: APIGatewayProxyEvent): Promise<APIGatewayPr
     }
 
     // Safety limit to avoid API Gateway timeouts
-    const MAX_CLINICS_PER_REQUEST = 10;
+    // NOTE: Keep this aligned with the typical clinic count in production.
+    const MAX_CLINICS_PER_REQUEST = 30;
     if (authorizedClinicIds.length > MAX_CLINICS_PER_REQUEST) {
       return httpErr(
         event,
@@ -684,26 +685,28 @@ export async function handler(event: APIGatewayProxyEvent): Promise<APIGatewayPr
     });
     const clinicNameMap = new Map(clinicConfigs.map((c) => [c.clinicId, c.practice]));
 
-    const settled = await Promise.allSettled(
-      authorizedClinicIds.map(async (clinicId) => {
-        const rows = await runOpenDentalSqlQuery(clinicId, sql, `${requestId}-${clinicId}`);
-        return { clinicId, rows };
-      })
-    );
-
     const errors: Array<{ clinicId: string; message: string }> = [];
     const reportRows: SalaryRow[] = [];
 
-    for (let i = 0; i < settled.length; i++) {
-      const clinicId = authorizedClinicIds[i];
-      const res = settled[i];
-      if (res.status === 'rejected') {
-        errors.push({ clinicId, message: String((res.reason as any)?.message || res.reason || 'Unknown error') });
+    const QUERY_CONCURRENCY = 10;
+    const queryResults = await mapWithConcurrency(authorizedClinicIds, QUERY_CONCURRENCY, async (clinicId) => {
+      try {
+        const rows = await runOpenDentalSqlQuery(clinicId, sql, `${requestId}-${clinicId}`);
+        return { clinicId, rows, error: null as string | null };
+      } catch (err: any) {
+        return { clinicId, rows: [] as any[], error: String(err?.message || err || 'Unknown error') };
+      }
+    });
+
+    for (const res of queryResults) {
+      const clinicId = res.clinicId;
+      if (res.error) {
+        errors.push({ clinicId, message: res.error });
         continue;
       }
 
       const practice = clinicNameMap.get(clinicId) || clinicId;
-      const rawRows = Array.isArray(res.value.rows) ? (res.value.rows as any[]) : [];
+      const rawRows = Array.isArray(res.rows) ? (res.rows as any[]) : [];
       for (const r of rawRows) {
         const submittedBy = String(r.SubmittedBy || r.submittedBy || '').trim();
         if (!submittedBy) continue;
