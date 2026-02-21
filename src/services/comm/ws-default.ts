@@ -1924,7 +1924,7 @@ async function sendMessage(
     payload: any,
     apiGwManagement: ApiGatewayManagementApiClient
 ): Promise<void> {
-    const { favorRequestID, content, fileKey, fileDetails } = payload;
+    const { favorRequestID, content, fileKey, fileDetails, parentMessageID } = payload;
     const senderConnectionId = (await getSenderInfoByUserID(senderID))?.connectionId;
 
     if (!favorRequestID || ((!content || content.trim() === '') && !fileKey)) {
@@ -2009,6 +2009,7 @@ async function sendMessage(
         type: cleanFileKey ? 'file' : 'text',
         fileKey: cleanFileKey,
         fileDetails: fileDetails,
+        ...(parentMessageID && { parentMessageID }),
     };
 
     // 4. Save message and broadcast (sends 'newMessage' payload)
@@ -2361,11 +2362,12 @@ async function fetchRequests(
             items = items.slice(0, queryLimit);
             newToken = undefined;
 
-        } else { // role = 'all' -> merge sent, received, and group requests
-            // Fetch 1-to-1 requests (sent and received)
-            const [sentResult, recvResult, teamIDs] = await Promise.all([
+        } else { // role = 'all' -> merge sent, received, group, AND forwarded (currentAssignee) requests
+            // Fetch 1-to-1 requests (sent, received, and forwarded-to-me)
+            const [sentResult, recvResult, assigneeResult, teamIDs] = await Promise.all([
                 queryByIndex('SenderIndex', 'senderID', callerID),
                 queryByIndex('ReceiverIndex', 'receiverID', callerID),
+                queryByIndex('CurrentAssigneeIndex', 'currentAssigneeID', callerID),
                 getUserTeamIDs(),
             ]);
 
@@ -2375,6 +2377,7 @@ async function fetchRequests(
             const allItems = [
                 ...(sentResult.Items || []),
                 ...(recvResult.Items || []),
+                ...(assigneeResult.Items || []),
                 ...groupItems
             ];
 
@@ -4027,14 +4030,16 @@ async function scheduleMeeting(
         Item: meeting,
     }));
 
-    // 3. Create a system message in the conversation
+    // 3. Create a system message in the conversation (type: 'meeting' for rich card rendering)
     const messageData: MessageData = {
+        messageID: `mtg-${Date.now()}-${uuidv4().substring(0, 8)}`,
         favorRequestID: conversationID,
         senderID,
-        content: `Meeting scheduled: ${description}`,
+        content: `📅 Meeting scheduled: ${meeting.title || description}`,
         timestamp: Date.now(),
-        type: 'text',
-    };
+        type: 'meeting' as any,
+        meetingData: meeting,
+    } as any;
 
     await _saveAndBroadcastMessage(messageData, apiGwManagement);
 

@@ -69,7 +69,9 @@ interface PinnedMessage {
     favorRequestID: string;
     pinnedBy: string;
     pinnedAt: string;
+    expiresAt?: string;
     messagePreview: string;
+    messageType?: 'text' | 'file' | 'voice' | 'gif' | 'sticker' | 'meeting';
     senderID: string;
 }
 
@@ -768,11 +770,11 @@ export async function handleGetPresence(
 
 export async function handlePinMessage(
     senderID: string,
-    payload: { messageID: string; favorRequestID: string; timestamp?: number },
+    payload: { messageID: string; favorRequestID: string; timestamp?: number; expiresAt?: string; messageType?: string },
     connectionId: string,
     apiGwManagement: ApiGatewayManagementApiClient
 ): Promise<void> {
-    const { messageID, favorRequestID, timestamp } = payload;
+    const { messageID, favorRequestID, timestamp, expiresAt, messageType } = payload;
     const nowIso = new Date().toISOString();
     const pinID = uuidv4();
 
@@ -803,16 +805,22 @@ export async function handlePinMessage(
             return;
         }
 
-        // Update message as pinned
+        // Update message as pinned (including expiry)
+        const updateExpr = expiresAt
+            ? 'SET isPinned = :isPinned, pinnedAt = :pinnedAt, pinnedBy = :pinnedBy, pinExpiresAt = :expiresAt'
+            : 'SET isPinned = :isPinned, pinnedAt = :pinnedAt, pinnedBy = :pinnedBy';
+        const exprValues: Record<string, any> = {
+            ':isPinned': true,
+            ':pinnedAt': Date.now(),
+            ':pinnedBy': senderID,
+        };
+        if (expiresAt) exprValues[':expiresAt'] = expiresAt;
+
         await ddb.send(new UpdateCommand({
             TableName: MESSAGES_TABLE,
             Key: { favorRequestID, timestamp: message.timestamp },
-            UpdateExpression: 'SET isPinned = :isPinned, pinnedAt = :pinnedAt, pinnedBy = :pinnedBy',
-            ExpressionAttributeValues: {
-                ':isPinned': true,
-                ':pinnedAt': Date.now(),
-                ':pinnedBy': senderID,
-            },
+            UpdateExpression: updateExpr,
+            ExpressionAttributeValues: exprValues,
         }));
 
         const pinnedMessage: PinnedMessage = {
@@ -821,7 +829,9 @@ export async function handlePinMessage(
             favorRequestID,
             pinnedBy: senderID,
             pinnedAt: nowIso,
+            expiresAt: expiresAt || undefined,
             messagePreview: message.content.slice(0, 100),
+            messageType: (messageType || message.type || 'text') as any,
             senderID: message.senderID,
         };
 
@@ -913,7 +923,9 @@ export async function handleGetPinnedMessages(
             messageID: m.messageID,
             pinnedBy: m.pinnedBy,
             pinnedAt: new Date(m.pinnedAt).toISOString(),
+            expiresAt: m.pinExpiresAt || undefined,
             messagePreview: m.content.slice(0, 100),
+            messageType: m.type || 'text',
             senderID: m.senderID,
         }));
 

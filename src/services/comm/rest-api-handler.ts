@@ -590,10 +590,10 @@ async function searchConversations(userID: string, params: any, logCtx?: LogCont
 
     log.debug('Search params', { ...fnCtx, query, status, type, sort, category, priority, limit, offset });
 
-    // Query by sender and receiver indexes, merge results
+    // Query by sender, receiver, AND currentAssignee indexes to catch forwarded tasks
     const dbStart = Date.now();
-    log.dbOperation('Query', FAVORS_TABLE, { indexes: ['SenderIndex', 'ReceiverIndex'], userID }, fnCtx);
-    const [sentResult, recvResult] = await Promise.all([
+    log.dbOperation('Query', FAVORS_TABLE, { indexes: ['SenderIndex', 'ReceiverIndex', 'CurrentAssigneeIndex'], userID }, fnCtx);
+    const [sentResult, recvResult, assigneeResult] = await Promise.all([
         ddb.send(new QueryCommand({
             TableName: FAVORS_TABLE,
             IndexName: 'SenderIndex',
@@ -608,10 +608,17 @@ async function searchConversations(userID: string, params: any, logCtx?: LogCont
             ExpressionAttributeValues: { ':uid': userID },
             ScanIndexForward: false,
         })),
+        ddb.send(new QueryCommand({
+            TableName: FAVORS_TABLE,
+            IndexName: 'CurrentAssigneeIndex',
+            KeyConditionExpression: 'currentAssigneeID = :uid',
+            ExpressionAttributeValues: { ':uid': userID },
+            ScanIndexForward: false,
+        })),
     ]);
-    log.dbResult('Query', FAVORS_TABLE, (sentResult.Items?.length || 0) + (recvResult.Items?.length || 0), Date.now() - dbStart, fnCtx);
+    log.dbResult('Query', FAVORS_TABLE, (sentResult.Items?.length || 0) + (recvResult.Items?.length || 0) + (assigneeResult.Items?.length || 0), Date.now() - dbStart, fnCtx);
 
-    let conversations = [...(sentResult.Items || []), ...(recvResult.Items || [])] as FavorRequest[];
+    let conversations = [...(sentResult.Items || []), ...(recvResult.Items || []), ...(assigneeResult.Items || [])] as FavorRequest[];
     log.flowCount('searchConversations', 'rawResults', conversations.length, fnCtx);
 
     // Deduplicate
@@ -672,10 +679,10 @@ async function getConversationProfiles(userID: string, params: any, logCtx?: Log
 
     log.debug('Profile params', { ...fnCtx, tab, status, limit, offset });
 
-    // For single conversations, query both sender and receiver
+    // For single conversations, query sender, receiver, AND currentAssignee (forwarded tasks)
     const dbStart = Date.now();
-    log.dbOperation('Query', FAVORS_TABLE, { indexes: ['SenderIndex', 'ReceiverIndex'], userID }, fnCtx);
-    const [sentResult, recvResult] = await Promise.all([
+    log.dbOperation('Query', FAVORS_TABLE, { indexes: ['SenderIndex', 'ReceiverIndex', 'CurrentAssigneeIndex'], userID }, fnCtx);
+    const [sentResult, recvResult, assigneeResult] = await Promise.all([
         ddb.send(new QueryCommand({
             TableName: FAVORS_TABLE,
             IndexName: 'SenderIndex',
@@ -690,10 +697,17 @@ async function getConversationProfiles(userID: string, params: any, logCtx?: Log
             ExpressionAttributeValues: { ':uid': userID },
             ScanIndexForward: false,
         })),
+        ddb.send(new QueryCommand({
+            TableName: FAVORS_TABLE,
+            IndexName: 'CurrentAssigneeIndex',
+            KeyConditionExpression: 'currentAssigneeID = :uid',
+            ExpressionAttributeValues: { ':uid': userID },
+            ScanIndexForward: false,
+        })),
     ]);
-    log.dbResult('Query', FAVORS_TABLE, (sentResult.Items?.length || 0) + (recvResult.Items?.length || 0), Date.now() - dbStart, fnCtx);
+    log.dbResult('Query', FAVORS_TABLE, (sentResult.Items?.length || 0) + (recvResult.Items?.length || 0) + (assigneeResult.Items?.length || 0), Date.now() - dbStart, fnCtx);
 
-    let items = [...(sentResult.Items || []), ...(recvResult.Items || [])] as FavorRequest[];
+    let items = [...(sentResult.Items || []), ...(recvResult.Items || []), ...(assigneeResult.Items || [])] as FavorRequest[];
     log.flowCount('getConversationProfiles', 'rawResults', items.length, fnCtx);
 
     // Deduplicate and filter by tab type
@@ -978,8 +992,8 @@ async function getConversations(userID: string, params: any, logCtx?: LogContext
     log.debug('Get conversations params', { ...fnCtx, tab, status, category, limit, offset });
 
     const dbStart = Date.now();
-    log.dbOperation('Query', FAVORS_TABLE, { indexes: ['SenderIndex', 'ReceiverIndex'], userID }, fnCtx);
-    const [sentResult, recvResult] = await Promise.all([
+    log.dbOperation('Query', FAVORS_TABLE, { indexes: ['SenderIndex', 'ReceiverIndex', 'CurrentAssigneeIndex'], userID }, fnCtx);
+    const [sentResult, recvResult, assigneeResult] = await Promise.all([
         ddb.send(new QueryCommand({
             TableName: FAVORS_TABLE,
             IndexName: 'SenderIndex',
@@ -994,10 +1008,17 @@ async function getConversations(userID: string, params: any, logCtx?: LogContext
             ExpressionAttributeValues: { ':uid': userID },
             ScanIndexForward: false,
         })),
+        ddb.send(new QueryCommand({
+            TableName: FAVORS_TABLE,
+            IndexName: 'CurrentAssigneeIndex',
+            KeyConditionExpression: 'currentAssigneeID = :uid',
+            ExpressionAttributeValues: { ':uid': userID },
+            ScanIndexForward: false,
+        })),
     ]);
-    log.dbResult('Query', FAVORS_TABLE, (sentResult.Items?.length || 0) + (recvResult.Items?.length || 0), Date.now() - dbStart, fnCtx);
+    log.dbResult('Query', FAVORS_TABLE, (sentResult.Items?.length || 0) + (recvResult.Items?.length || 0) + (assigneeResult.Items?.length || 0), Date.now() - dbStart, fnCtx);
 
-    let conversations = [...(sentResult.Items || []), ...(recvResult.Items || [])] as FavorRequest[];
+    let conversations = [...(sentResult.Items || []), ...(recvResult.Items || []), ...(assigneeResult.Items || [])] as FavorRequest[];
     log.flowCount('getConversations', 'rawResults', conversations.length, fnCtx);
 
     // Deduplicate
