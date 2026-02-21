@@ -491,7 +491,8 @@ export const CAMPAIGN_TYPE_TO_AD_GROUP_TYPE: Record<string, string> = {
   SEARCH: 'SEARCH_STANDARD',
   DISPLAY: 'DISPLAY_STANDARD',
   VIDEO: 'VIDEO_TRUE_VIEW_IN_STREAM', // Default VIDEO ad group type
-  DEMAND_GEN: 'DISPLAY_STANDARD', // Demand Gen uses display-style ad groups
+  // DEMAND_GEN: omitted — Demand Gen ad groups must NOT have an explicit type field;
+  // the API infers the type from the parent campaign's advertisingChannelType
 };
 
 // Valid campaign types
@@ -1110,6 +1111,7 @@ export async function createCampaignViaRest(
     4: 'SHOPPING',
     6: 'VIDEO',
     13: 'PERFORMANCE_MAX',
+    14: 'DEMAND_GEN',
   };
 
   // Build REST campaign object

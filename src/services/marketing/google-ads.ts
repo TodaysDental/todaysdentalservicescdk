@@ -597,15 +597,18 @@ async function createCampaign(
       }
 
       // Get proper ad group type based on campaign type
-      const adGroupType = CAMPAIGN_TYPE_TO_AD_GROUP_TYPE[type] || 'SEARCH_STANDARD';
+      // DEMAND_GEN ad groups must NOT have an explicit type — the API infers it from the campaign
+      const adGroupType = CAMPAIGN_TYPE_TO_AD_GROUP_TYPE[type]; // undefined for DEMAND_GEN
 
-      const adGroupResource = {
+      const adGroupResource: any = {
         name: adGroup.name || `${name} - Ad Group`,
         campaign: campaignResourceName!,
         status: 'ENABLED',
-        type: adGroupType,
         cpc_bid_micros: adGroup.cpcBidMicros,
       };
+      if (adGroupType) {
+        adGroupResource.type = adGroupType;
+      }
       const adGroupResponse = await (client as any).adGroups.create([adGroupResource]);
       adGroupResourceName = adGroupResponse.results[0].resource_name;
       console.log(`[GoogleAds] Created ad group: ${adGroupResourceName}`);
