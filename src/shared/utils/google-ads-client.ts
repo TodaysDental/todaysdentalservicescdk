@@ -491,10 +491,11 @@ export const CAMPAIGN_TYPE_TO_AD_GROUP_TYPE: Record<string, string> = {
   SEARCH: 'SEARCH_STANDARD',
   DISPLAY: 'DISPLAY_STANDARD',
   VIDEO: 'VIDEO_TRUE_VIEW_IN_STREAM', // Default VIDEO ad group type
+  DEMAND_GEN: 'DISPLAY_STANDARD', // Demand Gen uses display-style ad groups
 };
 
 // Valid campaign types
-export const VALID_CAMPAIGN_TYPES = ['SEARCH', 'DISPLAY', 'VIDEO'] as const;
+export const VALID_CAMPAIGN_TYPES = ['SEARCH', 'DISPLAY', 'VIDEO', 'DEMAND_GEN'] as const;
 export type CampaignType = typeof VALID_CAMPAIGN_TYPES[number];
 
 /**
@@ -1210,4 +1211,62 @@ export async function removeBudgetViaRest(
   } catch (error: any) {
     console.error(`[GoogleAdsClient] Failed to cleanup budget ${budgetResourceName}: ${error.message}`);
   }
+}
+
+/**
+ * Upload an image from a URL as a Google Ads image asset.
+ * Downloads the image, converts to base64, and creates the asset via the gRPC client.
+ * Returns the asset resource name.
+ */
+export async function uploadImageAssetViaUrl(
+  client: any,
+  imageUrl: string,
+  assetName: string
+): Promise<string> {
+  const https = require('https');
+  const http = require('http');
+
+  // Download image from URL
+  const imageBuffer = await new Promise<Buffer>((resolve, reject) => {
+    const protocol = imageUrl.startsWith('https') ? https : http;
+    protocol.get(imageUrl, (res: any) => {
+      // Handle redirects
+      if (res.statusCode >= 300 && res.statusCode < 400 && res.headers.location) {
+        const redirectProtocol = res.headers.location.startsWith('https') ? https : http;
+        redirectProtocol.get(res.headers.location, (redirectRes: any) => {
+          const chunks: Buffer[] = [];
+          redirectRes.on('data', (chunk: Buffer) => chunks.push(chunk));
+          redirectRes.on('end', () => resolve(Buffer.concat(chunks)));
+          redirectRes.on('error', reject);
+        }).on('error', reject);
+        return;
+      }
+      if (res.statusCode !== 200) {
+        reject(new Error(`Failed to download image from ${imageUrl}: HTTP ${res.statusCode}`));
+        return;
+      }
+      const chunks: Buffer[] = [];
+      res.on('data', (chunk: Buffer) => chunks.push(chunk));
+      res.on('end', () => resolve(Buffer.concat(chunks)));
+      res.on('error', reject);
+    }).on('error', reject);
+  });
+
+  // Convert to base64
+  const base64Data = imageBuffer.toString('base64');
+
+  console.log(`[GoogleAdsClient] Uploading image asset "${assetName}" (${imageBuffer.length} bytes)`);
+
+  // Create image asset via gRPC client
+  const assetResponse = await client.assets.create([{
+    name: assetName,
+    type: 'IMAGE',
+    image_asset: {
+      data: base64Data,
+    },
+  }]);
+
+  const assetResourceName = assetResponse.results[0].resource_name;
+  console.log(`[GoogleAdsClient] Image asset created: ${assetResourceName}`);
+  return assetResourceName;
 }
