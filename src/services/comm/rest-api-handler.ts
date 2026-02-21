@@ -991,6 +991,7 @@ async function getConversations(userID: string, params: any, logCtx?: LogContext
 
     log.debug('Get conversations params', { ...fnCtx, tab, status, category, limit, offset });
 
+    // Step 1: Query direct indexes (sender, receiver, currentAssignee)
     const dbStart = Date.now();
     log.dbOperation('Query', FAVORS_TABLE, { indexes: ['SenderIndex', 'ReceiverIndex', 'CurrentAssigneeIndex'], userID }, fnCtx);
     const [sentResult, recvResult, assigneeResult] = await Promise.all([
@@ -1020,6 +1021,45 @@ async function getConversations(userID: string, params: any, logCtx?: LogContext
 
     let conversations = [...(sentResult.Items || []), ...(recvResult.Items || []), ...(assigneeResult.Items || [])] as FavorRequest[];
     log.flowCount('getConversations', 'rawResults', conversations.length, fnCtx);
+
+    // Step 2: Fetch group conversations via TeamIndex (matches WS fetchRequests logic)
+    if (TEAMS_TABLE) {
+        try {
+            const teamScanStart = Date.now();
+            log.dbOperation('Scan', TEAMS_TABLE, { filter: 'contains(members, userID)' }, fnCtx);
+            const teamsResult = await ddb.send(new ScanCommand({
+                TableName: TEAMS_TABLE,
+                FilterExpression: 'contains(members, :uid)',
+                ExpressionAttributeValues: { ':uid': userID },
+                ProjectionExpression: 'teamID',
+            }));
+            const teamIDs = (teamsResult.Items || []).map((item: any) => item.teamID as string);
+            log.dbResult('Scan', TEAMS_TABLE, teamIDs.length, Date.now() - teamScanStart, fnCtx);
+
+            if (teamIDs.length > 0) {
+                const teamQueryStart = Date.now();
+                log.dbOperation('Query', FAVORS_TABLE, { index: 'TeamIndex', teamCount: teamIDs.length }, fnCtx);
+                const teamConvResults = await Promise.all(
+                    teamIDs.map(teamID =>
+                        ddb.send(new QueryCommand({
+                            TableName: FAVORS_TABLE,
+                            IndexName: 'TeamIndex',
+                            KeyConditionExpression: 'teamID = :tid',
+                            ExpressionAttributeValues: { ':tid': teamID },
+                            ScanIndexForward: false,
+                        }))
+                    )
+                );
+                const groupConversations = teamConvResults.flatMap(r => r.Items || []) as FavorRequest[];
+                log.dbResult('Query', FAVORS_TABLE, groupConversations.length, Date.now() - teamQueryStart, fnCtx);
+                log.flowCount('getConversations', 'groupConversations', groupConversations.length, fnCtx);
+                conversations = [...conversations, ...groupConversations];
+            }
+        } catch (teamErr) {
+            log.error('Failed to fetch group conversations via TeamIndex', fnCtx, teamErr as Error);
+            // Continue with non-group results rather than failing entirely
+        }
+    }
 
     // Deduplicate
     const byId = new Map<string, FavorRequest>();
