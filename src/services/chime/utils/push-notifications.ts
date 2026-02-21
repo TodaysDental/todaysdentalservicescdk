@@ -471,7 +471,10 @@ export async function sendCallCancelledToAgents(
   const result = await invokeSendPushLambdaWithRetry({
     userIds: targetIds,
     notification: {
-      // Data-only (silent push) — no title/body to avoid banner spam
+      // Data-only (silent push) — include title/body for send-push validation.
+      // Clients should treat call_cancelled as silent state-sync (no banner).
+      title: 'Call Update',
+      body: 'Call is no longer available.',
       type: 'call_cancelled',
       contentAvailable: true,
       idempotencyKey,
@@ -828,7 +831,10 @@ export async function sendCallEndedToAgent(
   const result = await invokeSendPushLambdaWithRetry({
     userId: notification.agentId,
     notification: {
-      // Data-only (silent push) for state-sync — no visible banner
+      // Data-only (silent push) for state-sync — include title/body for send-push validation.
+      // Clients should treat call_ended/call_cancelled as silent state transitions.
+      title: notificationType === 'call_cancelled' ? 'Call Cancelled' : 'Call Ended',
+      body: notification.message || (notificationType === 'call_cancelled' ? 'Call was cancelled.' : 'Call ended.'),
       type: notificationType,
       contentAvailable: true,
       idempotencyKey,
@@ -889,7 +895,10 @@ export async function sendCallAnsweredToAgent(
   const result = await invokeSendPushLambdaWithRetry({
     userId: notification.agentId,
     notification: {
-      // Data-only (silent push) for state-sync — no visible banner
+      // Data-only (silent push) for state-sync — include title/body for send-push validation.
+      // Clients should treat call_answered as a silent state transition.
+      title: 'Call Answered',
+      body: 'Outbound call answered.',
       type: 'call_answered',
       contentAvailable: true,
       idempotencyKey,
