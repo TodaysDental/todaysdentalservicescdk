@@ -513,21 +513,33 @@ export async function handleGetThreadReplies(
 
 export async function handleEditMessage(
     senderID: string,
-    payload: { messageID: string; favorRequestID: string; newContent: string },
+    payload: { messageID: string; favorRequestID: string; newContent: string; timestamp?: number },
     connectionId: string,
     apiGwManagement: ApiGatewayManagementApiClient
 ): Promise<void> {
-    const { messageID, favorRequestID, newContent } = payload;
+    const { messageID, favorRequestID, newContent, timestamp } = payload;
 
     try {
-        // Find and verify the message
-        const queryResult = await ddb.send(new QueryCommand({
-            TableName: MESSAGES_TABLE,
-            KeyConditionExpression: 'favorRequestID = :frid',
-            ExpressionAttributeValues: { ':frid': favorRequestID },
-        }));
+        let message: MessageData | undefined;
 
-        const message = queryResult.Items?.find((m: any) => m.messageID === messageID) as MessageData;
+        // Try to find message by messageID first
+        if (messageID) {
+            const queryResult = await ddb.send(new QueryCommand({
+                TableName: MESSAGES_TABLE,
+                KeyConditionExpression: 'favorRequestID = :frid',
+                ExpressionAttributeValues: { ':frid': favorRequestID },
+            }));
+            message = queryResult.Items?.find((m: any) => m.messageID === messageID) as MessageData | undefined;
+        }
+
+        // Fallback: direct lookup by composite key (favorRequestID + timestamp)
+        if (!message && timestamp) {
+            const getResult = await ddb.send(new GetCommand({
+                TableName: MESSAGES_TABLE,
+                Key: { favorRequestID, timestamp },
+            }));
+            message = getResult.Item as MessageData | undefined;
+        }
 
         if (!message) {
             await sendToClient(apiGwManagement, connectionId, { type: 'error', message: 'Message not found' });
@@ -553,11 +565,12 @@ export async function handleEditMessage(
             },
         }));
 
-        // Broadcast
+        // Broadcast — include both messageID and timestamp so frontend can match either way
         await broadcastToConversation(apiGwManagement, favorRequestID, {
             type: 'messageEdited',
-            messageID,
+            messageID: message.messageID || messageID,
             favorRequestID,
+            timestamp: message.timestamp,
             newContent,
             editedAt: new Date(editedAt).toISOString(),
             editedBy: senderID,
@@ -755,23 +768,35 @@ export async function handleGetPresence(
 
 export async function handlePinMessage(
     senderID: string,
-    payload: { messageID: string; favorRequestID: string },
+    payload: { messageID: string; favorRequestID: string; timestamp?: number },
     connectionId: string,
     apiGwManagement: ApiGatewayManagementApiClient
 ): Promise<void> {
-    const { messageID, favorRequestID } = payload;
+    const { messageID, favorRequestID, timestamp } = payload;
     const nowIso = new Date().toISOString();
     const pinID = uuidv4();
 
     try {
-        // Get the message to pin
-        const queryResult = await ddb.send(new QueryCommand({
-            TableName: MESSAGES_TABLE,
-            KeyConditionExpression: 'favorRequestID = :frid',
-            ExpressionAttributeValues: { ':frid': favorRequestID },
-        }));
+        let message: MessageData | undefined;
 
-        const message = queryResult.Items?.find((m: any) => m.messageID === messageID) as MessageData;
+        // Try to find by messageID first
+        if (messageID) {
+            const queryResult = await ddb.send(new QueryCommand({
+                TableName: MESSAGES_TABLE,
+                KeyConditionExpression: 'favorRequestID = :frid',
+                ExpressionAttributeValues: { ':frid': favorRequestID },
+            }));
+            message = queryResult.Items?.find((m: any) => m.messageID === messageID) as MessageData | undefined;
+        }
+
+        // Fallback: direct lookup by composite key (favorRequestID + timestamp)
+        if (!message && timestamp) {
+            const getResult = await ddb.send(new GetCommand({
+                TableName: MESSAGES_TABLE,
+                Key: { favorRequestID, timestamp },
+            }));
+            message = getResult.Item as MessageData | undefined;
+        }
 
         if (!message) {
             await sendToClient(apiGwManagement, connectionId, { type: 'error', message: 'Message not found' });
@@ -792,7 +817,7 @@ export async function handlePinMessage(
 
         const pinnedMessage: PinnedMessage = {
             pinID,
-            messageID,
+            messageID: message.messageID || messageID,
             favorRequestID,
             pinnedBy: senderID,
             pinnedAt: nowIso,

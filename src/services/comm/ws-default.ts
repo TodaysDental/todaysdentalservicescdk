@@ -1756,6 +1756,7 @@ async function startFavorRequest(
 
         // Save the task message into the existing conversation
         const messageData: MessageData = {
+            messageID: uuidv4(),
             favorRequestID: existingID,
             senderID,
             content: initialMessage,
@@ -1838,6 +1839,7 @@ async function startFavorRequest(
 
     // 2. Create the initial message
     const messageData: MessageData = {
+        messageID: uuidv4(),
         favorRequestID,
         senderID,
         content: initialMessage,
@@ -1999,6 +2001,7 @@ async function sendMessage(
 
     // 3. Create message data
     const messageData: MessageData = {
+        messageID: uuidv4(),
         favorRequestID,
         senderID,
         content: content || '',
