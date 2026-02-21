@@ -160,6 +160,15 @@ interface FavorRequest {
     lastMessage?: string;
     lastMessageAt?: string;
     lastMessageSenderID?: string;
+
+    // Per-user deletion: list of userIDs who have deleted this conversation from their view
+    deletedBy?: string[];
+
+    // Task badge: true when this conversation was created via task assignment
+    isTask?: boolean;
+
+    // Forwarded badge: true when the task has been forwarded
+    isForwarded?: boolean;
 }
 
 interface Meeting {
@@ -1817,6 +1826,8 @@ async function startFavorRequest(
         unreadCount: recipients.length,
         initialMessage: initialMessage,
         ...(deadline && { deadline: String(deadline) }),
+        // Task badge: mark as task when created via task assignment
+        ...(requestType === 'Assign Task' && { isTask: true }),
     };
 
     // 1. Create Favor Request Record
@@ -1837,13 +1848,44 @@ async function startFavorRequest(
     // 3. Save message and broadcast
     await _saveAndBroadcastMessage(messageData, apiGwManagement, isGroupRequest ? recipients : undefined);
 
-    // 4. Send email notification (Only for 1-to-1 requests for simplicity)
-    if (!isGroupRequest) {
-        try {
-            await sendNewFavorNotificationEmail(senderID, receiverID as string, initialMessage, requestType, deadline);
-        } catch (e) {
-            console.error("Failed to send SES notification email for 1-to-1:", e);
+    // 4. Send email notification (for BOTH single and group tasks)
+    try {
+        if (isGroupRequest) {
+            // Group task: fetch team details and send to all members
+            const teamResult = await ddb.send(new GetCommand({
+                TableName: TEAMS_TABLE,
+                Key: { teamID },
+            }));
+            const team = teamResult.Item;
+            const teamName = team?.name || 'Unknown Group';
+            const teamMembers = team?.members || recipients;
+            await sendTaskAssignmentEmail({
+                senderID,
+                recipientIDs: recipients,
+                initialMessage,
+                requestType,
+                deadline,
+                title: newFavor.title,
+                priority: newFavor.priority,
+                teamName,
+                teamMembers,
+                isGroup: true,
+            });
+        } else {
+            // Single task: send to the receiver
+            await sendTaskAssignmentEmail({
+                senderID,
+                recipientIDs: [receiverID as string],
+                initialMessage,
+                requestType,
+                deadline,
+                title: newFavor.title,
+                priority: newFavor.priority,
+                isGroup: false,
+            });
         }
+    } catch (e) {
+        console.error("Failed to send SES notification email:", e);
     }
 
     // 5. Send push notifications to recipients (for offline users)
@@ -2356,6 +2398,14 @@ async function fetchRequests(
             newToken = undefined; // Merging makes DDB pagination token complex/irrelevant
         }
 
+        // Filter out deleted conversations (matches REST API getConversations logic)
+        // - status === 'deleted': permanently deleted for everyone
+        // - deletedBy includes callerID: per-user soft delete
+        items = items.filter((item: any) =>
+            item.status !== 'deleted' &&
+            !(item.deletedBy && Array.isArray(item.deletedBy) && item.deletedBy.includes(callerID))
+        );
+
         // Send the results back to the client
         await sendToClient(apiGwManagement, connectionId, {
             type: 'favorRequestsList',
@@ -2657,6 +2707,201 @@ async function sendNewFavorNotificationEmail(
     console.log(`SES Notification sent to ${receiver.email} for favor request from ${sender.fullName}.`);
 }
 
+/**
+ * Enhanced email notification for task assignments (both single and group).
+ * Includes: task title, priority, deadline, group name, group members, description.
+ */
+interface TaskAssignmentEmailParams {
+    senderID: string;
+    recipientIDs: string[];
+    initialMessage: string;
+    requestType: string;
+    deadline?: string;
+    title?: string;
+    priority?: string;
+    teamName?: string;
+    teamMembers?: string[];
+    isGroup: boolean;
+}
+
+async function sendTaskAssignmentEmail(params: TaskAssignmentEmailParams): Promise<void> {
+    const {
+        senderID, recipientIDs, initialMessage, requestType,
+        deadline, title, priority, teamName, teamMembers, isGroup,
+    } = params;
+
+    if (!SES_SOURCE_EMAIL) {
+        console.warn('SES_SOURCE_EMAIL not configured. Skipping task assignment email.');
+        return;
+    }
+
+    // 1. Get sender details
+    const sender = await getUserDetails(senderID);
+
+    // 2. Get all recipient details in parallel
+    const recipientDetails = await Promise.all(
+        recipientIDs.map(id => getUserDetails(id))
+    );
+
+    // 3. Get team member names (for group emails)
+    let memberNames: string[] = [];
+    if (isGroup && teamMembers && teamMembers.length > 0) {
+        const memberDetails = await Promise.all(
+            teamMembers.map(id => getUserDetails(id))
+        );
+        memberNames = memberDetails.map(m => m.fullName);
+    }
+
+    // 4. Format values
+    const formattedDeadline = deadline
+        ? new Date(deadline).toLocaleString('en-US', { dateStyle: 'full', timeStyle: 'short' })
+        : 'Not set';
+
+    const priorityColors: Record<string, string> = {
+        critical: '#dc2626',
+        high: '#ea580c',
+        medium: '#d97706',
+        low: '#16a34a',
+    };
+    const priorityColor = priorityColors[(priority || 'medium').toLowerCase()] || '#6b7280';
+    const priorityLabel = (priority || 'Medium').charAt(0).toUpperCase() + (priority || 'Medium').slice(1);
+
+    const taskTitle = title || initialMessage.substring(0, 100);
+
+    // 5. Build HTML email
+    const groupSection = isGroup ? `
+        <tr>
+            <td style="padding: 8px 0; color: #6b7280; font-size: 14px; width: 120px; vertical-align: top;">Group:</td>
+            <td style="padding: 8px 0; font-size: 14px; font-weight: 600; color: #1f2937;">${teamName}</td>
+        </tr>
+        <tr>
+            <td style="padding: 8px 0; color: #6b7280; font-size: 14px; vertical-align: top;">Members:</td>
+            <td style="padding: 8px 0; font-size: 14px; color: #1f2937;">${memberNames.join(', ')}</td>
+        </tr>
+    ` : '';
+
+    const emailHtmlBody = `
+    <html>
+    <body style="margin: 0; padding: 0; background-color: #f3f4f6; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;">
+        <table width="100%" cellpadding="0" cellspacing="0" style="background-color: #f3f4f6; padding: 32px 0;">
+            <tr>
+                <td align="center">
+                    <table width="600" cellpadding="0" cellspacing="0" style="background-color: #ffffff; border-radius: 12px; overflow: hidden; box-shadow: 0 2px 8px rgba(0,0,0,0.08);">
+                        <!-- Header -->
+                        <tr>
+                            <td style="background: linear-gradient(135deg, #0070f3, #0ea5e9); padding: 24px 32px;">
+                                <h1 style="margin: 0; color: #ffffff; font-size: 22px; font-weight: 700;">
+                                    📋 New Task Assignment
+                                </h1>
+                                <p style="margin: 8px 0 0; color: rgba(255,255,255,0.85); font-size: 14px;">
+                                    ${isGroup ? `Group: ${teamName}` : `From: ${sender.fullName}`}
+                                </p>
+                            </td>
+                        </tr>
+                        <!-- Body -->
+                        <tr>
+                            <td style="padding: 32px;">
+                                <!-- Task Title -->
+                                <h2 style="margin: 0 0 20px; color: #1f2937; font-size: 18px; font-weight: 600;">
+                                    ${taskTitle}
+                                </h2>
+
+                                <!-- Task Details Table -->
+                                <table width="100%" cellpadding="0" cellspacing="0" style="background-color: #f9fafb; border-radius: 8px; padding: 16px; margin-bottom: 20px;">
+                                    <tr>
+                                        <td style="padding: 8px 0; color: #6b7280; font-size: 14px; width: 120px;">Assigned By:</td>
+                                        <td style="padding: 8px 0; font-size: 14px; font-weight: 600; color: #1f2937;">${sender.fullName}</td>
+                                    </tr>
+                                    <tr>
+                                        <td style="padding: 8px 0; color: #6b7280; font-size: 14px;">Type:</td>
+                                        <td style="padding: 8px 0; font-size: 14px; color: #1f2937;">${requestType}</td>
+                                    </tr>
+                                    <tr>
+                                        <td style="padding: 8px 0; color: #6b7280; font-size: 14px;">Priority:</td>
+                                        <td style="padding: 8px 0;">
+                                            <span style="display: inline-block; padding: 4px 12px; border-radius: 12px; font-size: 12px; font-weight: 700; color: #ffffff; background-color: ${priorityColor};">
+                                                ${priorityLabel}
+                                            </span>
+                                        </td>
+                                    </tr>
+                                    <tr>
+                                        <td style="padding: 8px 0; color: #6b7280; font-size: 14px;">Deadline:</td>
+                                        <td style="padding: 8px 0; font-size: 14px; font-weight: 600; color: ${deadline ? '#dc2626' : '#6b7280'};">
+                                            ${formattedDeadline}
+                                        </td>
+                                    </tr>
+                                    ${groupSection}
+                                </table>
+
+                                <!-- Description -->
+                                <div style="border-left: 4px solid #0070f3; padding: 12px 16px; margin: 20px 0; background-color: #eff6ff; border-radius: 0 8px 8px 0;">
+                                    <p style="margin: 0 0 4px; font-size: 12px; color: #6b7280; text-transform: uppercase; font-weight: 600;">Description</p>
+                                    <p style="margin: 0; font-size: 14px; color: #374151; line-height: 1.6; white-space: pre-wrap;">${initialMessage}</p>
+                                </div>
+
+                                <!-- CTA -->
+                                <p style="margin: 24px 0 0; color: #6b7280; font-size: 14px;">
+                                    Please log in to the application to view and respond to this task.
+                                </p>
+                            </td>
+                        </tr>
+                        <!-- Footer -->
+                        <tr>
+                            <td style="background-color: #f9fafb; padding: 16px 32px; border-top: 1px solid #e5e7eb;">
+                                <p style="margin: 0; color: #9ca3af; font-size: 12px; text-align: center;">
+                                    Today's Dental Insights Communication System
+                                </p>
+                            </td>
+                        </tr>
+                    </table>
+                </td>
+            </tr>
+        </table>
+    </body>
+    </html>`;
+
+    const emailTextBody = `
+New Task Assignment
+
+Title: ${taskTitle}
+Assigned By: ${sender.fullName}
+Type: ${requestType}
+Priority: ${priorityLabel}
+Deadline: ${formattedDeadline}
+${isGroup ? `Group: ${teamName}\nMembers: ${memberNames.join(', ')}` : ''}
+
+Description:
+${initialMessage}
+
+Please log in to the application to view and respond to this task.
+    `.trim();
+
+    // 6. Send emails to all recipients
+    const emailSubject = isGroup
+        ? `📋 New ${requestType} in ${teamName}: ${taskTitle}`
+        : `📋 New ${requestType} from ${sender.fullName}: ${taskTitle}`;
+
+    const emailPromises = recipientDetails
+        .filter(r => r.email)
+        .map(recipient =>
+            ses.send(new SendEmailCommand({
+                Destination: { ToAddresses: [recipient.email as string] },
+                Content: {
+                    Simple: {
+                        Subject: { Data: emailSubject },
+                        Body: {
+                            Text: { Data: emailTextBody },
+                            Html: { Data: emailHtmlBody },
+                        },
+                    },
+                },
+                FromEmailAddress: SES_SOURCE_EMAIL,
+            }))
+        );
+
+    await Promise.all(emailPromises);
+    console.log(`Task assignment email sent to ${emailPromises.length} recipient(s) for "${taskTitle}" from ${sender.fullName}.`);
+}
 
 async function fetchHistory(
     callerID: string,
@@ -3258,7 +3503,7 @@ async function forwardTask(
     await ddb.send(new UpdateCommand({
         TableName: FAVORS_TABLE,
         Key: { favorRequestID },
-        UpdateExpression: 'SET forwardingChain = :chain, currentAssigneeID = :assignee, #s = :status, updatedAt = :ua, requiresAcceptance = :ra',
+        UpdateExpression: 'SET forwardingChain = :chain, currentAssigneeID = :assignee, #s = :status, updatedAt = :ua, requiresAcceptance = :ra, isForwarded = :fw',
         ExpressionAttributeNames: { '#s': 'status' },
         ExpressionAttributeValues: {
             ':chain': updatedChain,
@@ -3266,6 +3511,7 @@ async function forwardTask(
             ':status': requireAcceptance ? 'forwarded' : 'active',
             ':ua': nowIso,
             ':ra': requireAcceptance,
+            ':fw': true,
         },
     }));
 
@@ -3647,36 +3893,66 @@ async function deleteConversation(
         return;
     }
 
-    // 2. Only the sender/creator can delete
-    if (favor.senderID !== senderID) {
-        await sendToClient(apiGwManagement, connectionId, { type: 'error', message: 'Unauthorized: Only the creator can delete this task.' });
+    // 2. Allow any participant (sender, receiver, or current assignee) to delete
+    const isParticipant = favor.senderID === senderID || favor.receiverID === senderID || favor.currentAssigneeID === senderID;
+    if (!isParticipant) {
+        await sendToClient(apiGwManagement, connectionId, { type: 'error', message: 'Unauthorized: You are not a participant of this conversation.' });
         return;
     }
 
-    // 3. Soft delete by updating status
+    // 3. Delete based on type
+    const deleteType = payload.deleteType || 'forMe'; // 'forMe' or 'forEveryone'
     const nowIso = new Date().toISOString();
-    await ddb.send(new UpdateCommand({
-        TableName: FAVORS_TABLE,
-        Key: { favorRequestID },
-        UpdateExpression: 'SET #s = :status, updatedAt = :ua',
-        ExpressionAttributeNames: { '#s': 'status' },
-        ExpressionAttributeValues: {
-            ':status': 'deleted' as any, // Soft delete
-            ':ua': nowIso,
-        },
-    }));
 
-    // 4. Notify all participants
-    const participants = await getAllParticipants(favor);
-    const notificationPayload = {
-        type: 'conversationDeleted',
-        favorRequestID,
-        deletedBy: senderID,
-    };
+    if (deleteType === 'forEveryone') {
+        // === PERMANENT DELETE: Set status to 'deleted' — hides for ALL participants ===
+        await ddb.send(new UpdateCommand({
+            TableName: FAVORS_TABLE,
+            Key: { favorRequestID },
+            UpdateExpression: 'SET #s = :status, updatedAt = :ua',
+            ExpressionAttributeNames: { '#s': 'status' },
+            ExpressionAttributeValues: {
+                ':status': 'deleted',
+                ':ua': nowIso,
+            },
+        }));
 
-    await sendToAll(apiGwManagement, participants, notificationPayload, { notifyOffline: false });
+        // Notify all participants about permanent deletion
+        const participants = await getAllParticipants(favor);
+        await sendToAll(apiGwManagement, participants, {
+            type: 'conversationDeleted',
+            favorRequestID,
+            deletedBy: senderID,
+            deleteType: 'forEveryone',
+        }, { notifyOffline: false });
 
-    console.log(`Task ${favorRequestID} deleted by ${senderID}`);
+        console.log(`Conversation ${favorRequestID} permanently deleted by ${senderID}`);
+    } else {
+        // === PER-USER DELETE: Add senderID to deletedBy list ===
+        const currentDeletedBy = favor.deletedBy || [];
+        if (!currentDeletedBy.includes(senderID)) {
+            const updatedDeletedBy = [...currentDeletedBy, senderID];
+            await ddb.send(new UpdateCommand({
+                TableName: FAVORS_TABLE,
+                Key: { favorRequestID },
+                UpdateExpression: 'SET deletedBy = :db, updatedAt = :ua',
+                ExpressionAttributeValues: {
+                    ':db': updatedDeletedBy,
+                    ':ua': nowIso,
+                },
+            }));
+        }
+
+        // Notify only the deleting user (per-user delete)
+        await sendToClient(apiGwManagement, connectionId, {
+            type: 'conversationDeleted',
+            favorRequestID,
+            deletedBy: senderID,
+            deleteType: 'forMe',
+        });
+
+        console.log(`Conversation ${favorRequestID} deleted from view by ${senderID}`);
+    }
 }
 
 // ========================================

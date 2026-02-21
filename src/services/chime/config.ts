@@ -20,6 +20,21 @@
 
 export const CHIME_CONFIG = {
   /**
+   * Inbound Call Routing Configuration
+   */
+  INBOUND: {
+    /**
+     * Ring the clinic's real PSTN phone in parallel while offering the call to agents.
+     *
+     * IMPORTANT: This uses a PSTN CallAndBridge (creates an outbound LEG-B),
+     * which consumes an additional concurrent call slot in the Chime SDK SMA/Voice Connector quotas.
+     *
+     * @default true (set CHIME_ENABLE_CLINIC_PHONE_RING=false to disable)
+     */
+    ENABLE_CLINIC_PHONE_RING: process.env.CHIME_ENABLE_CLINIC_PHONE_RING !== 'false',
+  },
+
+  /**
    * Call Queue Configuration
    */
   QUEUE: {
@@ -430,6 +445,9 @@ export function validateChimeConfig(): { valid: boolean; errors: string[] } {
  */
 export function logChimeConfig(): void {
   console.log('[CHIME_CONFIG] Configuration loaded:', {
+    inbound: {
+      enableClinicPhoneRing: CHIME_CONFIG.INBOUND.ENABLE_CLINIC_PHONE_RING,
+    },
     queue: {
       maxRingAgents: CHIME_CONFIG.QUEUE.MAX_RING_AGENTS,
       timeoutSeconds: CHIME_CONFIG.QUEUE.TIMEOUT_SECONDS,

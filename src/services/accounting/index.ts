@@ -659,6 +659,50 @@ async function getPayTypeIdsForMode(
   }
 }
 
+/**
+ * Batch-fetch patient names from OpenDental for a list of PatNums.
+ * Fetches up to BATCH_SIZE patients concurrently to avoid Lambda timeouts.
+ * Returns a Map of PatNum -> "LastName, FirstName".
+ */
+async function fetchPatientNames(
+  authHeader: string,
+  patNums: number[]
+): Promise<Map<number, string>> {
+  const nameMap = new Map<number, string>();
+  const uniquePatNums = [...new Set(patNums.filter(n => n > 0))];
+
+  if (uniquePatNums.length === 0) return nameMap;
+
+  console.log(`[Accounting] Fetching names for ${uniquePatNums.length} unique patients`);
+
+  // Process in batches of 5 to limit concurrency
+  const BATCH_SIZE = 5;
+  for (let i = 0; i < uniquePatNums.length; i += BATCH_SIZE) {
+    const batch = uniquePatNums.slice(i, i + BATCH_SIZE);
+    const results = await Promise.allSettled(
+      batch.map(async (patNum) => {
+        try {
+          const patient = await callOpenDentalApi(
+            'GET',
+            `/patients/${patNum}`,
+            authHeader
+          );
+          const fName = patient?.FName || patient?.fName || '';
+          const lName = patient?.LName || patient?.lName || '';
+          if (fName || lName) {
+            nameMap.set(patNum, `${lName}, ${fName}`.trim().replace(/^,\s*/, '').replace(/,\s*$/, ''));
+          }
+        } catch {
+          // Silently skip — will fallback to "Patient #PatNum"
+        }
+      })
+    );
+  }
+
+  console.log(`[Accounting] Resolved ${nameMap.size}/${uniquePatNums.length} patient names`);
+  return nameMap;
+}
+
 async function fetchOpenDentalPayments(
   clinicId: string,
   paymentMode: PaymentMode,
@@ -722,10 +766,9 @@ async function fetchOpenDentalPayments(
       console.warn(`[Accounting] No PayType mapping found for mode ${paymentMode} — showing all payments`);
     }
 
-    // 4. Skip individual patient name API calls to avoid Lambda timeout
-    //    OpenDental /payments endpoint doesn't include patient names, and
-    //    fetching them individually would cause N additional API calls.
-    //    Use "Patient #PatNum" as fallback - names can be enriched later if needed.
+    // 4. Batch-fetch patient names from OpenDental /patients endpoint
+    const allPatNums = filteredPayments.map((p: any) => Number(p.PatNum || p.patNum || 0));
+    const patientNameMap = await fetchPatientNames(authHeader, allPatNums);
 
     // 5. Map payments to OpenDentalPaymentRow format
     const rows = filteredPayments.map((p: any) => {
@@ -735,11 +778,12 @@ async function fetchOpenDentalPayments(
       const payNum = p.PayNum || p.payNum || 0;
       const payType = p.PayType || p.payType || 0;
       const payNote = p.PayNote || p.payNote || '';
+      const patientName = patientNameMap.get(patNum) || `Patient #${patNum}`;
 
       return {
         rowId: `od-${payNum}`,
         patNum,
-        patientName: `Patient #${patNum}`,
+        patientName,
         paymentDate: payDate,
         expectedAmount: Number(payAmt),
         paymentMode,
@@ -974,19 +1018,18 @@ async function generateReconciliation(
           console.warn(`[Reconciliation] No PayType mapping found for ${paymentMode} — using all payments`);
         }
 
-        // Map payments to rows (skip patient name lookups to avoid timeout)
+        // Batch-fetch patient names from OpenDental /patients endpoint
+        const reconPatNums = filteredPayments.map((p: any) => Number(p.PatNum || p.patNum || 0));
+        const reconNameMap = await fetchPatientNames(authHeader, reconPatNums);
+
+        // Map payments to rows with resolved patient names
         openDentalRows = filteredPayments.map((p: any) => {
           const patNum = p.PatNum || p.patNum || 0;
           const payAmt = p.PayAmt || p.payAmt || 0;
           const payDate = (p.PayDate || p.payDate || '').substring(0, 10);
           const payNum = p.PayNum || p.payNum || 0;
           const payNote = p.PayNote || p.payNote || '';
-          // Use FName/LName if available from the payments endpoint
-          const fName = p.FName || p.fName || '';
-          const lName = p.LName || p.lName || '';
-          const patientName = (fName || lName)
-            ? `${lName}, ${fName}`.trim()
-            : `Patient #${patNum}`;
+          const patientName = reconNameMap.get(patNum) || `Patient #${patNum}`;
 
           return {
             rowId: `od-${payNum}`,

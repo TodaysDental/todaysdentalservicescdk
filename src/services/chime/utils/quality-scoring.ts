@@ -374,20 +374,22 @@ export function calculateQualityMetrics(
 }
 
 /**
- * Saves quality metrics to call analytics
+ * Saves quality metrics to the CallQueue record for this call.
+ *
+ * Note: CallQueue primary key is { clinicId, queuePosition }.
  */
 export async function saveQualityMetrics(
     ddb: DynamoDBDocumentClient,
     callId: string,
     clinicId: string,
-    timestamp: number,
+    queuePosition: number,
     metrics: QualityMetrics,
-    callAnalyticsTableName: string
+    callQueueTableName: string
 ): Promise<void> {
     try {
         await ddb.send(new UpdateCommand({
-            TableName: callAnalyticsTableName,
-            Key: { callId, timestamp },
+            TableName: callQueueTableName,
+            Key: { clinicId, queuePosition },
             UpdateExpression: `
         SET qualityScore = :overall,
             audioQualityScore = :audio,
@@ -397,6 +399,8 @@ export async function saveQualityMetrics(
             qualityMetrics = :metrics,
             qualityScoreCalculatedAt = :time
       `,
+            // Ensure we don't accidentally create a new item with a wrong key
+            ConditionExpression: 'attribute_exists(clinicId) AND attribute_exists(queuePosition) AND callId = :callId',
             ExpressionAttributeValues: {
                 ':overall': metrics.overallScore,
                 ':audio': metrics.audioQuality.score,
@@ -405,6 +409,7 @@ export async function saveQualityMetrics(
                 ':compliance': metrics.compliance.score,
                 ':metrics': metrics,
                 ':time': new Date().toISOString(),
+                ':callId': callId,
             },
         }));
 
@@ -413,7 +418,7 @@ export async function saveQualityMetrics(
             clinicId,
         });
 
-        console.log('[saveQualityMetrics] Saved', { callId, overallScore: metrics.overallScore });
+        console.log('[saveQualityMetrics] Saved', { callId, clinicId, queuePosition, overallScore: metrics.overallScore });
 
     } catch (error: any) {
         console.error('[saveQualityMetrics] Error:', error.message);
