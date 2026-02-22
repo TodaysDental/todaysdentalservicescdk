@@ -188,41 +188,90 @@ async function sendOTPEmail(email: string, otpCode: string, userName: string): P
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Your Login Code</title>
 </head>
-<body style="font-family: Arial, sans-serif; line-height: 1.6; color: #333; max-width: 600px; margin: 0 auto; padding: 20px;">
-  <div style="background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); padding: 30px; text-align: center; border-radius: 10px 10px 0 0;">
-    <h1 style="color: white; margin: 0; font-size: 28px;">${APP_NAME}</h1>
-  </div>
+<body style="margin: 0; padding: 0; background-color: #f5f5f7; font-family: -apple-system, BlinkMacSystemFont, 'SF Pro Display', 'SF Pro Text', 'Helvetica Neue', Helvetica, Arial, sans-serif; -webkit-font-smoothing: antialiased;">
   
-  <div style="background: #f9f9f9; padding: 30px; border-radius: 0 0 10px 10px; box-shadow: 0 2px 4px rgba(0,0,0,0.1);">
-    <h2 style="color: #333; margin-top: 0;">Hello ${userName},</h2>
-    
-    <p style="font-size: 16px; color: #666;">
-      You requested to sign in to your ${APP_NAME} account. Use the code below to complete your login:
-    </p>
-    
-    <div style="background: white; padding: 20px; border-radius: 8px; text-align: center; margin: 30px 0; border: 2px solid #667eea;">
-      <p style="margin: 0; color: #999; font-size: 14px; text-transform: uppercase; letter-spacing: 1px;">Your Login Code</p>
-      <p style="font-size: 36px; font-weight: bold; color: #667eea; margin: 10px 0; letter-spacing: 8px; font-family: 'Courier New', monospace;">
-        ${otpCode}
-      </p>
-    </div>
-    
-    <div style="background: #fff3cd; border-left: 4px solid #ffc107; padding: 15px; margin: 20px 0; border-radius: 4px;">
-      <p style="margin: 0; color: #856404; font-size: 14px;">
-        <strong>⚠️ Important:</strong> This code expires in ${OTP_EXPIRY_MINUTES} minutes.
-      </p>
-    </div>
-    
-    <p style="font-size: 14px; color: #666; margin-top: 30px;">
-      If you didn't request this code, please ignore this email or contact support if you're concerned about your account security.
-    </p>
-    
-    <hr style="border: none; border-top: 1px solid #ddd; margin: 30px 0;">
-    
-    <p style="font-size: 12px; color: #999; text-align: center;">
-      This is an automated message from ${APP_NAME}. Please do not reply to this email.
-    </p>
-  </div>
+  <!-- Outer wrapper for centering -->
+  <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background-color: #f5f5f7; padding: 40px 20px;">
+    <tr>
+      <td align="center">
+        
+        <!-- Main card -->
+        <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="max-width: 480px; background-color: #ffffff; border-radius: 20px; box-shadow: 0 4px 24px rgba(0, 0, 0, 0.06), 0 1px 2px rgba(0, 0, 0, 0.04); overflow: hidden;">
+          
+          <!-- Logo / Brand header -->
+          <tr>
+            <td style="padding: 48px 40px 0 40px; text-align: center;">
+              <div style="width: 56px; height: 56px; background: linear-gradient(145deg, #1d1d1f, #3a3a3c); border-radius: 14px; display: inline-block; line-height: 56px; box-shadow: 0 2px 8px rgba(0, 0, 0, 0.12);">
+                <span style="color: #ffffff; font-size: 22px; font-weight: 700; letter-spacing: -0.5px;">T</span>
+              </div>
+            </td>
+          </tr>
+          
+          <!-- Greeting -->
+          <tr>
+            <td style="padding: 28px 40px 0 40px; text-align: center;">
+              <h1 style="margin: 0; font-size: 24px; font-weight: 600; color: #1d1d1f; letter-spacing: -0.3px; line-height: 1.2;">
+                Hello ${userName}
+              </h1>
+              <p style="margin: 12px 0 0 0; font-size: 15px; font-weight: 400; color: #86868b; line-height: 1.5;">
+                You requested to sign in to your<br>${APP_NAME} account.
+              </p>
+            </td>
+          </tr>
+          
+          <!-- OTP Code — liquid glass card -->
+          <tr>
+            <td style="padding: 32px 40px;">
+              <div style="background: linear-gradient(135deg, #fafafa 0%, #f2f2f7 100%); border: 1px solid rgba(0, 0, 0, 0.06); border-radius: 16px; padding: 28px 20px; text-align: center; box-shadow: inset 0 1px 0 rgba(255,255,255,0.8), 0 1px 3px rgba(0,0,0,0.04);">
+                <p style="margin: 0 0 6px 0; font-size: 11px; font-weight: 600; color: #86868b; text-transform: uppercase; letter-spacing: 1.5px;">Your Login Code</p>
+                <p style="margin: 0; font-size: 40px; font-weight: 700; color: #1d1d1f; letter-spacing: 12px; font-family: 'SF Mono', 'Menlo', 'Courier New', monospace; padding-left: 12px;">
+                  ${otpCode}
+                </p>
+              </div>
+            </td>
+          </tr>
+          
+          <!-- Expiry notice -->
+          <tr>
+            <td style="padding: 0 40px;">
+              <div style="background-color: #f5f5f7; border-radius: 12px; padding: 14px 18px; text-align: center;">
+                <p style="margin: 0; font-size: 13px; font-weight: 500; color: #86868b;">
+                  ⏱ This code expires in <span style="color: #1d1d1f; font-weight: 600;">${OTP_EXPIRY_MINUTES} minutes</span>
+                </p>
+              </div>
+            </td>
+          </tr>
+          
+          <!-- Security note -->
+          <tr>
+            <td style="padding: 28px 40px 0 40px; text-align: center;">
+              <p style="margin: 0; font-size: 13px; font-weight: 400; color: #86868b; line-height: 1.6;">
+                If you didn't request this code, you can safely ignore this email. Your account remains secure.
+              </p>
+            </td>
+          </tr>
+          
+          <!-- Divider -->
+          <tr>
+            <td style="padding: 32px 40px 0 40px;">
+              <div style="height: 1px; background: linear-gradient(to right, transparent, rgba(0,0,0,0.08), transparent);"></div>
+            </td>
+          </tr>
+          
+          <!-- Footer -->
+          <tr>
+            <td style="padding: 20px 40px 40px 40px; text-align: center;">
+              <p style="margin: 0; font-size: 11px; font-weight: 400; color: #aeaeb2; line-height: 1.5;">
+                This is an automated message from ${APP_NAME}.<br>Please do not reply to this email.
+              </p>
+            </td>
+          </tr>
+          
+        </table>
+        
+      </td>
+    </tr>
+  </table>
 </body>
 </html>
   `.trim();

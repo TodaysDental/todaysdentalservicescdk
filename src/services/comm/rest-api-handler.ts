@@ -229,6 +229,8 @@ interface FavorRequest {
 
     // Forwarded badge: true when the task has been forwarded
     isForwarded?: boolean;
+    // Deterministic participant key for dedup: sorted userIDs joined with '#'
+    participantKey?: string;
 }
 
 interface Team {
@@ -457,6 +459,10 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
             log.info('Routing to deleteConversation', { ...logCtx, favorRequestID });
             routeMatched = true;
             result = await deleteConversation(authedUserID, favorRequestID, queryStringParameters, logCtx);
+        } else if (path.match(/^\/api\/conversations\/find-or-create$/) && httpMethod === 'POST') {
+            log.info('Routing to findOrCreateConversation', logCtx);
+            routeMatched = true;
+            result = await findOrCreateConversation(authedUserID, parsedBody, logCtx);
         } else if (path.match(/^\/api\/conversations$/) && httpMethod === 'GET') {
             log.info('Routing to getConversations', logCtx);
             routeMatched = true;
@@ -984,6 +990,232 @@ async function deleteConversation(userID: string, favorRequestID: string, params
     }
 }
 
+// ========================================
+// FIND OR CREATE CONVERSATION
+// ========================================
+
+/**
+ * POST /api/conversations/find-or-create
+ *
+ * Unified endpoint that ensures exactly ONE conversation per unique set of participants.
+ * The caller supplies participantIds (all user IDs including self). This function:
+ *   1. Sorts participant IDs alphabetically to build a deterministic key.
+ *   2. Queries for an existing conversation matching that key.
+ *   3. Returns existing conversation with isNew:false, or creates a new one with isNew:true.
+ *
+ * Body: { participantIds: string[], teamID?: string, title?, description?, priority?, category?, requestType?, deadline?, initialMessage? }
+ */
+async function findOrCreateConversation(userID: string, body: any, logCtx?: LogContext): Promise<APIGatewayProxyResult> {
+    const fnStart = Date.now();
+    const fnCtx = { ...logCtx, function: 'findOrCreateConversation' };
+
+    const {
+        participantIds,
+        teamID,
+        title,
+        description,
+        priority = 'Medium',
+        category,
+        requestType = 'General',
+        deadline,
+        initialMessage,
+    } = body || {};
+
+    // ── Validation ──────────────────────────────────────────────
+    if (!participantIds || !Array.isArray(participantIds) || participantIds.length < 2) {
+        log.validation('participantIds', 'Must be an array of at least 2 user IDs', fnCtx);
+        return response(400, { success: false, message: 'participantIds must be an array of at least 2 user IDs (including yourself).' });
+    }
+
+    // Ensure caller is included
+    if (!participantIds.includes(userID)) {
+        participantIds.push(userID);
+    }
+
+    // Deterministic sorted key
+    const sortedIds = [...new Set(participantIds as string[])].sort();
+    const participantKey = sortedIds.join('#');
+    const isGroup = !!teamID || sortedIds.length > 2;
+
+    log.debug('findOrCreateConversation params', { ...fnCtx, participantKey, isGroup, teamID, participantCount: sortedIds.length });
+
+    try {
+        let existingFavor: FavorRequest | undefined;
+
+        // ── Search for existing conversation ──────────────────────
+        if (isGroup && teamID) {
+            // Group: lookup by TeamIndex
+            const dbStart = Date.now();
+            const existingConvos = await ddb.send(new QueryCommand({
+                TableName: FAVORS_TABLE,
+                IndexName: 'TeamIndex',
+                KeyConditionExpression: 'teamID = :teamID',
+                ExpressionAttributeValues: { ':teamID': teamID },
+                ScanIndexForward: false,
+            }));
+            log.dbResult('Query', FAVORS_TABLE, existingConvos.Items?.length || 0, Date.now() - dbStart, fnCtx);
+
+            const convos = (existingConvos.Items || []) as FavorRequest[];
+            const nonDeleted = convos.filter(c => c.status !== 'deleted');
+            existingFavor = nonDeleted.find(c => c.isMainGroupChat === true) || nonDeleted[0];
+        } else {
+            // 1-on-1: Exactly 2 participants → query both directions
+            const otherUserID = sortedIds.find(id => id !== userID)!;
+
+            const dbStart = Date.now();
+            const [dirAB, dirBA] = await Promise.all([
+                ddb.send(new QueryCommand({
+                    TableName: FAVORS_TABLE,
+                    IndexName: 'SenderIndex',
+                    KeyConditionExpression: 'senderID = :sid',
+                    FilterExpression: 'receiverID = :rid AND attribute_not_exists(teamID)',
+                    ExpressionAttributeValues: { ':sid': userID, ':rid': otherUserID },
+                    ScanIndexForward: false,
+                })),
+                ddb.send(new QueryCommand({
+                    TableName: FAVORS_TABLE,
+                    IndexName: 'SenderIndex',
+                    KeyConditionExpression: 'senderID = :sid',
+                    FilterExpression: 'receiverID = :rid AND attribute_not_exists(teamID)',
+                    ExpressionAttributeValues: { ':sid': otherUserID, ':rid': userID },
+                    ScanIndexForward: false,
+                })),
+            ]);
+            log.dbResult('Query', FAVORS_TABLE, (dirAB.Items?.length || 0) + (dirBA.Items?.length || 0), Date.now() - dbStart, fnCtx);
+
+            const allConvos = [
+                ...(dirAB.Items || []),
+                ...(dirBA.Items || []),
+            ] as FavorRequest[];
+
+            existingFavor = allConvos.find(c =>
+                c.status !== 'deleted' &&
+                ((c.senderID === userID && c.receiverID === otherUserID) ||
+                    (c.senderID === otherUserID && c.receiverID === userID))
+            );
+        }
+
+        // ── Existing conversation found → reuse ──────────────────
+        if (existingFavor) {
+            const existingID = existingFavor.favorRequestID;
+            log.info('Reusing existing conversation', { ...fnCtx, existingID, currentStatus: existingFavor.status });
+
+            const updateExprParts: string[] = ['updatedAt = :ua'];
+            const exprValues: Record<string, any> = { ':ua': new Date().toISOString() };
+            const exprNames: Record<string, string> = {};
+
+            // Reactivate if completed/rejected
+            if (existingFavor.status === 'completed' || existingFavor.status === 'rejected') {
+                updateExprParts.push('#st = :newStatus');
+                exprValues[':newStatus'] = 'active';
+                exprNames['#st'] = 'status';
+                existingFavor.status = 'active' as TaskStatus;
+            }
+
+            // Clean up deletedBy for caller
+            if (existingFavor.deletedBy && Array.isArray(existingFavor.deletedBy) && existingFavor.deletedBy.includes(userID)) {
+                const cleanedDeletedBy = existingFavor.deletedBy.filter((id: string) => id !== userID);
+                updateExprParts.push('deletedBy = :cleanedDeletedBy');
+                exprValues[':cleanedDeletedBy'] = cleanedDeletedBy;
+            }
+
+            // Optional metadata updates
+            if (deadline) { updateExprParts.push('deadline = :dl'); exprValues[':dl'] = String(deadline); }
+            if (priority && priority !== 'Medium') { updateExprParts.push('priority = :pri'); exprValues[':pri'] = priority; }
+            if (title) { updateExprParts.push('title = :ttl'); exprValues[':ttl'] = title; }
+
+            await ddb.send(new UpdateCommand({
+                TableName: FAVORS_TABLE,
+                Key: { favorRequestID: existingID },
+                UpdateExpression: `SET ${updateExprParts.join(', ')}`,
+                ExpressionAttributeValues: exprValues,
+                ...(Object.keys(exprNames).length > 0 ? { ExpressionAttributeNames: exprNames } : {}),
+            }));
+
+            log.info('findOrCreateConversation: reused', { ...fnCtx, existingID, durationMs: Date.now() - fnStart });
+
+            return response(200, {
+                success: true,
+                conversationId: existingID,
+                conversation: existingFavor,
+                isNew: false,
+            });
+        }
+
+        // ── No existing conversation → create a new one ────────────
+        const conversationID = uuidv4();
+        const nowIso = new Date().toISOString();
+        const otherUserID = sortedIds.find(id => id !== userID);
+
+        const newFavor: FavorRequest = {
+            favorRequestID: conversationID,
+            senderID: userID,
+            ...(isGroup && teamID ? { teamID } : { receiverID: otherUserID }),
+            ...((!isGroup) && { participantKey }),
+            title: title || initialMessage?.substring(0, 100) || 'New conversation',
+            description: description || initialMessage || '',
+            status: 'active' as TaskStatus,
+            priority: (priority || 'Medium') as TaskPriority,
+            ...(category && { category: category as SystemModule }),
+            createdAt: nowIso,
+            updatedAt: nowIso,
+            userID,
+            requestType: requestType || 'General',
+            unreadCount: 0,
+            initialMessage: initialMessage || '',
+            ...(deadline && { deadline: String(deadline) }),
+            ...(requestType === 'Assign Task' && { isTask: true }),
+        };
+
+        const dbStart = Date.now();
+        await ddb.send(new PutCommand({
+            TableName: FAVORS_TABLE,
+            Item: newFavor,
+        }));
+        log.dbResult('PutItem', FAVORS_TABLE, 1, Date.now() - dbStart, fnCtx);
+
+        // If an initial message was provided, save it as the first message
+        if (initialMessage) {
+            const messageID = `${conversationID}-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
+            await ddb.send(new PutCommand({
+                TableName: MESSAGES_TABLE,
+                Item: {
+                    messageID,
+                    favorRequestID: conversationID,
+                    senderID: userID,
+                    content: initialMessage,
+                    timestamp: Date.now(),
+                    type: 'text',
+                },
+            }));
+
+            // Update last message fields on the conversation
+            await ddb.send(new UpdateCommand({
+                TableName: FAVORS_TABLE,
+                Key: { favorRequestID: conversationID },
+                UpdateExpression: 'SET lastMessage = :lm, lastMessageAt = :lma, lastMessageSenderID = :lms',
+                ExpressionAttributeValues: {
+                    ':lm': initialMessage.substring(0, 200),
+                    ':lma': nowIso,
+                    ':lms': userID,
+                },
+            }));
+        }
+
+        log.info('findOrCreateConversation: created new', { ...fnCtx, conversationID, durationMs: Date.now() - fnStart });
+
+        return response(201, {
+            success: true,
+            conversationId: conversationID,
+            conversation: newFavor,
+            isNew: true,
+        });
+    } catch (error: any) {
+        const err = error instanceof Error ? error : new Error(String(error));
+        log.error('findOrCreateConversation failed', fnCtx, err);
+        return response(500, { success: false, message: 'Failed to find or create conversation' });
+    }
+}
 async function getConversations(userID: string, params: any, logCtx?: LogContext): Promise<APIGatewayProxyResult> {
     const fnStart = Date.now();
     const fnCtx = { ...logCtx, function: 'getConversations' };
