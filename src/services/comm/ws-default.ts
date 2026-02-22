@@ -1766,8 +1766,12 @@ async function startFavorRequest(
         );
     }
 
-    // If an existing conversation was found, send the message there instead of creating a new one
-    if (existingFavor) {
+    // If an existing conversation was found AND this is NOT a task assignment,
+    // send the message there instead of creating a new one.
+    // Task assignments (requestType: 'Assign Task') always create a new conversation
+    // so each task is tracked independently.
+    const isTaskAssignment = requestType === 'Assign Task';
+    if (existingFavor && !isTaskAssignment) {
         const existingID = existingFavor.favorRequestID;
         const timestamp = Date.now();
         console.log(`♻️ Reusing existing conversation ${existingID} instead of creating a new one.`);
