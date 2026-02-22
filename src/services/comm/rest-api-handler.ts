@@ -229,7 +229,6 @@ interface FavorRequest {
 
     // Forwarded badge: true when the task has been forwarded
     isForwarded?: boolean;
-
     // Deterministic participant key for dedup: sorted userIDs joined with '#'
     participantKey?: string;
 }
@@ -1211,14 +1210,12 @@ async function findOrCreateConversation(userID: string, body: any, logCtx?: LogC
             conversation: newFavor,
             isNew: true,
         });
-
     } catch (error: any) {
         const err = error instanceof Error ? error : new Error(String(error));
         log.error('findOrCreateConversation failed', fnCtx, err);
         return response(500, { success: false, message: 'Failed to find or create conversation' });
     }
 }
-
 async function getConversations(userID: string, params: any, logCtx?: LogContext): Promise<APIGatewayProxyResult> {
     const fnStart = Date.now();
     const fnCtx = { ...logCtx, function: 'getConversations' };

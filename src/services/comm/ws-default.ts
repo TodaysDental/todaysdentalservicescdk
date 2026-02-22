@@ -169,7 +169,6 @@ interface FavorRequest {
 
     // Forwarded badge: true when the task has been forwarded
     isForwarded?: boolean;
-
     // Deterministic participant key for dedup: sorted userIDs joined with '#'
     // e.g. for 1-on-1: "userA#userB" (alphabetically sorted)
     participantKey?: string;

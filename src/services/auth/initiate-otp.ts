@@ -272,7 +272,6 @@ async function sendOTPEmail(email: string, otpCode: string, userName: string): P
       </td>
     </tr>
   </table>
-  
 </body>
 </html>
   `.trim();
