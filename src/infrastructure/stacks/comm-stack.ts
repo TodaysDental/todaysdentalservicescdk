@@ -658,6 +658,8 @@ export class CommStack extends Stack {
     // /api/conversations endpoints
     const conversations = api.addResource('conversations');
     conversations.addMethod('GET', restIntegration, { authorizer });
+    const conversationsFindOrCreate = conversations.addResource('find-or-create');
+    conversationsFindOrCreate.addMethod('POST', restIntegration, { authorizer });
     const conversationsSearch = conversations.addResource('search');
     conversationsSearch.addMethod('GET', restIntegration, { authorizer });
     const conversationsProfiles = conversations.addResource('profiles');
