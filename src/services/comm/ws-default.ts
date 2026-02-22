@@ -206,9 +206,16 @@ interface MessageData {
     senderID: string;
     content: string;
     timestamp: number;
-    type: 'text' | 'file' | 'system';
+    type: 'text' | 'file' | 'system' | 'task';
     fileKey?: string;
     fileDetails?: FileDetails;
+    // Task metadata (present when type === 'task')
+    taskTitle?: string;
+    taskDescription?: string;
+    taskPriority?: string;
+    taskDeadline?: string;
+    taskCategory?: string;
+    taskRequestType?: string;
 }
 
 // ========================================
@@ -1765,17 +1772,14 @@ async function startFavorRequest(
         );
     }
 
-    // If an existing conversation was found AND this is NOT a task assignment,
-    // send the message there instead of creating a new one.
-    // Task assignments (requestType: 'Assign Task') always create a new conversation
-    // so each task is tracked independently.
-    const isTaskAssignment = requestType === 'Assign Task';
-    if (existingFavor && !isTaskAssignment) {
+    // If an existing conversation was found, send the message there instead of creating a new one.
+    // All conversations (including task assignments) reuse existing chat profiles.
+    if (existingFavor) {
         const existingID = existingFavor.favorRequestID;
         const timestamp = Date.now();
         console.log(`♻️ Reusing existing conversation ${existingID} instead of creating a new one.`);
 
-        // Update conversation metadata (deadline, priority, title) if task fields provided
+        // Update conversation metadata with latest task fields
         const updateExprParts: string[] = ['updatedAt = :ua'];
         const exprValues: Record<string, any> = { ':ua': new Date().toISOString() };
         const exprNames: Record<string, string> = {};
@@ -1796,8 +1800,13 @@ async function startFavorRequest(
             exprValues[':cleanedDeletedBy'] = cleanedDeletedBy;
         }
 
+        // Update ALL task metadata so the conversation always reflects the latest assignment
+        if (title) { updateExprParts.push('title = :ttl'); exprValues[':ttl'] = title; }
+        if (description) { updateExprParts.push('description = :desc'); exprValues[':desc'] = description; }
         if (deadline) { updateExprParts.push('deadline = :dl'); exprValues[':dl'] = String(deadline); }
-        if (priority && priority !== 'Medium') { updateExprParts.push('priority = :pri'); exprValues[':pri'] = priority; }
+        if (priority) { updateExprParts.push('priority = :pri'); exprValues[':pri'] = priority; }
+        if (category) { updateExprParts.push('category = :cat'); exprValues[':cat'] = category; }
+        if (requestType) { updateExprParts.push('requestType = :rt'); exprValues[':rt'] = requestType; }
 
         // Increment unread count
         updateExprParts.push('unreadCount = if_not_exists(unreadCount, :zero) + :incr');
@@ -1816,13 +1825,22 @@ async function startFavorRequest(
         const updatedFavor = updateResult.Attributes as FavorRequest;
 
         // Save the task message into the existing conversation
+        // Use type 'task' to store task metadata so every assignment is persisted
+        const isTask = requestType === 'Assign Task' || requestType === 'IT Ticket';
         const messageData: MessageData = {
             messageID: uuidv4(),
             favorRequestID: existingID,
             senderID,
             content: initialMessage,
             timestamp,
-            type: 'text',
+            type: isTask ? 'task' : 'text',
+            // Embed task metadata in the message so each task is stored in the DB
+            ...(isTask && title && { taskTitle: title }),
+            ...(isTask && description && { taskDescription: description }),
+            ...(isTask && priority && { taskPriority: priority }),
+            ...(isTask && deadline && { taskDeadline: String(deadline) }),
+            ...(isTask && category && { taskCategory: category }),
+            ...(isTask && requestType && { taskRequestType: requestType }),
         };
         await _saveAndBroadcastMessage(messageData, apiGwManagement, isGroupRequest ? recipients : undefined);
 
@@ -1907,13 +1925,20 @@ async function startFavorRequest(
     }));
 
     // 2. Create the initial message
+    const isNewTask = requestType === 'Assign Task' || requestType === 'IT Ticket';
     const messageData: MessageData = {
         messageID: uuidv4(),
         favorRequestID,
         senderID,
         content: initialMessage,
         timestamp,
-        type: 'text',
+        type: isNewTask ? 'task' : 'text',
+        ...(isNewTask && title && { taskTitle: title }),
+        ...(isNewTask && description && { taskDescription: description }),
+        ...(isNewTask && priority && { taskPriority: priority }),
+        ...(isNewTask && deadline && { taskDeadline: String(deadline) }),
+        ...(isNewTask && category && { taskCategory: category }),
+        ...(isNewTask && requestType && { taskRequestType: requestType }),
     };
 
     // 3. Save message and broadcast
