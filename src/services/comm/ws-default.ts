@@ -85,7 +85,7 @@ interface Team {
 }
 
 // Task status values
-type TaskStatus = 'pending' | 'active' | 'in_progress' | 'completed' | 'rejected' | 'forwarded';
+type TaskStatus = 'pending' | 'active' | 'in_progress' | 'completed' | 'rejected' | 'forwarded' | 'deleted';
 type TaskPriority = 'Low' | 'Medium' | 'High' | 'Urgent';
 
 /**
@@ -169,6 +169,10 @@ interface FavorRequest {
 
     // Forwarded badge: true when the task has been forwarded
     isForwarded?: boolean;
+
+    // Deterministic participant key for dedup: sorted userIDs joined with '#'
+    // e.g. for 1-on-1: "userA#userB" (alphabetically sorted)
+    participantKey?: string;
 }
 
 interface Meeting {
@@ -198,6 +202,7 @@ interface FileDetails {
 }
 
 interface MessageData {
+    messageID?: string;
     favorRequestID: string;
     senderID: string;
     content: string;
@@ -1474,13 +1479,38 @@ async function handleOpenGroupChat(
 
         const conversations = (existingConvos.Items || []) as FavorRequest[];
 
-        // Find the main group chat (first one marked as main, or fallback to first conversation)
-        const mainConvo = conversations.find(c => (c as any).isMainGroupChat === true)
-            || conversations[0];
+        // Strict dedup: exclude only permanently deleted conversations
+        const nonDeletedConvos = conversations.filter(c => c.status !== 'deleted');
+        const mainConvo = nonDeletedConvos.find(c => (c as any).isMainGroupChat === true)
+            || nonDeletedConvos[0];
 
         if (mainConvo) {
             // 4a. Return existing conversation and its history
             console.log(`Opening existing group chat: ${mainConvo.favorRequestID} for team ${teamID}`);
+
+            // Reactivate if completed/rejected
+            if (mainConvo.status === 'completed' || mainConvo.status === 'rejected') {
+                console.log(`🔄 Reactivating group conversation ${mainConvo.favorRequestID} back to active`);
+                await ddb.send(new UpdateCommand({
+                    TableName: FAVORS_TABLE,
+                    Key: { favorRequestID: mainConvo.favorRequestID },
+                    UpdateExpression: 'SET #st = :active, updatedAt = :ua',
+                    ExpressionAttributeNames: { '#st': 'status' },
+                    ExpressionAttributeValues: { ':active': 'active', ':ua': new Date().toISOString() },
+                }));
+                mainConvo.status = 'active' as TaskStatus;
+            }
+
+            // Clean up deletedBy for the caller
+            if (mainConvo.deletedBy && Array.isArray(mainConvo.deletedBy) && mainConvo.deletedBy.includes(callerID)) {
+                const cleanedDeletedBy = mainConvo.deletedBy.filter((id: string) => id !== callerID);
+                await ddb.send(new UpdateCommand({
+                    TableName: FAVORS_TABLE,
+                    Key: { favorRequestID: mainConvo.favorRequestID },
+                    UpdateExpression: 'SET deletedBy = :cleaned',
+                    ExpressionAttributeValues: { ':cleaned': cleanedDeletedBy },
+                }));
+            }
 
             // Fetch message history
             const messagesResult = await ddb.send(new QueryCommand({
@@ -1688,37 +1718,49 @@ async function startFavorRequest(
             ScanIndexForward: false,
         }));
         const convos = (existingConvos.Items || []) as FavorRequest[];
-        // Prefer the main group chat, fallback to any active conversation
-        existingFavor = convos.find(c => (c as any).isMainGroupChat === true)
-            || convos.find(c => c.status !== 'completed' && c.status !== 'rejected')
-            || convos[0];
+        // Strict dedup: find ANY conversation for this team (regardless of status)
+        // Only permanently deleted conversations are excluded
+        const nonDeletedConvos = convos.filter(c => c.status !== 'deleted');
+        existingFavor = nonDeletedConvos.find(c => (c as any).isMainGroupChat === true)
+            || nonDeletedConvos[0];
     } else {
-        // 1-to-1: Query both directions (A→B and B→A)
-        const [sentResult, recvResult] = await Promise.all([
+        // ──────────────────────────────────────────────────────────────
+        // STRICT 1-ON-1 DEDUP: "One conversation per unique pair of users"
+        //
+        // We query both directions (A→B and B→A) using server-side
+        // FilterExpression to match the exact receiverID and exclude
+        // group conversations. We do NOT filter by status so that
+        // completed/rejected conversations are also found and reused
+        // instead of creating duplicates.
+        // ──────────────────────────────────────────────────────────────
+        const [dirAB, dirBA] = await Promise.all([
             ddb.send(new QueryCommand({
                 TableName: FAVORS_TABLE,
                 IndexName: 'SenderIndex',
                 KeyConditionExpression: 'senderID = :sid',
-                ExpressionAttributeValues: { ':sid': senderID },
+                FilterExpression: 'receiverID = :rid AND attribute_not_exists(teamID)',
+                ExpressionAttributeValues: { ':sid': senderID, ':rid': receiverID },
                 ScanIndexForward: false,
             })),
             ddb.send(new QueryCommand({
                 TableName: FAVORS_TABLE,
                 IndexName: 'SenderIndex',
                 KeyConditionExpression: 'senderID = :sid',
-                ExpressionAttributeValues: { ':sid': receiverID },
+                FilterExpression: 'receiverID = :rid AND attribute_not_exists(teamID)',
+                ExpressionAttributeValues: { ':sid': receiverID, ':rid': senderID },
                 ScanIndexForward: false,
             })),
         ]);
 
         const allConvos = [
-            ...(sentResult.Items || []),
-            ...(recvResult.Items || []),
+            ...(dirAB.Items || []),
+            ...(dirBA.Items || []),
         ] as FavorRequest[];
 
-        // Find an existing active conversation between these two users (either direction)
+        // Find ANY existing 1-on-1 conversation between these two users
+        // regardless of status (except permanently deleted)
         existingFavor = allConvos.find(c =>
-            c.status !== 'completed' && c.status !== 'rejected' &&
+            c.status !== 'deleted' &&
             ((c.senderID === senderID && c.receiverID === receiverID) ||
                 (c.senderID === receiverID && c.receiverID === senderID))
         );
@@ -1734,6 +1776,22 @@ async function startFavorRequest(
         const updateExprParts: string[] = ['updatedAt = :ua'];
         const exprValues: Record<string, any> = { ':ua': new Date().toISOString() };
         const exprNames: Record<string, string> = {};
+
+        // REACTIVATION: If the conversation was completed/rejected, bring it back to active
+        if (existingFavor.status === 'completed' || existingFavor.status === 'rejected') {
+            console.log(`🔄 Reactivating ${existingFavor.status} conversation ${existingID} back to active`);
+            updateExprParts.push('#st = :newStatus');
+            exprValues[':newStatus'] = 'active';
+            exprNames['#st'] = 'status';
+        }
+
+        // SOFT-DELETE CLEANUP: If the sender previously deleted this conversation,
+        // remove them from deletedBy so it becomes visible again
+        if (existingFavor.deletedBy && Array.isArray(existingFavor.deletedBy) && existingFavor.deletedBy.includes(senderID)) {
+            const cleanedDeletedBy = existingFavor.deletedBy.filter((id: string) => id !== senderID);
+            updateExprParts.push('deletedBy = :cleanedDeletedBy');
+            exprValues[':cleanedDeletedBy'] = cleanedDeletedBy;
+        }
 
         if (deadline) { updateExprParts.push('deadline = :dl'); exprValues[':dl'] = String(deadline); }
         if (priority && priority !== 'Medium') { updateExprParts.push('priority = :pri'); exprValues[':pri'] = priority; }
@@ -1807,11 +1865,19 @@ async function startFavorRequest(
     const timestamp = Date.now();
     const nowIso = new Date().toISOString();
 
+    // Compute deterministic participant key for 1-on-1 dedup
+    // Sorted alphabetically so A→B and B→A produce the same key
+    const participantKey = isGroupRequest
+        ? undefined
+        : [senderID, receiverID as string].sort().join('#');
+
     const newFavor: FavorRequest = {
         favorRequestID,
         senderID,
         // Include receiverID only for 1-to-1, teamID only for group
         ...(isGroupRequest ? { teamID: teamID } : { receiverID: receiverID }),
+        // Participant key for strict dedup (1-on-1 only)
+        ...(participantKey && { participantKey }),
         // Enhanced task fields
         title: title || initialMessage.substring(0, 100),
         description: description || initialMessage,
