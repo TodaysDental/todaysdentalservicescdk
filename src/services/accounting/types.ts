@@ -137,6 +137,8 @@ export interface ReconciliationRow {
   openDentalRowId?: string;
   bankRowId?: string;
   patientName?: string;
+  paymentDate?: string;
+  matchPass?: string;
 }
 
 // ========================================

@@ -123,6 +123,8 @@ interface ClinicSecret {
   // RCS messaging configuration
   rcsSenderId?: string;
   messagingServiceSid?: string;
+  // Cherry financing API key
+  cherryApiKey?: string;
 }
 
 interface GlobalSecret {
@@ -190,6 +192,8 @@ async function seedClinicSecrets(): Promise<number> {
     // RCS messaging configuration
     rcsSenderId: secret.rcsSenderId,
     messagingServiceSid: secret.messagingServiceSid,
+    // Cherry financing API key
+    cherryApiKey: secret.cherryApiKey,
     updatedAt: new Date().toISOString(),
   }));
 

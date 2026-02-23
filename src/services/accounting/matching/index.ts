@@ -858,6 +858,29 @@ abstract class BaseMatchingStrategy implements MatchingStrategy {
       });
     }
 
+    // ===== POST-PROCESSING: Enrich rows with paymentDate + matchPass =====
+    for (const result of results) {
+      // Add paymentDate from OD row or bank row
+      if (result.openDentalRow) {
+        result.row.paymentDate = result.openDentalRow.paymentDate;
+      } else if (result.bankRow) {
+        result.row.paymentDate = result.bankRow.date;
+      }
+
+      // Derive matchPass from reason text
+      const reason = result.row.reason || '';
+      if (reason.includes('Exact reference match')) result.row.matchPass = 'Pass 1: Exact Ref';
+      else if (reason.includes('Partial reference match')) result.row.matchPass = 'Pass 1b: Partial Ref';
+      else if (reason.includes('Reference found in bank description')) result.row.matchPass = 'Pass 1c: Ref-in-Desc';
+      else if (reason.includes('Amount+Date match')) result.row.matchPass = 'Pass 2: Amt+Date';
+      else if (reason.includes('Net-amount match (after fees)')) result.row.matchPass = 'Pass 2: Net Amt+Date';
+      else if (reason.includes('Reference+Net match')) result.row.matchPass = 'Pass 2b: Ref+Net';
+      else if (reason.includes('Batch settlement')) result.row.matchPass = 'Pass 2c: Batch';
+      else if (reason.includes('Amount-only match')) result.row.matchPass = 'Pass 3: Amt Only';
+      else if (reason.includes('Net-amount-only match')) result.row.matchPass = 'Pass 3b: Net Amt Only';
+      else if (result.row.status === 'UNMATCHED') result.row.matchPass = 'Unmatched';
+    }
+
     return results;
   }
 
