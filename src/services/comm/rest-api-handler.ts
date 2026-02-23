@@ -172,7 +172,7 @@ type SystemModule = typeof SYSTEM_MODULES[number];
 const ddb = DynamoDBDocumentClient.from(new DynamoDBClient({ region: REGION }));
 
 // Types
-type TaskStatus = 'pending' | 'active' | 'in_progress' | 'completed' | 'rejected' | 'forwarded';
+type TaskStatus = 'pending' | 'active' | 'in_progress' | 'completed' | 'rejected' | 'forwarded' | 'deleted';
 type TaskPriority = 'Low' | 'Medium' | 'High' | 'Urgent';
 
 interface ForwardRecord {
@@ -220,6 +220,17 @@ interface FavorRequest {
     lastMessage?: string;
     lastMessageAt?: string;
     lastMessageSenderID?: string;
+
+    // Per-user deletion: list of userIDs who have deleted this conversation from their view
+    deletedBy?: string[];
+
+    // Task badge: true when this conversation was created via task assignment
+    isTask?: boolean;
+
+    // Forwarded badge: true when the task has been forwarded
+    isForwarded?: boolean;
+    // Deterministic participant key for dedup: sorted userIDs joined with '#'
+    participantKey?: string;
 }
 
 interface Team {
@@ -448,6 +459,10 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
             log.info('Routing to deleteConversation', { ...logCtx, favorRequestID });
             routeMatched = true;
             result = await deleteConversation(authedUserID, favorRequestID, queryStringParameters, logCtx);
+        } else if (path.match(/^\/api\/conversations\/find-or-create$/) && httpMethod === 'POST') {
+            log.info('Routing to findOrCreateConversation', logCtx);
+            routeMatched = true;
+            result = await findOrCreateConversation(authedUserID, parsedBody, logCtx);
         } else if (path.match(/^\/api\/conversations$/) && httpMethod === 'GET') {
             log.info('Routing to getConversations', logCtx);
             routeMatched = true;
@@ -581,10 +596,10 @@ async function searchConversations(userID: string, params: any, logCtx?: LogCont
 
     log.debug('Search params', { ...fnCtx, query, status, type, sort, category, priority, limit, offset });
 
-    // Query by sender and receiver indexes, merge results
+    // Query by sender, receiver, AND currentAssignee indexes to catch forwarded tasks
     const dbStart = Date.now();
-    log.dbOperation('Query', FAVORS_TABLE, { indexes: ['SenderIndex', 'ReceiverIndex'], userID }, fnCtx);
-    const [sentResult, recvResult] = await Promise.all([
+    log.dbOperation('Query', FAVORS_TABLE, { indexes: ['SenderIndex', 'ReceiverIndex', 'CurrentAssigneeIndex'], userID }, fnCtx);
+    const [sentResult, recvResult, assigneeResult] = await Promise.all([
         ddb.send(new QueryCommand({
             TableName: FAVORS_TABLE,
             IndexName: 'SenderIndex',
@@ -599,10 +614,17 @@ async function searchConversations(userID: string, params: any, logCtx?: LogCont
             ExpressionAttributeValues: { ':uid': userID },
             ScanIndexForward: false,
         })),
+        ddb.send(new QueryCommand({
+            TableName: FAVORS_TABLE,
+            IndexName: 'CurrentAssigneeIndex',
+            KeyConditionExpression: 'currentAssigneeID = :uid',
+            ExpressionAttributeValues: { ':uid': userID },
+            ScanIndexForward: false,
+        })),
     ]);
-    log.dbResult('Query', FAVORS_TABLE, (sentResult.Items?.length || 0) + (recvResult.Items?.length || 0), Date.now() - dbStart, fnCtx);
+    log.dbResult('Query', FAVORS_TABLE, (sentResult.Items?.length || 0) + (recvResult.Items?.length || 0) + (assigneeResult.Items?.length || 0), Date.now() - dbStart, fnCtx);
 
-    let conversations = [...(sentResult.Items || []), ...(recvResult.Items || [])] as FavorRequest[];
+    let conversations = [...(sentResult.Items || []), ...(recvResult.Items || []), ...(assigneeResult.Items || [])] as FavorRequest[];
     log.flowCount('searchConversations', 'rawResults', conversations.length, fnCtx);
 
     // Deduplicate
@@ -612,6 +634,10 @@ async function searchConversations(userID: string, params: any, logCtx?: LogCont
     }
     conversations = Array.from(byId.values());
     log.flowCount('searchConversations', 'afterDedupe', conversations.length, fnCtx);
+
+    // Filter out conversations deleted by this user (per-user) or permanently deleted (forEveryone)
+    conversations = conversations.filter(c => c.status !== 'deleted' && !(c.deletedBy && c.deletedBy.includes(userID)));
+    log.flowCount('searchConversations', 'afterDeleteFilter', conversations.length, fnCtx);
 
     // Filter
     if (query) {
@@ -659,10 +685,10 @@ async function getConversationProfiles(userID: string, params: any, logCtx?: Log
 
     log.debug('Profile params', { ...fnCtx, tab, status, limit, offset });
 
-    // For single conversations, query both sender and receiver
+    // For single conversations, query sender, receiver, AND currentAssignee (forwarded tasks)
     const dbStart = Date.now();
-    log.dbOperation('Query', FAVORS_TABLE, { indexes: ['SenderIndex', 'ReceiverIndex'], userID }, fnCtx);
-    const [sentResult, recvResult] = await Promise.all([
+    log.dbOperation('Query', FAVORS_TABLE, { indexes: ['SenderIndex', 'ReceiverIndex', 'CurrentAssigneeIndex'], userID }, fnCtx);
+    const [sentResult, recvResult, assigneeResult] = await Promise.all([
         ddb.send(new QueryCommand({
             TableName: FAVORS_TABLE,
             IndexName: 'SenderIndex',
@@ -677,10 +703,17 @@ async function getConversationProfiles(userID: string, params: any, logCtx?: Log
             ExpressionAttributeValues: { ':uid': userID },
             ScanIndexForward: false,
         })),
+        ddb.send(new QueryCommand({
+            TableName: FAVORS_TABLE,
+            IndexName: 'CurrentAssigneeIndex',
+            KeyConditionExpression: 'currentAssigneeID = :uid',
+            ExpressionAttributeValues: { ':uid': userID },
+            ScanIndexForward: false,
+        })),
     ]);
-    log.dbResult('Query', FAVORS_TABLE, (sentResult.Items?.length || 0) + (recvResult.Items?.length || 0), Date.now() - dbStart, fnCtx);
+    log.dbResult('Query', FAVORS_TABLE, (sentResult.Items?.length || 0) + (recvResult.Items?.length || 0) + (assigneeResult.Items?.length || 0), Date.now() - dbStart, fnCtx);
 
-    let items = [...(sentResult.Items || []), ...(recvResult.Items || [])] as FavorRequest[];
+    let items = [...(sentResult.Items || []), ...(recvResult.Items || []), ...(assigneeResult.Items || [])] as FavorRequest[];
     log.flowCount('getConversationProfiles', 'rawResults', items.length, fnCtx);
 
     // Deduplicate and filter by tab type
@@ -694,6 +727,10 @@ async function getConversationProfiles(userID: string, params: any, logCtx?: Log
     }
     items = Array.from(byId.values());
     log.flowCount('getConversationProfiles', 'afterTabFilter', items.length, fnCtx);
+
+    // Filter out conversations deleted by this user (per-user) or permanently deleted (forEveryone)
+    items = items.filter(i => i.status !== 'deleted' && !(i.deletedBy && i.deletedBy.includes(userID)));
+    log.flowCount('getConversationProfiles', 'afterDeleteFilter', items.length, fnCtx);
 
     // Filter by status
     if (status) {
@@ -876,6 +913,7 @@ async function updateConversationDeadline(userID: string, favorRequestID: string
 async function deleteConversation(userID: string, favorRequestID: string, params: any, logCtx?: LogContext): Promise<APIGatewayProxyResult> {
     const fnStart = Date.now();
     const fnCtx = { ...logCtx, function: 'deleteConversation', favorRequestID };
+    const deleteType = params?.deleteType || 'forMe'; // 'forMe' or 'forEveryone'
 
     const dbStart = Date.now();
     log.dbOperation('GetItem', FAVORS_TABLE, { favorRequestID }, fnCtx);
@@ -886,33 +924,298 @@ async function deleteConversation(userID: string, favorRequestID: string, params
     log.dbResult('GetItem', FAVORS_TABLE, favorResult.Item ? 1 : 0, Date.now() - dbStart, fnCtx);
     const favor = favorResult.Item as FavorRequest;
 
-    if (!favor || favor.senderID !== userID) {
-        log.warn('Unauthorized delete attempt', { ...fnCtx, favorExists: !!favor, isCreator: favor?.senderID === userID });
-        return response(403, { success: false, message: 'Unauthorized: Only the creator can delete' });
+    if (!favor) {
+        log.warn('Conversation not found for delete', fnCtx);
+        return response(404, { success: false, message: 'Conversation not found' });
     }
 
-    // Soft delete
+    // Allow any participant (sender, receiver, or current assignee) to delete
+    const isParticipant = favor.senderID === userID || favor.receiverID === userID || favor.currentAssigneeID === userID;
+    if (!isParticipant) {
+        log.warn('Unauthorized delete attempt', { ...fnCtx, isParticipant: false });
+        return response(403, { success: false, message: 'Unauthorized: You are not a participant of this conversation' });
+    }
+
     const nowIso = new Date().toISOString();
-    const updateStart = Date.now();
-    log.dbOperation('UpdateItem', FAVORS_TABLE, { favorRequestID, action: 'soft-delete' }, fnCtx);
-    await ddb.send(new UpdateCommand({
-        TableName: FAVORS_TABLE,
-        Key: { favorRequestID },
-        UpdateExpression: 'SET #s = :status, updatedAt = :ua',
-        ExpressionAttributeNames: { '#s': 'status' },
-        ExpressionAttributeValues: { ':status': 'deleted', ':ua': nowIso },
-    }));
-    log.dbResult('UpdateItem', FAVORS_TABLE, 1, Date.now() - updateStart, fnCtx);
 
-    log.info('deleteConversation completed', { ...fnCtx, durationMs: Date.now() - fnStart });
+    if (deleteType === 'forEveryone') {
+        // === PERMANENT DELETE: Set status to 'deleted' — hides for ALL participants ===
+        const updateStart = Date.now();
+        log.dbOperation('UpdateItem', FAVORS_TABLE, { favorRequestID, action: 'permanent-delete' }, fnCtx);
+        await ddb.send(new UpdateCommand({
+            TableName: FAVORS_TABLE,
+            Key: { favorRequestID },
+            UpdateExpression: 'SET #s = :status, updatedAt = :ua',
+            ExpressionAttributeNames: { '#s': 'status' },
+            ExpressionAttributeValues: { ':status': 'deleted', ':ua': nowIso },
+        }));
+        log.dbResult('UpdateItem', FAVORS_TABLE, 1, Date.now() - updateStart, fnCtx);
 
-    return response(200, {
-        success: true,
-        message: 'Conversation deleted successfully',
-        deleted: { conversationID: favorRequestID },
-    });
+        log.info('deleteConversation completed (forEveryone)', { ...fnCtx, deletedByUser: userID, durationMs: Date.now() - fnStart });
+
+        return response(200, {
+            success: true,
+            message: 'Conversation permanently deleted for everyone',
+            deleted: { conversationID: favorRequestID, deleteType: 'forEveryone' },
+        });
+    } else {
+        // === PER-USER DELETE: Add userID to deletedBy list — hides only for this user ===
+        const currentDeletedBy = favor.deletedBy || [];
+        if (currentDeletedBy.includes(userID)) {
+            return response(200, {
+                success: true,
+                message: 'Conversation already deleted from your view',
+                deleted: { conversationID: favorRequestID, deleteType: 'forMe' },
+            });
+        }
+        const updatedDeletedBy = [...currentDeletedBy, userID];
+
+        const updateStart = Date.now();
+        log.dbOperation('UpdateItem', FAVORS_TABLE, { favorRequestID, action: 'per-user-delete', deletedByUser: userID }, fnCtx);
+        await ddb.send(new UpdateCommand({
+            TableName: FAVORS_TABLE,
+            Key: { favorRequestID },
+            UpdateExpression: 'SET deletedBy = :db, updatedAt = :ua',
+            ExpressionAttributeValues: { ':db': updatedDeletedBy, ':ua': nowIso },
+        }));
+        log.dbResult('UpdateItem', FAVORS_TABLE, 1, Date.now() - updateStart, fnCtx);
+
+        log.info('deleteConversation completed (forMe)', { ...fnCtx, deletedByUser: userID, totalDeletedBy: updatedDeletedBy.length, durationMs: Date.now() - fnStart });
+
+        return response(200, {
+            success: true,
+            message: 'Conversation deleted from your view',
+            deleted: { conversationID: favorRequestID, deleteType: 'forMe' },
+        });
+    }
 }
 
+// ========================================
+// FIND OR CREATE CONVERSATION
+// ========================================
+
+/**
+ * POST /api/conversations/find-or-create
+ *
+ * Unified endpoint that ensures exactly ONE conversation per unique set of participants.
+ * The caller supplies participantIds (all user IDs including self). This function:
+ *   1. Sorts participant IDs alphabetically to build a deterministic key.
+ *   2. Queries for an existing conversation matching that key.
+ *   3. Returns existing conversation with isNew:false, or creates a new one with isNew:true.
+ *
+ * Body: { participantIds: string[], teamID?: string, title?, description?, priority?, category?, requestType?, deadline?, initialMessage? }
+ */
+async function findOrCreateConversation(userID: string, body: any, logCtx?: LogContext): Promise<APIGatewayProxyResult> {
+    const fnStart = Date.now();
+    const fnCtx = { ...logCtx, function: 'findOrCreateConversation' };
+
+    const {
+        participantIds,
+        teamID,
+        title,
+        description,
+        priority = 'Medium',
+        category,
+        requestType = 'General',
+        deadline,
+        initialMessage,
+    } = body || {};
+
+    // ── Validation ──────────────────────────────────────────────
+    if (!participantIds || !Array.isArray(participantIds) || participantIds.length < 2) {
+        log.validation('participantIds', 'Must be an array of at least 2 user IDs', fnCtx);
+        return response(400, { success: false, message: 'participantIds must be an array of at least 2 user IDs (including yourself).' });
+    }
+
+    // Ensure caller is included
+    if (!participantIds.includes(userID)) {
+        participantIds.push(userID);
+    }
+
+    // Deterministic sorted key
+    const sortedIds = [...new Set(participantIds as string[])].sort();
+    const participantKey = sortedIds.join('#');
+    const isGroup = !!teamID || sortedIds.length > 2;
+
+    log.debug('findOrCreateConversation params', { ...fnCtx, participantKey, isGroup, teamID, participantCount: sortedIds.length });
+
+    try {
+        let existingFavor: FavorRequest | undefined;
+
+        // ── Search for existing conversation ──────────────────────
+        if (isGroup && teamID) {
+            // Group: lookup by TeamIndex
+            const dbStart = Date.now();
+            const existingConvos = await ddb.send(new QueryCommand({
+                TableName: FAVORS_TABLE,
+                IndexName: 'TeamIndex',
+                KeyConditionExpression: 'teamID = :teamID',
+                ExpressionAttributeValues: { ':teamID': teamID },
+                ScanIndexForward: false,
+            }));
+            log.dbResult('Query', FAVORS_TABLE, existingConvos.Items?.length || 0, Date.now() - dbStart, fnCtx);
+
+            const convos = (existingConvos.Items || []) as FavorRequest[];
+            const nonDeleted = convos.filter(c => c.status !== 'deleted');
+            existingFavor = nonDeleted.find(c => c.isMainGroupChat === true) || nonDeleted[0];
+        } else {
+            // 1-on-1: Exactly 2 participants → query both directions
+            const otherUserID = sortedIds.find(id => id !== userID)!;
+
+            const dbStart = Date.now();
+            const [dirAB, dirBA] = await Promise.all([
+                ddb.send(new QueryCommand({
+                    TableName: FAVORS_TABLE,
+                    IndexName: 'SenderIndex',
+                    KeyConditionExpression: 'senderID = :sid',
+                    FilterExpression: 'receiverID = :rid AND attribute_not_exists(teamID)',
+                    ExpressionAttributeValues: { ':sid': userID, ':rid': otherUserID },
+                    ScanIndexForward: false,
+                })),
+                ddb.send(new QueryCommand({
+                    TableName: FAVORS_TABLE,
+                    IndexName: 'SenderIndex',
+                    KeyConditionExpression: 'senderID = :sid',
+                    FilterExpression: 'receiverID = :rid AND attribute_not_exists(teamID)',
+                    ExpressionAttributeValues: { ':sid': otherUserID, ':rid': userID },
+                    ScanIndexForward: false,
+                })),
+            ]);
+            log.dbResult('Query', FAVORS_TABLE, (dirAB.Items?.length || 0) + (dirBA.Items?.length || 0), Date.now() - dbStart, fnCtx);
+
+            const allConvos = [
+                ...(dirAB.Items || []),
+                ...(dirBA.Items || []),
+            ] as FavorRequest[];
+
+            existingFavor = allConvos.find(c =>
+                c.status !== 'deleted' &&
+                ((c.senderID === userID && c.receiverID === otherUserID) ||
+                    (c.senderID === otherUserID && c.receiverID === userID))
+            );
+        }
+
+        // ── Existing conversation found → reuse ──────────────────
+        if (existingFavor) {
+            const existingID = existingFavor.favorRequestID;
+            log.info('Reusing existing conversation', { ...fnCtx, existingID, currentStatus: existingFavor.status });
+
+            const updateExprParts: string[] = ['updatedAt = :ua'];
+            const exprValues: Record<string, any> = { ':ua': new Date().toISOString() };
+            const exprNames: Record<string, string> = {};
+
+            // Reactivate if completed/rejected
+            if (existingFavor.status === 'completed' || existingFavor.status === 'rejected') {
+                updateExprParts.push('#st = :newStatus');
+                exprValues[':newStatus'] = 'active';
+                exprNames['#st'] = 'status';
+                existingFavor.status = 'active' as TaskStatus;
+            }
+
+            // Clean up deletedBy for caller
+            if (existingFavor.deletedBy && Array.isArray(existingFavor.deletedBy) && existingFavor.deletedBy.includes(userID)) {
+                const cleanedDeletedBy = existingFavor.deletedBy.filter((id: string) => id !== userID);
+                updateExprParts.push('deletedBy = :cleanedDeletedBy');
+                exprValues[':cleanedDeletedBy'] = cleanedDeletedBy;
+            }
+
+            // Optional metadata updates
+            if (deadline) { updateExprParts.push('deadline = :dl'); exprValues[':dl'] = String(deadline); }
+            if (priority && priority !== 'Medium') { updateExprParts.push('priority = :pri'); exprValues[':pri'] = priority; }
+            if (title) { updateExprParts.push('title = :ttl'); exprValues[':ttl'] = title; }
+
+            await ddb.send(new UpdateCommand({
+                TableName: FAVORS_TABLE,
+                Key: { favorRequestID: existingID },
+                UpdateExpression: `SET ${updateExprParts.join(', ')}`,
+                ExpressionAttributeValues: exprValues,
+                ...(Object.keys(exprNames).length > 0 ? { ExpressionAttributeNames: exprNames } : {}),
+            }));
+
+            log.info('findOrCreateConversation: reused', { ...fnCtx, existingID, durationMs: Date.now() - fnStart });
+
+            return response(200, {
+                success: true,
+                conversationId: existingID,
+                conversation: existingFavor,
+                isNew: false,
+            });
+        }
+
+        // ── No existing conversation → create a new one ────────────
+        const conversationID = uuidv4();
+        const nowIso = new Date().toISOString();
+        const otherUserID = sortedIds.find(id => id !== userID);
+
+        const newFavor: FavorRequest = {
+            favorRequestID: conversationID,
+            senderID: userID,
+            ...(isGroup && teamID ? { teamID } : { receiverID: otherUserID }),
+            ...((!isGroup) && { participantKey }),
+            title: title || initialMessage?.substring(0, 100) || 'New conversation',
+            description: description || initialMessage || '',
+            status: 'active' as TaskStatus,
+            priority: (priority || 'Medium') as TaskPriority,
+            ...(category && { category: category as SystemModule }),
+            createdAt: nowIso,
+            updatedAt: nowIso,
+            userID,
+            requestType: requestType || 'General',
+            unreadCount: 0,
+            initialMessage: initialMessage || '',
+            ...(deadline && { deadline: String(deadline) }),
+            ...(requestType === 'Assign Task' && { isTask: true }),
+        };
+
+        const dbStart = Date.now();
+        await ddb.send(new PutCommand({
+            TableName: FAVORS_TABLE,
+            Item: newFavor,
+        }));
+        log.dbResult('PutItem', FAVORS_TABLE, 1, Date.now() - dbStart, fnCtx);
+
+        // If an initial message was provided, save it as the first message
+        if (initialMessage) {
+            const messageID = `${conversationID}-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
+            await ddb.send(new PutCommand({
+                TableName: MESSAGES_TABLE,
+                Item: {
+                    messageID,
+                    favorRequestID: conversationID,
+                    senderID: userID,
+                    content: initialMessage,
+                    timestamp: Date.now(),
+                    type: 'text',
+                },
+            }));
+
+            // Update last message fields on the conversation
+            await ddb.send(new UpdateCommand({
+                TableName: FAVORS_TABLE,
+                Key: { favorRequestID: conversationID },
+                UpdateExpression: 'SET lastMessage = :lm, lastMessageAt = :lma, lastMessageSenderID = :lms',
+                ExpressionAttributeValues: {
+                    ':lm': initialMessage.substring(0, 200),
+                    ':lma': nowIso,
+                    ':lms': userID,
+                },
+            }));
+        }
+
+        log.info('findOrCreateConversation: created new', { ...fnCtx, conversationID, durationMs: Date.now() - fnStart });
+
+        return response(201, {
+            success: true,
+            conversationId: conversationID,
+            conversation: newFavor,
+            isNew: true,
+        });
+    } catch (error: any) {
+        const err = error instanceof Error ? error : new Error(String(error));
+        log.error('findOrCreateConversation failed', fnCtx, err);
+        return response(500, { success: false, message: 'Failed to find or create conversation' });
+    }
+}
 async function getConversations(userID: string, params: any, logCtx?: LogContext): Promise<APIGatewayProxyResult> {
     const fnStart = Date.now();
     const fnCtx = { ...logCtx, function: 'getConversations' };
@@ -920,9 +1223,10 @@ async function getConversations(userID: string, params: any, logCtx?: LogContext
 
     log.debug('Get conversations params', { ...fnCtx, tab, status, category, limit, offset });
 
+    // Step 1: Query direct indexes (sender, receiver, currentAssignee)
     const dbStart = Date.now();
-    log.dbOperation('Query', FAVORS_TABLE, { indexes: ['SenderIndex', 'ReceiverIndex'], userID }, fnCtx);
-    const [sentResult, recvResult] = await Promise.all([
+    log.dbOperation('Query', FAVORS_TABLE, { indexes: ['SenderIndex', 'ReceiverIndex', 'CurrentAssigneeIndex'], userID }, fnCtx);
+    const [sentResult, recvResult, assigneeResult] = await Promise.all([
         ddb.send(new QueryCommand({
             TableName: FAVORS_TABLE,
             IndexName: 'SenderIndex',
@@ -937,11 +1241,57 @@ async function getConversations(userID: string, params: any, logCtx?: LogContext
             ExpressionAttributeValues: { ':uid': userID },
             ScanIndexForward: false,
         })),
+        ddb.send(new QueryCommand({
+            TableName: FAVORS_TABLE,
+            IndexName: 'CurrentAssigneeIndex',
+            KeyConditionExpression: 'currentAssigneeID = :uid',
+            ExpressionAttributeValues: { ':uid': userID },
+            ScanIndexForward: false,
+        })),
     ]);
-    log.dbResult('Query', FAVORS_TABLE, (sentResult.Items?.length || 0) + (recvResult.Items?.length || 0), Date.now() - dbStart, fnCtx);
+    log.dbResult('Query', FAVORS_TABLE, (sentResult.Items?.length || 0) + (recvResult.Items?.length || 0) + (assigneeResult.Items?.length || 0), Date.now() - dbStart, fnCtx);
 
-    let conversations = [...(sentResult.Items || []), ...(recvResult.Items || [])] as FavorRequest[];
+    let conversations = [...(sentResult.Items || []), ...(recvResult.Items || []), ...(assigneeResult.Items || [])] as FavorRequest[];
     log.flowCount('getConversations', 'rawResults', conversations.length, fnCtx);
+
+    // Step 2: Fetch group conversations via TeamIndex (matches WS fetchRequests logic)
+    if (TEAMS_TABLE) {
+        try {
+            const teamScanStart = Date.now();
+            log.dbOperation('Scan', TEAMS_TABLE, { filter: 'contains(members, userID)' }, fnCtx);
+            const teamsResult = await ddb.send(new ScanCommand({
+                TableName: TEAMS_TABLE,
+                FilterExpression: 'contains(members, :uid)',
+                ExpressionAttributeValues: { ':uid': userID },
+                ProjectionExpression: 'teamID',
+            }));
+            const teamIDs = (teamsResult.Items || []).map((item: any) => item.teamID as string);
+            log.dbResult('Scan', TEAMS_TABLE, teamIDs.length, Date.now() - teamScanStart, fnCtx);
+
+            if (teamIDs.length > 0) {
+                const teamQueryStart = Date.now();
+                log.dbOperation('Query', FAVORS_TABLE, { index: 'TeamIndex', teamCount: teamIDs.length }, fnCtx);
+                const teamConvResults = await Promise.all(
+                    teamIDs.map(teamID =>
+                        ddb.send(new QueryCommand({
+                            TableName: FAVORS_TABLE,
+                            IndexName: 'TeamIndex',
+                            KeyConditionExpression: 'teamID = :tid',
+                            ExpressionAttributeValues: { ':tid': teamID },
+                            ScanIndexForward: false,
+                        }))
+                    )
+                );
+                const groupConversations = teamConvResults.flatMap(r => r.Items || []) as FavorRequest[];
+                log.dbResult('Query', FAVORS_TABLE, groupConversations.length, Date.now() - teamQueryStart, fnCtx);
+                log.flowCount('getConversations', 'groupConversations', groupConversations.length, fnCtx);
+                conversations = [...conversations, ...groupConversations];
+            }
+        } catch (teamErr) {
+            log.error('Failed to fetch group conversations via TeamIndex', fnCtx, teamErr as Error);
+            // Continue with non-group results rather than failing entirely
+        }
+    }
 
     // Deduplicate
     const byId = new Map<string, FavorRequest>();
@@ -950,6 +1300,10 @@ async function getConversations(userID: string, params: any, logCtx?: LogContext
     }
     conversations = Array.from(byId.values());
     log.flowCount('getConversations', 'afterDedupe', conversations.length, fnCtx);
+
+    // Filter out conversations deleted by this user (per-user) or permanently deleted (forEveryone)
+    conversations = conversations.filter(c => c.status !== 'deleted' && !(c.deletedBy && c.deletedBy.includes(userID)));
+    log.flowCount('getConversations', 'afterDeleteFilter', conversations.length, fnCtx);
 
     // Filter
     if (tab === 'single') { conversations = conversations.filter(c => !c.teamID); }

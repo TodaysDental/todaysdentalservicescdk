@@ -1,8 +1,11 @@
 /**
  * HR Rate Limiter
- * 
- * Simple in-memory rate limiting for HR operations
- * Uses a sliding window approach for fair rate limiting
+ *
+ * WARNING: The in-memory functions (checkRateLimit, checkAdvancePayRateLimit,
+ * checkShiftCreationRateLimit, checkApiRateLimit) only limit per Lambda instance.
+ * They do NOT provide distributed rate limiting across concurrent Lambda invocations.
+ * For critical operations, use checkDistributedRateLimit() which is DynamoDB-backed
+ * and works across all Lambda instances.
  */
 
 import { DynamoDBDocumentClient, GetCommand, PutCommand, UpdateCommand } from '@aws-sdk/lib-dynamodb';
@@ -19,8 +22,9 @@ interface RateLimitResult {
 }
 
 /**
- * Check rate limit for an action
- * Uses in-memory cache for speed, falls back to DynamoDB for distributed limiting
+ * Check rate limit for an action (in-memory only, per Lambda instance).
+ * NOTE: This does NOT rate-limit across Lambda instances. For cross-instance
+ * rate limiting, use checkDistributedRateLimit() instead.
  */
 export function checkRateLimit(
     key: string,

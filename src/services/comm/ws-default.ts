@@ -85,7 +85,7 @@ interface Team {
 }
 
 // Task status values
-type TaskStatus = 'pending' | 'active' | 'in_progress' | 'completed' | 'rejected' | 'forwarded';
+type TaskStatus = 'pending' | 'active' | 'in_progress' | 'completed' | 'rejected' | 'forwarded' | 'deleted';
 type TaskPriority = 'Low' | 'Medium' | 'High' | 'Urgent';
 
 /**
@@ -160,6 +160,18 @@ interface FavorRequest {
     lastMessage?: string;
     lastMessageAt?: string;
     lastMessageSenderID?: string;
+
+    // Per-user deletion: list of userIDs who have deleted this conversation from their view
+    deletedBy?: string[];
+
+    // Task badge: true when this conversation was created via task assignment
+    isTask?: boolean;
+
+    // Forwarded badge: true when the task has been forwarded
+    isForwarded?: boolean;
+    // Deterministic participant key for dedup: sorted userIDs joined with '#'
+    // e.g. for 1-on-1: "userA#userB" (alphabetically sorted)
+    participantKey?: string;
 }
 
 interface Meeting {
@@ -189,13 +201,21 @@ interface FileDetails {
 }
 
 interface MessageData {
+    messageID?: string;
     favorRequestID: string;
     senderID: string;
     content: string;
     timestamp: number;
-    type: 'text' | 'file' | 'system';
+    type: 'text' | 'file' | 'system' | 'task';
     fileKey?: string;
     fileDetails?: FileDetails;
+    // Task metadata (present when type === 'task')
+    taskTitle?: string;
+    taskDescription?: string;
+    taskPriority?: string;
+    taskDeadline?: string;
+    taskCategory?: string;
+    taskRequestType?: string;
 }
 
 // ========================================
@@ -1465,13 +1485,38 @@ async function handleOpenGroupChat(
 
         const conversations = (existingConvos.Items || []) as FavorRequest[];
 
-        // Find the main group chat (first one marked as main, or fallback to first conversation)
-        const mainConvo = conversations.find(c => (c as any).isMainGroupChat === true)
-            || conversations[0];
+        // Strict dedup: exclude only permanently deleted conversations
+        const nonDeletedConvos = conversations.filter(c => c.status !== 'deleted');
+        const mainConvo = nonDeletedConvos.find(c => (c as any).isMainGroupChat === true)
+            || nonDeletedConvos[0];
 
         if (mainConvo) {
             // 4a. Return existing conversation and its history
             console.log(`Opening existing group chat: ${mainConvo.favorRequestID} for team ${teamID}`);
+
+            // Reactivate if completed/rejected
+            if (mainConvo.status === 'completed' || mainConvo.status === 'rejected') {
+                console.log(`🔄 Reactivating group conversation ${mainConvo.favorRequestID} back to active`);
+                await ddb.send(new UpdateCommand({
+                    TableName: FAVORS_TABLE,
+                    Key: { favorRequestID: mainConvo.favorRequestID },
+                    UpdateExpression: 'SET #st = :active, updatedAt = :ua',
+                    ExpressionAttributeNames: { '#st': 'status' },
+                    ExpressionAttributeValues: { ':active': 'active', ':ua': new Date().toISOString() },
+                }));
+                mainConvo.status = 'active' as TaskStatus;
+            }
+
+            // Clean up deletedBy for the caller
+            if (mainConvo.deletedBy && Array.isArray(mainConvo.deletedBy) && mainConvo.deletedBy.includes(callerID)) {
+                const cleanedDeletedBy = mainConvo.deletedBy.filter((id: string) => id !== callerID);
+                await ddb.send(new UpdateCommand({
+                    TableName: FAVORS_TABLE,
+                    Key: { favorRequestID: mainConvo.favorRequestID },
+                    UpdateExpression: 'SET deletedBy = :cleaned',
+                    ExpressionAttributeValues: { ':cleaned': cleanedDeletedBy },
+                }));
+            }
 
             // Fetch message history
             const messagesResult = await ddb.send(new QueryCommand({
@@ -1679,55 +1724,89 @@ async function startFavorRequest(
             ScanIndexForward: false,
         }));
         const convos = (existingConvos.Items || []) as FavorRequest[];
-        // Prefer the main group chat, fallback to any active conversation
-        existingFavor = convos.find(c => (c as any).isMainGroupChat === true)
-            || convos.find(c => c.status !== 'completed' && c.status !== 'rejected')
-            || convos[0];
+        // Strict dedup: find ANY conversation for this team (regardless of status)
+        // Only permanently deleted conversations are excluded
+        const nonDeletedConvos = convos.filter(c => c.status !== 'deleted');
+        existingFavor = nonDeletedConvos.find(c => (c as any).isMainGroupChat === true)
+            || nonDeletedConvos[0];
     } else {
-        // 1-to-1: Query both directions (A→B and B→A)
-        const [sentResult, recvResult] = await Promise.all([
+        // ──────────────────────────────────────────────────────────────
+        // STRICT 1-ON-1 DEDUP: "One conversation per unique pair of users"
+        //
+        // We query both directions (A→B and B→A) using server-side
+        // FilterExpression to match the exact receiverID and exclude
+        // group conversations. We do NOT filter by status so that
+        // completed/rejected conversations are also found and reused
+        // instead of creating duplicates.
+        // ──────────────────────────────────────────────────────────────
+        const [dirAB, dirBA] = await Promise.all([
             ddb.send(new QueryCommand({
                 TableName: FAVORS_TABLE,
                 IndexName: 'SenderIndex',
                 KeyConditionExpression: 'senderID = :sid',
-                ExpressionAttributeValues: { ':sid': senderID },
+                FilterExpression: 'receiverID = :rid AND attribute_not_exists(teamID)',
+                ExpressionAttributeValues: { ':sid': senderID, ':rid': receiverID },
                 ScanIndexForward: false,
             })),
             ddb.send(new QueryCommand({
                 TableName: FAVORS_TABLE,
                 IndexName: 'SenderIndex',
                 KeyConditionExpression: 'senderID = :sid',
-                ExpressionAttributeValues: { ':sid': receiverID },
+                FilterExpression: 'receiverID = :rid AND attribute_not_exists(teamID)',
+                ExpressionAttributeValues: { ':sid': receiverID, ':rid': senderID },
                 ScanIndexForward: false,
             })),
         ]);
 
         const allConvos = [
-            ...(sentResult.Items || []),
-            ...(recvResult.Items || []),
+            ...(dirAB.Items || []),
+            ...(dirBA.Items || []),
         ] as FavorRequest[];
 
-        // Find an existing active conversation between these two users (either direction)
+        // Find ANY existing 1-on-1 conversation between these two users
+        // regardless of status (except permanently deleted)
         existingFavor = allConvos.find(c =>
-            c.status !== 'completed' && c.status !== 'rejected' &&
+            c.status !== 'deleted' &&
             ((c.senderID === senderID && c.receiverID === receiverID) ||
                 (c.senderID === receiverID && c.receiverID === senderID))
         );
     }
 
-    // If an existing conversation was found, send the message there instead of creating a new one
+    // If an existing conversation was found, send the message there instead of creating a new one.
+    // All conversations (including task assignments) reuse existing chat profiles.
     if (existingFavor) {
         const existingID = existingFavor.favorRequestID;
         const timestamp = Date.now();
         console.log(`♻️ Reusing existing conversation ${existingID} instead of creating a new one.`);
 
-        // Update conversation metadata (deadline, priority, title) if task fields provided
+        // Update conversation metadata with latest task fields
         const updateExprParts: string[] = ['updatedAt = :ua'];
         const exprValues: Record<string, any> = { ':ua': new Date().toISOString() };
         const exprNames: Record<string, string> = {};
 
+        // REACTIVATION: If the conversation was completed/rejected, bring it back to active
+        if (existingFavor.status === 'completed' || existingFavor.status === 'rejected') {
+            console.log(`🔄 Reactivating ${existingFavor.status} conversation ${existingID} back to active`);
+            updateExprParts.push('#st = :newStatus');
+            exprValues[':newStatus'] = 'active';
+            exprNames['#st'] = 'status';
+        }
+
+        // SOFT-DELETE CLEANUP: If the sender previously deleted this conversation,
+        // remove them from deletedBy so it becomes visible again
+        if (existingFavor.deletedBy && Array.isArray(existingFavor.deletedBy) && existingFavor.deletedBy.includes(senderID)) {
+            const cleanedDeletedBy = existingFavor.deletedBy.filter((id: string) => id !== senderID);
+            updateExprParts.push('deletedBy = :cleanedDeletedBy');
+            exprValues[':cleanedDeletedBy'] = cleanedDeletedBy;
+        }
+
+        // Update ALL task metadata so the conversation always reflects the latest assignment
+        if (title) { updateExprParts.push('title = :ttl'); exprValues[':ttl'] = title; }
+        if (description) { updateExprParts.push('description = :desc'); exprValues[':desc'] = description; }
         if (deadline) { updateExprParts.push('deadline = :dl'); exprValues[':dl'] = String(deadline); }
-        if (priority && priority !== 'Medium') { updateExprParts.push('priority = :pri'); exprValues[':pri'] = priority; }
+        if (priority) { updateExprParts.push('priority = :pri'); exprValues[':pri'] = priority; }
+        if (category) { updateExprParts.push('category = :cat'); exprValues[':cat'] = category; }
+        if (requestType) { updateExprParts.push('requestType = :rt'); exprValues[':rt'] = requestType; }
 
         // Increment unread count
         updateExprParts.push('unreadCount = if_not_exists(unreadCount, :zero) + :incr');
@@ -1746,12 +1825,22 @@ async function startFavorRequest(
         const updatedFavor = updateResult.Attributes as FavorRequest;
 
         // Save the task message into the existing conversation
+        // Use type 'task' to store task metadata so every assignment is persisted
+        const isTask = requestType === 'Assign Task' || requestType === 'IT Ticket';
         const messageData: MessageData = {
+            messageID: uuidv4(),
             favorRequestID: existingID,
             senderID,
             content: initialMessage,
             timestamp,
-            type: 'text',
+            type: isTask ? 'task' : 'text',
+            // Embed task metadata in the message so each task is stored in the DB
+            ...(isTask && title && { taskTitle: title }),
+            ...(isTask && description && { taskDescription: description }),
+            ...(isTask && priority && { taskPriority: priority }),
+            ...(isTask && deadline && { taskDeadline: String(deadline) }),
+            ...(isTask && category && { taskCategory: category }),
+            ...(isTask && requestType && { taskRequestType: requestType }),
         };
         await _saveAndBroadcastMessage(messageData, apiGwManagement, isGroupRequest ? recipients : undefined);
 
@@ -1797,11 +1886,19 @@ async function startFavorRequest(
     const timestamp = Date.now();
     const nowIso = new Date().toISOString();
 
+    // Compute deterministic participant key for 1-on-1 dedup
+    // Sorted alphabetically so A→B and B→A produce the same key
+    const participantKey = isGroupRequest
+        ? undefined
+        : [senderID, receiverID as string].sort().join('#');
+
     const newFavor: FavorRequest = {
         favorRequestID,
         senderID,
         // Include receiverID only for 1-to-1, teamID only for group
         ...(isGroupRequest ? { teamID: teamID } : { receiverID: receiverID }),
+        // Participant key for strict dedup (1-on-1 only)
+        ...(participantKey && { participantKey }),
         // Enhanced task fields
         title: title || initialMessage.substring(0, 100),
         description: description || initialMessage,
@@ -1817,6 +1914,8 @@ async function startFavorRequest(
         unreadCount: recipients.length,
         initialMessage: initialMessage,
         ...(deadline && { deadline: String(deadline) }),
+        // Task badge: mark as task when created via task assignment
+        ...(requestType === 'Assign Task' && { isTask: true }),
     };
 
     // 1. Create Favor Request Record
@@ -1826,24 +1925,63 @@ async function startFavorRequest(
     }));
 
     // 2. Create the initial message
+    const isNewTask = requestType === 'Assign Task' || requestType === 'IT Ticket';
     const messageData: MessageData = {
+        messageID: uuidv4(),
         favorRequestID,
         senderID,
         content: initialMessage,
         timestamp,
-        type: 'text',
+        type: isNewTask ? 'task' : 'text',
+        ...(isNewTask && title && { taskTitle: title }),
+        ...(isNewTask && description && { taskDescription: description }),
+        ...(isNewTask && priority && { taskPriority: priority }),
+        ...(isNewTask && deadline && { taskDeadline: String(deadline) }),
+        ...(isNewTask && category && { taskCategory: category }),
+        ...(isNewTask && requestType && { taskRequestType: requestType }),
     };
 
     // 3. Save message and broadcast
     await _saveAndBroadcastMessage(messageData, apiGwManagement, isGroupRequest ? recipients : undefined);
 
-    // 4. Send email notification (Only for 1-to-1 requests for simplicity)
-    if (!isGroupRequest) {
-        try {
-            await sendNewFavorNotificationEmail(senderID, receiverID as string, initialMessage, requestType, deadline);
-        } catch (e) {
-            console.error("Failed to send SES notification email for 1-to-1:", e);
+    // 4. Send email notification (for BOTH single and group tasks)
+    try {
+        if (isGroupRequest) {
+            // Group task: fetch team details and send to all members
+            const teamResult = await ddb.send(new GetCommand({
+                TableName: TEAMS_TABLE,
+                Key: { teamID },
+            }));
+            const team = teamResult.Item;
+            const teamName = team?.name || 'Unknown Group';
+            const teamMembers = team?.members || recipients;
+            await sendTaskAssignmentEmail({
+                senderID,
+                recipientIDs: recipients,
+                initialMessage,
+                requestType,
+                deadline,
+                title: newFavor.title,
+                priority: newFavor.priority,
+                teamName,
+                teamMembers,
+                isGroup: true,
+            });
+        } else {
+            // Single task: send to the receiver
+            await sendTaskAssignmentEmail({
+                senderID,
+                recipientIDs: [receiverID as string],
+                initialMessage,
+                requestType,
+                deadline,
+                title: newFavor.title,
+                priority: newFavor.priority,
+                isGroup: false,
+            });
         }
+    } catch (e) {
+        console.error("Failed to send SES notification email:", e);
     }
 
     // 5. Send push notifications to recipients (for offline users)
@@ -1880,7 +2018,7 @@ async function sendMessage(
     payload: any,
     apiGwManagement: ApiGatewayManagementApiClient
 ): Promise<void> {
-    const { favorRequestID, content, fileKey, fileDetails } = payload;
+    const { favorRequestID, content, fileKey, fileDetails, parentMessageID } = payload;
     const senderConnectionId = (await getSenderInfoByUserID(senderID))?.connectionId;
 
     if (!favorRequestID || ((!content || content.trim() === '') && !fileKey)) {
@@ -1957,6 +2095,7 @@ async function sendMessage(
 
     // 3. Create message data
     const messageData: MessageData = {
+        messageID: uuidv4(),
         favorRequestID,
         senderID,
         content: content || '',
@@ -1964,6 +2103,7 @@ async function sendMessage(
         type: cleanFileKey ? 'file' : 'text',
         fileKey: cleanFileKey,
         fileDetails: fileDetails,
+        ...(parentMessageID && { parentMessageID }),
     };
 
     // 4. Save message and broadcast (sends 'newMessage' payload)
@@ -2316,11 +2456,12 @@ async function fetchRequests(
             items = items.slice(0, queryLimit);
             newToken = undefined;
 
-        } else { // role = 'all' -> merge sent, received, and group requests
-            // Fetch 1-to-1 requests (sent and received)
-            const [sentResult, recvResult, teamIDs] = await Promise.all([
+        } else { // role = 'all' -> merge sent, received, group, AND forwarded (currentAssignee) requests
+            // Fetch 1-to-1 requests (sent, received, and forwarded-to-me)
+            const [sentResult, recvResult, assigneeResult, teamIDs] = await Promise.all([
                 queryByIndex('SenderIndex', 'senderID', callerID),
                 queryByIndex('ReceiverIndex', 'receiverID', callerID),
+                queryByIndex('CurrentAssigneeIndex', 'currentAssigneeID', callerID),
                 getUserTeamIDs(),
             ]);
 
@@ -2330,6 +2471,7 @@ async function fetchRequests(
             const allItems = [
                 ...(sentResult.Items || []),
                 ...(recvResult.Items || []),
+                ...(assigneeResult.Items || []),
                 ...groupItems
             ];
 
@@ -2355,6 +2497,14 @@ async function fetchRequests(
             items = merged.slice(0, queryLimit);
             newToken = undefined; // Merging makes DDB pagination token complex/irrelevant
         }
+
+        // Filter out deleted conversations (matches REST API getConversations logic)
+        // - status === 'deleted': permanently deleted for everyone
+        // - deletedBy includes callerID: per-user soft delete
+        items = items.filter((item: any) =>
+            item.status !== 'deleted' &&
+            !(item.deletedBy && Array.isArray(item.deletedBy) && item.deletedBy.includes(callerID))
+        );
 
         // Send the results back to the client
         await sendToClient(apiGwManagement, connectionId, {
@@ -2657,6 +2807,201 @@ async function sendNewFavorNotificationEmail(
     console.log(`SES Notification sent to ${receiver.email} for favor request from ${sender.fullName}.`);
 }
 
+/**
+ * Enhanced email notification for task assignments (both single and group).
+ * Includes: task title, priority, deadline, group name, group members, description.
+ */
+interface TaskAssignmentEmailParams {
+    senderID: string;
+    recipientIDs: string[];
+    initialMessage: string;
+    requestType: string;
+    deadline?: string;
+    title?: string;
+    priority?: string;
+    teamName?: string;
+    teamMembers?: string[];
+    isGroup: boolean;
+}
+
+async function sendTaskAssignmentEmail(params: TaskAssignmentEmailParams): Promise<void> {
+    const {
+        senderID, recipientIDs, initialMessage, requestType,
+        deadline, title, priority, teamName, teamMembers, isGroup,
+    } = params;
+
+    if (!SES_SOURCE_EMAIL) {
+        console.warn('SES_SOURCE_EMAIL not configured. Skipping task assignment email.');
+        return;
+    }
+
+    // 1. Get sender details
+    const sender = await getUserDetails(senderID);
+
+    // 2. Get all recipient details in parallel
+    const recipientDetails = await Promise.all(
+        recipientIDs.map(id => getUserDetails(id))
+    );
+
+    // 3. Get team member names (for group emails)
+    let memberNames: string[] = [];
+    if (isGroup && teamMembers && teamMembers.length > 0) {
+        const memberDetails = await Promise.all(
+            teamMembers.map(id => getUserDetails(id))
+        );
+        memberNames = memberDetails.map(m => m.fullName);
+    }
+
+    // 4. Format values
+    const formattedDeadline = deadline
+        ? new Date(deadline).toLocaleString('en-US', { dateStyle: 'full', timeStyle: 'short' })
+        : 'Not set';
+
+    const priorityColors: Record<string, string> = {
+        critical: '#dc2626',
+        high: '#ea580c',
+        medium: '#d97706',
+        low: '#16a34a',
+    };
+    const priorityColor = priorityColors[(priority || 'medium').toLowerCase()] || '#6b7280';
+    const priorityLabel = (priority || 'Medium').charAt(0).toUpperCase() + (priority || 'Medium').slice(1);
+
+    const taskTitle = title || initialMessage.substring(0, 100);
+
+    // 5. Build HTML email
+    const groupSection = isGroup ? `
+        <tr>
+            <td style="padding: 8px 0; color: #6b7280; font-size: 14px; width: 120px; vertical-align: top;">Group:</td>
+            <td style="padding: 8px 0; font-size: 14px; font-weight: 600; color: #1f2937;">${teamName}</td>
+        </tr>
+        <tr>
+            <td style="padding: 8px 0; color: #6b7280; font-size: 14px; vertical-align: top;">Members:</td>
+            <td style="padding: 8px 0; font-size: 14px; color: #1f2937;">${memberNames.join(', ')}</td>
+        </tr>
+    ` : '';
+
+    const emailHtmlBody = `
+    <html>
+    <body style="margin: 0; padding: 0; background-color: #f3f4f6; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;">
+        <table width="100%" cellpadding="0" cellspacing="0" style="background-color: #f3f4f6; padding: 32px 0;">
+            <tr>
+                <td align="center">
+                    <table width="600" cellpadding="0" cellspacing="0" style="background-color: #ffffff; border-radius: 12px; overflow: hidden; box-shadow: 0 2px 8px rgba(0,0,0,0.08);">
+                        <!-- Header -->
+                        <tr>
+                            <td style="background: linear-gradient(135deg, #0070f3, #0ea5e9); padding: 24px 32px;">
+                                <h1 style="margin: 0; color: #ffffff; font-size: 22px; font-weight: 700;">
+                                    📋 New Task Assignment
+                                </h1>
+                                <p style="margin: 8px 0 0; color: rgba(255,255,255,0.85); font-size: 14px;">
+                                    ${isGroup ? `Group: ${teamName}` : `From: ${sender.fullName}`}
+                                </p>
+                            </td>
+                        </tr>
+                        <!-- Body -->
+                        <tr>
+                            <td style="padding: 32px;">
+                                <!-- Task Title -->
+                                <h2 style="margin: 0 0 20px; color: #1f2937; font-size: 18px; font-weight: 600;">
+                                    ${taskTitle}
+                                </h2>
+
+                                <!-- Task Details Table -->
+                                <table width="100%" cellpadding="0" cellspacing="0" style="background-color: #f9fafb; border-radius: 8px; padding: 16px; margin-bottom: 20px;">
+                                    <tr>
+                                        <td style="padding: 8px 0; color: #6b7280; font-size: 14px; width: 120px;">Assigned By:</td>
+                                        <td style="padding: 8px 0; font-size: 14px; font-weight: 600; color: #1f2937;">${sender.fullName}</td>
+                                    </tr>
+                                    <tr>
+                                        <td style="padding: 8px 0; color: #6b7280; font-size: 14px;">Type:</td>
+                                        <td style="padding: 8px 0; font-size: 14px; color: #1f2937;">${requestType}</td>
+                                    </tr>
+                                    <tr>
+                                        <td style="padding: 8px 0; color: #6b7280; font-size: 14px;">Priority:</td>
+                                        <td style="padding: 8px 0;">
+                                            <span style="display: inline-block; padding: 4px 12px; border-radius: 12px; font-size: 12px; font-weight: 700; color: #ffffff; background-color: ${priorityColor};">
+                                                ${priorityLabel}
+                                            </span>
+                                        </td>
+                                    </tr>
+                                    <tr>
+                                        <td style="padding: 8px 0; color: #6b7280; font-size: 14px;">Deadline:</td>
+                                        <td style="padding: 8px 0; font-size: 14px; font-weight: 600; color: ${deadline ? '#dc2626' : '#6b7280'};">
+                                            ${formattedDeadline}
+                                        </td>
+                                    </tr>
+                                    ${groupSection}
+                                </table>
+
+                                <!-- Description -->
+                                <div style="border-left: 4px solid #0070f3; padding: 12px 16px; margin: 20px 0; background-color: #eff6ff; border-radius: 0 8px 8px 0;">
+                                    <p style="margin: 0 0 4px; font-size: 12px; color: #6b7280; text-transform: uppercase; font-weight: 600;">Description</p>
+                                    <p style="margin: 0; font-size: 14px; color: #374151; line-height: 1.6; white-space: pre-wrap;">${initialMessage}</p>
+                                </div>
+
+                                <!-- CTA -->
+                                <p style="margin: 24px 0 0; color: #6b7280; font-size: 14px;">
+                                    Please log in to the application to view and respond to this task.
+                                </p>
+                            </td>
+                        </tr>
+                        <!-- Footer -->
+                        <tr>
+                            <td style="background-color: #f9fafb; padding: 16px 32px; border-top: 1px solid #e5e7eb;">
+                                <p style="margin: 0; color: #9ca3af; font-size: 12px; text-align: center;">
+                                    Today's Dental Insights Communication System
+                                </p>
+                            </td>
+                        </tr>
+                    </table>
+                </td>
+            </tr>
+        </table>
+    </body>
+    </html>`;
+
+    const emailTextBody = `
+New Task Assignment
+
+Title: ${taskTitle}
+Assigned By: ${sender.fullName}
+Type: ${requestType}
+Priority: ${priorityLabel}
+Deadline: ${formattedDeadline}
+${isGroup ? `Group: ${teamName}\nMembers: ${memberNames.join(', ')}` : ''}
+
+Description:
+${initialMessage}
+
+Please log in to the application to view and respond to this task.
+    `.trim();
+
+    // 6. Send emails to all recipients
+    const emailSubject = isGroup
+        ? `📋 New ${requestType} in ${teamName}: ${taskTitle}`
+        : `📋 New ${requestType} from ${sender.fullName}: ${taskTitle}`;
+
+    const emailPromises = recipientDetails
+        .filter(r => r.email)
+        .map(recipient =>
+            ses.send(new SendEmailCommand({
+                Destination: { ToAddresses: [recipient.email as string] },
+                Content: {
+                    Simple: {
+                        Subject: { Data: emailSubject },
+                        Body: {
+                            Text: { Data: emailTextBody },
+                            Html: { Data: emailHtmlBody },
+                        },
+                    },
+                },
+                FromEmailAddress: SES_SOURCE_EMAIL,
+            }))
+        );
+
+    await Promise.all(emailPromises);
+    console.log(`Task assignment email sent to ${emailPromises.length} recipient(s) for "${taskTitle}" from ${sender.fullName}.`);
+}
 
 async function fetchHistory(
     callerID: string,
@@ -3258,7 +3603,7 @@ async function forwardTask(
     await ddb.send(new UpdateCommand({
         TableName: FAVORS_TABLE,
         Key: { favorRequestID },
-        UpdateExpression: 'SET forwardingChain = :chain, currentAssigneeID = :assignee, #s = :status, updatedAt = :ua, requiresAcceptance = :ra',
+        UpdateExpression: 'SET forwardingChain = :chain, currentAssigneeID = :assignee, #s = :status, updatedAt = :ua, requiresAcceptance = :ra, isForwarded = :fw',
         ExpressionAttributeNames: { '#s': 'status' },
         ExpressionAttributeValues: {
             ':chain': updatedChain,
@@ -3266,6 +3611,7 @@ async function forwardTask(
             ':status': requireAcceptance ? 'forwarded' : 'active',
             ':ua': nowIso,
             ':ra': requireAcceptance,
+            ':fw': true,
         },
     }));
 
@@ -3647,36 +3993,66 @@ async function deleteConversation(
         return;
     }
 
-    // 2. Only the sender/creator can delete
-    if (favor.senderID !== senderID) {
-        await sendToClient(apiGwManagement, connectionId, { type: 'error', message: 'Unauthorized: Only the creator can delete this task.' });
+    // 2. Allow any participant (sender, receiver, or current assignee) to delete
+    const isParticipant = favor.senderID === senderID || favor.receiverID === senderID || favor.currentAssigneeID === senderID;
+    if (!isParticipant) {
+        await sendToClient(apiGwManagement, connectionId, { type: 'error', message: 'Unauthorized: You are not a participant of this conversation.' });
         return;
     }
 
-    // 3. Soft delete by updating status
+    // 3. Delete based on type
+    const deleteType = payload.deleteType || 'forMe'; // 'forMe' or 'forEveryone'
     const nowIso = new Date().toISOString();
-    await ddb.send(new UpdateCommand({
-        TableName: FAVORS_TABLE,
-        Key: { favorRequestID },
-        UpdateExpression: 'SET #s = :status, updatedAt = :ua',
-        ExpressionAttributeNames: { '#s': 'status' },
-        ExpressionAttributeValues: {
-            ':status': 'deleted' as any, // Soft delete
-            ':ua': nowIso,
-        },
-    }));
 
-    // 4. Notify all participants
-    const participants = await getAllParticipants(favor);
-    const notificationPayload = {
-        type: 'conversationDeleted',
-        favorRequestID,
-        deletedBy: senderID,
-    };
+    if (deleteType === 'forEveryone') {
+        // === PERMANENT DELETE: Set status to 'deleted' — hides for ALL participants ===
+        await ddb.send(new UpdateCommand({
+            TableName: FAVORS_TABLE,
+            Key: { favorRequestID },
+            UpdateExpression: 'SET #s = :status, updatedAt = :ua',
+            ExpressionAttributeNames: { '#s': 'status' },
+            ExpressionAttributeValues: {
+                ':status': 'deleted',
+                ':ua': nowIso,
+            },
+        }));
 
-    await sendToAll(apiGwManagement, participants, notificationPayload, { notifyOffline: false });
+        // Notify all participants about permanent deletion
+        const participants = await getAllParticipants(favor);
+        await sendToAll(apiGwManagement, participants, {
+            type: 'conversationDeleted',
+            favorRequestID,
+            deletedBy: senderID,
+            deleteType: 'forEveryone',
+        }, { notifyOffline: false });
 
-    console.log(`Task ${favorRequestID} deleted by ${senderID}`);
+        console.log(`Conversation ${favorRequestID} permanently deleted by ${senderID}`);
+    } else {
+        // === PER-USER DELETE: Add senderID to deletedBy list ===
+        const currentDeletedBy = favor.deletedBy || [];
+        if (!currentDeletedBy.includes(senderID)) {
+            const updatedDeletedBy = [...currentDeletedBy, senderID];
+            await ddb.send(new UpdateCommand({
+                TableName: FAVORS_TABLE,
+                Key: { favorRequestID },
+                UpdateExpression: 'SET deletedBy = :db, updatedAt = :ua',
+                ExpressionAttributeValues: {
+                    ':db': updatedDeletedBy,
+                    ':ua': nowIso,
+                },
+            }));
+        }
+
+        // Notify only the deleting user (per-user delete)
+        await sendToClient(apiGwManagement, connectionId, {
+            type: 'conversationDeleted',
+            favorRequestID,
+            deletedBy: senderID,
+            deleteType: 'forMe',
+        });
+
+        console.log(`Conversation ${favorRequestID} deleted from view by ${senderID}`);
+    }
 }
 
 // ========================================
@@ -3748,14 +4124,16 @@ async function scheduleMeeting(
         Item: meeting,
     }));
 
-    // 3. Create a system message in the conversation
+    // 3. Create a system message in the conversation (type: 'meeting' for rich card rendering)
     const messageData: MessageData = {
+        messageID: `mtg-${Date.now()}-${uuidv4().substring(0, 8)}`,
         favorRequestID: conversationID,
         senderID,
-        content: `Meeting scheduled: ${description}`,
+        content: `📅 Meeting scheduled: ${meeting.title || description}`,
         timestamp: Date.now(),
-        type: 'text',
-    };
+        type: 'meeting' as any,
+        meetingData: meeting,
+    } as any;
 
     await _saveAndBroadcastMessage(messageData, apiGwManagement);
 

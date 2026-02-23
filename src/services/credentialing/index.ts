@@ -800,7 +800,7 @@ async function updateProvider(providerId: string, body: any, allowedClinics: Set
     }
   }
 
-  const updateFields = ['name', 'specialty', 'status', 'credentialingProgress', 'enrollmentProgress', 'clinicIds', 'email'];
+  const updateFields = ['name', 'specialty', 'status', 'credentialingProgress', 'enrollmentProgress', 'clinicIds', 'email', 'state'];
   const updateExpressions: string[] = ['#updatedAt = :updatedAt'];
   const expressionAttributeNames: Record<string, string> = { '#updatedAt': 'updatedAt' };
   const expressionAttributeValues: Record<string, any> = { ':updatedAt': new Date().toISOString() };
@@ -923,6 +923,20 @@ async function upsertProviderCredential(providerId: string, body: any, allowedCl
   };
 
   await ddb.send(new PutCommand({ TableName: PROVIDER_CREDENTIALS_TABLE, Item: credential }));
+
+  // Denormalize state onto the Provider record when clinicInfo is saved
+  if (credentialType === 'clinicInfo' && credentialData.state) {
+    await ddb.send(new UpdateCommand({
+      TableName: PROVIDERS_TABLE,
+      Key: { providerId },
+      UpdateExpression: 'SET #state = :state, updatedAt = :now',
+      ExpressionAttributeNames: { '#state': 'state' },
+      ExpressionAttributeValues: {
+        ':state': credentialData.state,
+        ':now': new Date().toISOString(),
+      },
+    }));
+  }
 
   // Update provider's credentialing progress
   await updateCredentialingProgress(providerId);

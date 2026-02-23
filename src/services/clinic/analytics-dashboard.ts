@@ -283,6 +283,7 @@ interface AIAgentsData {
 interface OpenDentalProductionData {
     grossProduction: number;
     netProduction: number;
+    nextDayInsEstimate: number;
     adjustments: number;
     writeOffs: number;
     totalProcedures: number;
@@ -500,6 +501,7 @@ async function fetchClinicAnalytics(
         return {
             grossProduction: 0,
             netProduction: 0,
+            nextDayInsEstimate: 0,
             adjustments: 0,
             writeOffs: 0,
             totalProcedures: 0,
@@ -1157,6 +1159,7 @@ async function fetchOpenDentalProduction(clinicId: string, date: string): Promis
             return {
                 grossProduction: 0,
                 netProduction: 0,
+                nextDayInsEstimate: 0,
                 adjustments: 0,
                 writeOffs: 0,
                 totalProcedures: 0,
@@ -1194,6 +1197,7 @@ async function fetchOpenDentalProduction(clinicId: string, date: string): Promis
             return {
                 grossProduction: 0,
                 netProduction: 0,
+                nextDayInsEstimate: 0,
                 adjustments: 0,
                 writeOffs: 0,
                 totalProcedures: 0,
@@ -1214,6 +1218,7 @@ async function fetchOpenDentalProduction(clinicId: string, date: string): Promis
         return {
             grossProduction: parseFloat(todayRow.Total_Gross || '0'),
             netProduction: parseFloat(todayRow.Net_Production || '0'),
+            nextDayInsEstimate: parseFloat(todayRow.Next_Day_Ins_Estimate || '0'),
             adjustments: parseFloat(todayRow.Adjustments || '0'),
             writeOffs: parseFloat(todayRow.WriteOffs || '0'),
             totalProcedures: parseInt(todayRow.Total_Procedures || '0', 10),
@@ -1232,6 +1237,7 @@ async function fetchOpenDentalProduction(clinicId: string, date: string): Promis
         return {
             grossProduction: 0,
             netProduction: 0,
+            nextDayInsEstimate: 0,
             adjustments: 0,
             writeOffs: 0,
             totalProcedures: 0,
@@ -1347,7 +1353,16 @@ function generateDailyReportQuery(selectedDate: string): string {
     COALESCE((SELECT COUNT(*) FROM appointment WHERE DATE(AptDateTime) = d.report_date AND AptStatus = 4), 0) AS Total_ASAP_4,
     COALESCE((SELECT COUNT(*) FROM appointment WHERE DATE(AptDateTime) = d.report_date AND AptStatus = 5), 0) AS Total_Broken_5,
     COALESCE((SELECT COUNT(*) FROM appointment WHERE DATE(AptDateTime) = d.report_date AND AptStatus = 6), 0) AS Total_Planned_6,
-    COALESCE((SELECT COUNT(*) FROM appointment WHERE DATE(AptDateTime) = d.report_date AND AptStatus = 2 AND IsNewPatient = 1), 0) AS Total_New_Patients
+    COALESCE((SELECT COUNT(*) FROM appointment WHERE DATE(AptDateTime) = d.report_date AND AptStatus = 2 AND IsNewPatient = 1), 0) AS Total_New_Patients,
+
+    COALESCE(ROUND((SELECT SUM(cp.InsEstTotal)
+        FROM claimproc cp
+        INNER JOIN procedurelog pl ON cp.ProcNum = pl.ProcNum
+        INNER JOIN appointment a ON pl.AptNum = a.AptNum
+        WHERE a.AptStatus = 1
+          AND DATE(a.AptDateTime) = DATE_ADD(d.report_date, INTERVAL 1 DAY)
+          AND cp.Status = 6
+    ), 2), 0) AS Next_Day_Ins_Estimate
 
 FROM (
     SELECT '${selectedDate}' AS report_date
@@ -1566,6 +1581,7 @@ function calculateTotals(clinics: ClinicDailyAnalytics[]): any {
         openDentalProduction: {
             grossProduction: clinics.reduce((sum, c) => sum + c.openDentalProduction.grossProduction, 0),
             netProduction: clinics.reduce((sum, c) => sum + c.openDentalProduction.netProduction, 0),
+            nextDayInsEstimate: clinics.reduce((sum, c) => sum + c.openDentalProduction.nextDayInsEstimate, 0),
             totalProcedures: clinics.reduce((sum, c) => sum + c.openDentalProduction.totalProcedures, 0),
             totalAppointments: clinics.reduce((sum, c) => sum + c.openDentalProduction.totalAppointments, 0),
             newPatients: clinics.reduce((sum, c) => sum + c.openDentalProduction.newPatients, 0),

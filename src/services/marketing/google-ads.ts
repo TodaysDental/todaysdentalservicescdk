@@ -47,6 +47,7 @@ import {
   createCampaignViaRest,
   createBudgetViaRest,
   removeBudgetViaRest,
+  uploadImageAssetViaUrl,
 } from '../../shared/utils/google-ads-client';
 import {
   getAllowedClinicIds,
@@ -98,7 +99,7 @@ interface Campaign {
 interface CreateCampaignRequest {
   customerId: string;
   name: string;
-  type: CampaignType; // 'SEARCH' | 'DISPLAY' | 'VIDEO'
+  type: CampaignType; // 'SEARCH' | 'DISPLAY' | 'VIDEO' | 'DEMAND_GEN'
   dailyBudget: number;
   status?: 'ENABLED' | 'PAUSED';
   // Smart bidding options
@@ -111,11 +112,16 @@ interface CreateCampaignRequest {
     cpcBidMicros?: number;
   };
   ad?: {
-    headlines: string[]; // Up to 15 headlines
-    descriptions: string[]; // Up to 4 descriptions
+    headlines: string[]; // Search: up to 15 (30 chars), Display: up to 5 (30 chars), DemandGen: up to 5 (40 chars)
+    descriptions: string[]; // Search: up to 4 (90 chars), Display/DemandGen: up to 5 (90 chars)
     finalUrl: string;
     path1?: string;
     path2?: string;
+    // Display-specific fields
+    longHeadline?: string; // Required for Display (90 chars)
+    businessName?: string; // Required for Display and Demand Gen
+    imageUrl?: string; // Required for Display and Demand Gen - marketing image URL
+    logoUrl?: string; // Optional for Demand Gen - logo image URL
   };
 }
 
@@ -533,13 +539,15 @@ async function createCampaign(
     }
 
     // Map campaign type and status to enum values
-    const channelTypeEnum = type === 'SEARCH'
-      ? enums.AdvertisingChannelType.SEARCH
-      : type === 'DISPLAY'
-        ? enums.AdvertisingChannelType.DISPLAY
-        : type === 'VIDEO'
-          ? enums.AdvertisingChannelType.VIDEO
-          : enums.AdvertisingChannelType.SEARCH;
+    // Map campaign type to Google Ads AdvertisingChannelType enum
+    // Note: DEMAND_GEN (14) is not in the library's TypeScript types but exists at runtime
+    const channelTypeMap: Record<string, number> = {
+      'SEARCH': enums.AdvertisingChannelType.SEARCH,
+      'DISPLAY': enums.AdvertisingChannelType.DISPLAY,
+      'VIDEO': enums.AdvertisingChannelType.VIDEO,
+      'DEMAND_GEN': 14, // enums.AdvertisingChannelType.DEMAND_GEN - not in lib types
+    };
+    const channelTypeEnum = channelTypeMap[type] || enums.AdvertisingChannelType.SEARCH;
 
     const statusEnum = status === 'ENABLED'
       ? enums.CampaignStatus.ENABLED
@@ -589,22 +597,29 @@ async function createCampaign(
       }
 
       // Get proper ad group type based on campaign type
-      const adGroupType = CAMPAIGN_TYPE_TO_AD_GROUP_TYPE[type] || 'SEARCH_STANDARD';
+      // DEMAND_GEN ad groups must NOT have an explicit type — the API infers it from the campaign
+      const adGroupType = CAMPAIGN_TYPE_TO_AD_GROUP_TYPE[type]; // undefined for DEMAND_GEN
 
-      const adGroupResource = {
+      const adGroupResource: any = {
         name: adGroup.name || `${name} - Ad Group`,
         campaign: campaignResourceName!,
         status: 'ENABLED',
-        type: adGroupType,
         cpc_bid_micros: adGroup.cpcBidMicros,
       };
+      if (adGroupType) {
+        adGroupResource.type = adGroupType;
+      }
       const adGroupResponse = await (client as any).adGroups.create([adGroupResource]);
       adGroupResourceName = adGroupResponse.results[0].resource_name;
       console.log(`[GoogleAds] Created ad group: ${adGroupResourceName}`);
 
-      // Create Responsive Search Ad if provided (only for SEARCH campaigns)
-      // NOTE: VIDEO campaigns require VIDEO_IN_STREAM_AD or similar - RSA is not supported
+      // ============================================
+      // CAMPAIGN-TYPE-SPECIFIC AD CREATION
+      // Each campaign type requires a different ad format per Google Ads API
+      // ============================================
+
       if (ad && type === 'SEARCH') {
+        // SEARCH → Responsive Search Ad (RSA)
         if (!ad.headlines || ad.headlines.length < 3) {
           adSkipped = true;
           adSkipReason = 'At least 3 headlines required for RSA';
@@ -618,17 +633,14 @@ async function createCampaign(
           adSkipReason = 'finalUrl is required for RSA';
           console.warn('[GoogleAds] finalUrl required for RSA, skipping ad creation');
         } else {
-          // Validate and truncate to fit Google Ads character limits
           const { validHeadlines, validDescriptions, warnings } = validateAdText(
             ad.headlines,
             ad.descriptions
           );
           adValidationWarnings = warnings;
-
           if (warnings.length > 0) {
             console.warn(`[GoogleAds] Ad text validation warnings: ${warnings.join('; ')}`);
           }
-
           const adResource = {
             ad_group: adGroupResourceName,
             status: 'ENABLED',
@@ -642,16 +654,138 @@ async function createCampaign(
               final_urls: [ad.finalUrl],
             },
           };
-
           const adResponse = await (client as any).adGroupAds.create([adResource]);
           adResourceName = adResponse.results[0].resource_name;
           console.log(`[GoogleAds] Created responsive search ad: ${adResourceName}`);
         }
+
+      } else if (ad && type === 'DISPLAY') {
+        // DISPLAY → Responsive Display Ad (requires images)
+        if (!ad.headlines || ad.headlines.length < 1) {
+          adSkipped = true;
+          adSkipReason = 'At least 1 headline required for Display ad';
+        } else if (!ad.descriptions || ad.descriptions.length < 1) {
+          adSkipped = true;
+          adSkipReason = 'At least 1 description required for Display ad';
+        } else if (!ad.longHeadline) {
+          adSkipped = true;
+          adSkipReason = 'longHeadline is required for Display ad (90 chars max)';
+        } else if (!ad.businessName) {
+          adSkipped = true;
+          adSkipReason = 'businessName is required for Display ad';
+        } else if (!ad.imageUrl) {
+          adSkipped = true;
+          adSkipReason = 'imageUrl is required for Display ad (marketing image)';
+        } else if (!ad.finalUrl) {
+          adSkipped = true;
+          adSkipReason = 'finalUrl is required for Display ad';
+        } else {
+          try {
+            // Upload marketing image as asset
+            const imageAssetName = `${name} - Marketing Image - ${Date.now()}`;
+            const imageAssetResourceName = await uploadImageAssetViaUrl(client, ad.imageUrl, imageAssetName);
+            console.log(`[GoogleAds] Uploaded marketing image asset: ${imageAssetResourceName}`);
+
+            // Upload logo as asset if provided
+            let logoAssetResourceName: string | undefined;
+            if (ad.logoUrl) {
+              const logoAssetName = `${name} - Logo - ${Date.now()}`;
+              logoAssetResourceName = await uploadImageAssetViaUrl(client, ad.logoUrl, logoAssetName);
+              console.log(`[GoogleAds] Uploaded logo asset: ${logoAssetResourceName}`);
+            }
+
+            // Build Responsive Display Ad
+            const displayAdData: any = {
+              headlines: ad.headlines.slice(0, 5).map(text => ({ text: text.slice(0, 30) })),
+              long_headline: { text: ad.longHeadline.slice(0, 90) },
+              descriptions: ad.descriptions.slice(0, 5).map(text => ({ text: text.slice(0, 90) })),
+              business_name: ad.businessName,
+              marketing_images: [{ asset: imageAssetResourceName }],
+            };
+
+            if (logoAssetResourceName) {
+              displayAdData.logo_images = [{ asset: logoAssetResourceName }];
+            }
+
+            const adResource = {
+              ad_group: adGroupResourceName,
+              status: 'ENABLED',
+              ad: {
+                responsive_display_ad: displayAdData,
+                final_urls: [ad.finalUrl],
+              },
+            };
+
+            const adResponse = await (client as any).adGroupAds.create([adResource]);
+            adResourceName = adResponse.results[0].resource_name;
+            console.log(`[GoogleAds] Created responsive display ad: ${adResourceName}`);
+          } catch (displayError: any) {
+            console.error('[GoogleAds] Display ad creation failed:', displayError.message || displayError);
+            adSkipped = true;
+            adSkipReason = `Display ad creation failed: ${displayError.message || 'Unknown error'}`;
+          }
+        }
+
+      } else if (ad && type === 'DEMAND_GEN') {
+        // DEMAND_GEN → Demand Gen Multi-Asset Ad (requires images + logo)
+        if (!ad.headlines || ad.headlines.length < 1) {
+          adSkipped = true;
+          adSkipReason = 'At least 1 headline required for Demand Gen ad';
+        } else if (!ad.descriptions || ad.descriptions.length < 1) {
+          adSkipped = true;
+          adSkipReason = 'At least 1 description required for Demand Gen ad';
+        } else if (!ad.businessName) {
+          adSkipped = true;
+          adSkipReason = 'businessName is required for Demand Gen ad';
+        } else if (!ad.imageUrl) {
+          adSkipped = true;
+          adSkipReason = 'imageUrl is required for Demand Gen ad (marketing image)';
+        } else if (!ad.finalUrl) {
+          adSkipped = true;
+          adSkipReason = 'finalUrl is required for Demand Gen ad';
+        } else {
+          try {
+            // Upload marketing image
+            const imageAssetName = `${name} - Marketing Image - ${Date.now()}`;
+            const imageAssetResourceName = await uploadImageAssetViaUrl(client, ad.imageUrl, imageAssetName);
+            console.log(`[GoogleAds] Uploaded marketing image for DemandGen: ${imageAssetResourceName}`);
+
+            // Upload logo (use imageUrl if logoUrl not provided)
+            const logoUrl = ad.logoUrl || ad.imageUrl;
+            const logoAssetName = `${name} - Logo - ${Date.now()}`;
+            const logoAssetResourceName = await uploadImageAssetViaUrl(client, logoUrl, logoAssetName);
+            console.log(`[GoogleAds] Uploaded logo for DemandGen: ${logoAssetResourceName}`);
+
+            const adResource = {
+              ad_group: adGroupResourceName,
+              status: 'ENABLED',
+              ad: {
+                demand_gen_multi_asset_ad: {
+                  headline_text_list: ad.headlines.slice(0, 5).map(text => text.slice(0, 40)),
+                  description_text_list: ad.descriptions.slice(0, 5).map(text => text.slice(0, 90)),
+                  marketing_images: [{ asset: imageAssetResourceName }],
+                  logo_images: [{ asset: logoAssetResourceName }],
+                  business_name: ad.businessName,
+                },
+                final_urls: [ad.finalUrl],
+              },
+            };
+
+            const adResponse = await (client as any).adGroupAds.create([adResource]);
+            adResourceName = adResponse.results[0].resource_name;
+            console.log(`[GoogleAds] Created demand gen multi-asset ad: ${adResourceName}`);
+          } catch (demandGenError: any) {
+            console.error('[GoogleAds] Demand Gen ad creation failed:', demandGenError.message || demandGenError);
+            adSkipped = true;
+            adSkipReason = `Demand Gen ad creation failed: ${demandGenError.message || 'Unknown error'}`;
+          }
+        }
+
       } else if (ad && type === 'VIDEO') {
-        // VIDEO campaigns don't support RSA - log informational message
-        console.info(`[GoogleAds] Skipping RSA for VIDEO campaign: VIDEO campaigns require manual ad creation (VIDEO_IN_STREAM_AD, etc.)`);
+        // VIDEO → Requires YouTube video URL, cannot auto-create
+        console.info('[GoogleAds] Skipping ad for VIDEO campaign: requires YouTube video URL');
         adSkipped = true;
-        adSkipReason = 'VIDEO campaigns require VIDEO_IN_STREAM_AD or similar - RSA not supported. Create ads manually in Google Ads UI.';
+        adSkipReason = 'VIDEO campaigns require a YouTube video URL. Create video ads manually in Google Ads UI.';
       }
     }
 

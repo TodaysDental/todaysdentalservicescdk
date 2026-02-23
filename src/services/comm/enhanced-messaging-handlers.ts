@@ -418,11 +418,11 @@ export async function handleGetVoiceUploadUrl(
  */
 export async function handleSendVoiceMessage(
     senderID: string,
-    payload: { favorRequestID: string; voiceKey: string; duration: number; waveformData?: number[] },
+    payload: { favorRequestID: string; voiceKey: string; duration: number; waveformData?: number[]; parentMessageID?: string },
     connectionId: string,
     apiGwManagement: ApiGatewayManagementApiClient
 ): Promise<void> {
-    const { favorRequestID, voiceKey, duration, waveformData } = payload;
+    const { favorRequestID, voiceKey, duration, waveformData, parentMessageID } = payload;
 
     if (!favorRequestID || !voiceKey) {
         await sendToClient(apiGwManagement, connectionId, { type: 'error', message: 'Missing required fields' });
@@ -460,6 +460,7 @@ export async function handleSendVoiceMessage(
         voiceKey,
         voiceDetails,
         deliveryStatus: 'sent',
+        ...(parentMessageID && { parentMessageID }),
     };
 
     try {
@@ -877,11 +878,11 @@ export async function handleGetTrendingGifs(
  */
 export async function handleSendGif(
     senderID: string,
-    payload: { favorRequestID: string; gif: GifMedia },
+    payload: { favorRequestID: string; gif: GifMedia; parentMessageID?: string },
     connectionId: string,
     apiGwManagement: ApiGatewayManagementApiClient
 ): Promise<void> {
-    const { favorRequestID, gif } = payload;
+    const { favorRequestID, gif, parentMessageID } = payload;
 
     if (!favorRequestID || !gif) {
         await sendToClient(apiGwManagement, connectionId, { type: 'error', message: 'Missing required fields' });
@@ -900,6 +901,7 @@ export async function handleSendGif(
         type: 'gif',
         gifDetails: gif,
         deliveryStatus: 'sent',
+        ...(parentMessageID && { parentMessageID }),
     };
 
     try {
@@ -1050,11 +1052,11 @@ export async function handleGetStickers(
  */
 export async function handleSendSticker(
     senderID: string,
-    payload: { favorRequestID: string; sticker: Sticker },
+    payload: { favorRequestID: string; sticker: Sticker; parentMessageID?: string },
     connectionId: string,
     apiGwManagement: ApiGatewayManagementApiClient
 ): Promise<void> {
-    const { favorRequestID, sticker } = payload;
+    const { favorRequestID, sticker, parentMessageID } = payload;
 
     if (!favorRequestID || !sticker) {
         await sendToClient(apiGwManagement, connectionId, { type: 'error', message: 'Missing required fields' });
@@ -1073,6 +1075,7 @@ export async function handleSendSticker(
         type: 'sticker',
         sticker,
         deliveryStatus: 'sent',
+        ...(parentMessageID && { parentMessageID }),
     };
 
     try {
@@ -2089,15 +2092,19 @@ export async function handleForwardMessage(
         for (const targetFavorRequestID of targetFavorRequestIDs) {
             const newTimestamp = Date.now();
             const forwardedMessage = {
+                messageID: `fwd-${newTimestamp}-${uuidv4().substring(0, 8)}`,
                 favorRequestID: targetFavorRequestID,
                 senderID,
                 content: originalMessage.content || '',
                 timestamp: newTimestamp,
                 type: originalMessage.type || 'text',
+                // Copy ALL media-related fields
                 fileKey: originalMessage.fileKey,
                 fileDetails: originalMessage.fileDetails,
                 voiceKey: originalMessage.voiceKey,
                 voiceDetails: originalMessage.voiceDetails,
+                gifDetails: originalMessage.gifDetails,
+                sticker: originalMessage.sticker,
                 deliveryStatus: 'sent',
                 forwardedFrom: {
                     originalSenderID: originalMessage.senderID,
@@ -2113,10 +2120,25 @@ export async function handleForwardMessage(
                     Item: forwardedMessage,
                 }));
 
-                // Update lastMessage on target conversation
-                const lastPreview = originalMessage.type === 'file'
-                    ? '↪ Forwarded: 📎 Attachment'
-                    : `↪ Forwarded: ${(originalMessage.content || '').substring(0, 80)}`;
+                // Update lastMessage on target conversation — type-aware preview
+                let lastPreview: string;
+                switch (originalMessage.type) {
+                    case 'file':
+                        lastPreview = '↪ Forwarded: 📎 Attachment';
+                        break;
+                    case 'voice':
+                        lastPreview = '↪ Forwarded: 🎤 Voice message';
+                        break;
+                    case 'gif':
+                        lastPreview = '↪ Forwarded: 🎬 GIF';
+                        break;
+                    case 'sticker':
+                        lastPreview = `↪ Forwarded: Sticker`;
+                        break;
+                    default:
+                        lastPreview = `↪ Forwarded: ${(originalMessage.content || '').substring(0, 80)}`;
+                        break;
+                }
 
                 await ddb.send(new UpdateCommand({
                     TableName: FAVORS_TABLE,

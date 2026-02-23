@@ -61,10 +61,16 @@
     },
     "geofence": {
       "enabled": true,
-      "latitude": 0,
-      "longitude": 0,
+      "latitude": 41.65285,
+      "longitude": -72.774474,
       "radiusMeters": 150,
-      "wifiSSIDs": [],
+      "wifiSSIDs": [
+        "ATTMQrMENM",
+        "Corte Pelo guess WiFi",
+        "JULIE-NAILS-2.4",
+        "Royal Dental Wifi",
+        "S.Main PizzaGuest"
+      ],
       "lateThresholdMinutes": 10
     }
   },
@@ -130,10 +136,13 @@
     },
     "geofence": {
       "enabled": true,
-      "latitude": 0,
-      "longitude": 0,
+      "latitude": 34.825834,
+      "longitude": -82.299652,
       "radiusMeters": 150,
-      "wifiSSIDs": [],
+      "wifiSSIDs": [
+        "MySpectrumWiFiFF-5G",
+        "MySpectrumWiFiFF-2G"
+      ],
       "lateThresholdMinutes": 10
     }
   },
@@ -199,10 +208,14 @@
     },
     "geofence": {
       "enabled": true,
-      "latitude": 0,
-      "longitude": 0,
+      "latitude": 33.977602,
+      "longitude": -81.0732665,
       "radiusMeters": 150,
-      "wifiSSIDs": [],
+      "wifiSSIDs": [
+        "Todays Dental",
+        "dentist",
+        "dentist 5G"
+      ],
       "lateThresholdMinutes": 10
     }
   },
@@ -268,10 +281,16 @@
     },
     "geofence": {
       "enabled": true,
-      "latitude": 0,
-      "longitude": 0,
+      "latitude": 32.743937,
+      "longitude": -96.554127,
       "radiusMeters": 150,
-      "wifiSSIDs": [],
+      "wifiSSIDs": [
+        "MySpectrumWiFi80-5G",
+        "ATTighIN6a",
+        "Spectrum Mobile",
+        "SpectrumSetup-15",
+        "SpectrumSetup-5D"
+      ],
       "lateThresholdMinutes": 10
     }
   },
@@ -337,10 +356,15 @@
     },
     "geofence": {
       "enabled": true,
-      "latitude": 0,
-      "longitude": 0,
+      "latitude": 36.06981,
+      "longitude": -80.293994,
       "radiusMeters": 150,
-      "wifiSSIDs": [],
+      "wifiSSIDs": [
+        "WinstonDentist_5G",
+        "Dentistguest5",
+        "Spectrum Mobile",
+        "SpectrumSetup-BB"
+      ],
       "lateThresholdMinutes": 10
     }
   },
@@ -406,8 +430,8 @@
     },
     "geofence": {
       "enabled": true,
-      "latitude": 0,
-      "longitude": 0,
+      "latitude": 39.611826,
+      "longitude": -104.751476,
       "radiusMeters": 150,
       "wifiSSIDs": [],
       "lateThresholdMinutes": 10
@@ -475,8 +499,8 @@
     },
     "geofence": {
       "enabled": true,
-      "latitude": 0,
-      "longitude": 0,
+      "latitude": 39.454502,
+      "longitude": -119.777844,
       "radiusMeters": 150,
       "wifiSSIDs": [],
       "lateThresholdMinutes": 10
@@ -544,10 +568,16 @@
     },
     "geofence": {
       "enabled": true,
-      "latitude": 0,
-      "longitude": 0,
+      "latitude": 38.824226,
+      "longitude": -77.160346,
       "radiusMeters": 150,
-      "wifiSSIDs": [],
+      "wifiSSIDs": [
+        "CNAP 2.4",
+        "CNAP 5G",
+        "DIRECT-2F-HP-OFFICEJET PRO 9010",
+        "COXWIFI",
+        "SONICWALL-5228"
+      ],
       "lateThresholdMinutes": 10
     }
   },
@@ -613,10 +643,14 @@
     },
     "geofence": {
       "enabled": true,
-      "latitude": 0,
-      "longitude": 0,
+      "latitude": 34.889506,
+      "longitude": -82.404153,
       "radiusMeters": 150,
-      "wifiSSIDs": [],
+      "wifiSSIDs": [
+        "MySpectrumWiFi88-5G",
+        "MySpectrumWiFi88-2G",
+        "NETGEAR98"
+      ],
       "lateThresholdMinutes": 10
     }
   },
@@ -682,10 +716,14 @@
     },
     "geofence": {
       "enabled": true,
-      "latitude": 0,
-      "longitude": 0,
+      "latitude": 34.002771,
+      "longitude": -81.112853,
       "radiusMeters": 150,
-      "wifiSSIDs": [],
+      "wifiSSIDs": [
+        "MyspectrumWIFI27-2g",
+        "MyspectrumWIF27-5g",
+        "MyspectrumWIF76-5g"
+      ],
       "lateThresholdMinutes": 10
     }
   },
@@ -751,10 +789,12 @@
     },
     "geofence": {
       "enabled": true,
-      "latitude": 0,
-      "longitude": 0,
+      "latitude": 35.464846,
+      "longitude": -80.589717,
       "radiusMeters": 150,
-      "wifiSSIDs": [],
+      "wifiSSIDs": [
+        "TNCNC"
+      ],
       "lateThresholdMinutes": 10
     }
   },
@@ -820,10 +860,15 @@
     },
     "geofence": {
       "enabled": true,
-      "latitude": 0,
-      "longitude": 0,
+      "latitude": 38.942628,
+      "longitude": -76.563137,
       "radiusMeters": 150,
-      "wifiSSIDs": [],
+      "wifiSSIDs": [
+        "TDWIFI",
+        "Great Clips Guest",
+        "Verizon_ZJZ3H6",
+        "DIRECT-B6-HP Officejet 4650"
+      ],
       "lateThresholdMinutes": 10
     }
   },
@@ -889,10 +934,13 @@
     },
     "geofence": {
       "enabled": true,
-      "latitude": 0,
-      "longitude": 0,
+      "latitude": 33.940404,
+      "longitude": -84.124036,
       "radiusMeters": 150,
-      "wifiSSIDs": [],
+      "wifiSSIDs": [
+        "Dentist in Lawrenceville",
+        "0022604924"
+      ],
       "lateThresholdMinutes": 10
     }
   },
@@ -958,10 +1006,12 @@
     },
     "geofence": {
       "enabled": true,
-      "latitude": 0,
-      "longitude": 0,
+      "latitude": 38.147216,
+      "longitude": -85.588281,
       "radiusMeters": 150,
-      "wifiSSIDs": [],
+      "wifiSSIDs": [
+        "TDLV"
+      ],
       "lateThresholdMinutes": 10
     }
   },
@@ -1027,10 +1077,13 @@
     },
     "geofence": {
       "enabled": true,
-      "latitude": 0,
-      "longitude": 0,
+      "latitude": 34.012896,
+      "longitude": -81.151339,
       "radiusMeters": 150,
-      "wifiSSIDs": [],
+      "wifiSSIDs": [
+        "MyspectrumWIFI48-2g",
+        "MyspectrumWIFIF-2g"
+      ],
       "lateThresholdMinutes": 10
     }
   },
@@ -1096,10 +1149,13 @@
     },
     "geofence": {
       "enabled": true,
-      "latitude": 0,
-      "longitude": 0,
+      "latitude": 41.638287,
+      "longitude": -83.462608,
       "radiusMeters": 150,
-      "wifiSSIDs": [],
+      "wifiSSIDs": [
+        "NETGEAR34",
+        "ATT9XxlABA"
+      ],
       "lateThresholdMinutes": 10
     }
   },
@@ -1165,10 +1221,14 @@
     },
     "geofence": {
       "enabled": true,
-      "latitude": 0,
-      "longitude": 0,
+      "latitude": 34.005315,
+      "longitude": -81.233431,
       "radiusMeters": 150,
-      "wifiSSIDs": [],
+      "wifiSSIDs": [
+        "TD-lex",
+        "TDSTAFF",
+        "Td"
+      ],
       "lateThresholdMinutes": 10
     }
   },
@@ -1234,10 +1294,15 @@
     },
     "geofence": {
       "enabled": true,
-      "latitude": 0,
-      "longitude": 0,
+      "latitude": 38.949785,
+      "longitude": -76.746097,
       "radiusMeters": 150,
-      "wifiSSIDs": [],
+      "wifiSSIDs": [
+        "Royal Dental Wifi",
+        "Frontier3936_5G",
+        "Frontier3936",
+        "TD-Royal"
+      ],
       "lateThresholdMinutes": 10
     }
   },
@@ -1303,10 +1368,12 @@
     },
     "geofence": {
       "enabled": true,
-      "latitude": 0,
-      "longitude": 0,
+      "latitude": 40.158049,
+      "longitude": -83.096149,
       "radiusMeters": 150,
-      "wifiSSIDs": [],
+      "wifiSSIDs": [
+        "MyspectrumWIFI53-5g"
+      ],
       "lateThresholdMinutes": 10
     }
   },
@@ -1372,10 +1439,12 @@
     },
     "geofence": {
       "enabled": true,
-      "latitude": 0,
-      "longitude": 0,
+      "latitude": 41.545489,
+      "longitude": -83.619503,
       "radiusMeters": 150,
-      "wifiSSIDs": [],
+      "wifiSSIDs": [
+        "MyspectrumWIFI78-5g"
+      ],
       "lateThresholdMinutes": 10
     }
   },
@@ -1441,8 +1510,8 @@
     },
     "geofence": {
       "enabled": true,
-      "latitude": 0,
-      "longitude": 0,
+      "latitude": 30.174754,
+      "longitude": -97.823794,
       "radiusMeters": 150,
       "wifiSSIDs": [],
       "lateThresholdMinutes": 10
@@ -1510,10 +1579,15 @@
     },
     "geofence": {
       "enabled": true,
-      "latitude": 0,
-      "longitude": 0,
+      "latitude": 29.612614,
+      "longitude": -98.602123,
       "radiusMeters": 150,
-      "wifiSSIDs": [],
+      "wifiSSIDs": [
+        "MySpectrumWiFi18-2G",
+        "MySpectrumWiFiAD-2G",
+        "MySpectrumWiFiAD-5G",
+        "sonicwall-EF18"
+      ],
       "lateThresholdMinutes": 10
     }
   },
@@ -1579,10 +1653,16 @@
     },
     "geofence": {
       "enabled": true,
-      "latitude": 0,
-      "longitude": 0,
+      "latitude": 41.937574,
+      "longitude": -88.112759,
       "radiusMeters": 150,
-      "wifiSSIDs": [],
+      "wifiSSIDs": [
+        "CBCI-22B8",
+        "xfinitywifi",
+        "NHG_MDM_Phones",
+        "Xfinity Mobile Passpoint",
+        "CBCI-219C-5"
+      ],
       "lateThresholdMinutes": 10
     }
   },
@@ -1648,10 +1728,16 @@
     },
     "geofence": {
       "enabled": true,
-      "latitude": 0,
-      "longitude": 0,
+      "latitude": 42.238652,
+      "longitude": -87.952841,
       "radiusMeters": 150,
-      "wifiSSIDs": [],
+      "wifiSSIDs": [
+        "CBCI-D653",
+        "9C05D6DD3FC7",
+        "DO_NOT_CONNECT_MESH-FX4100-A1D0",
+        "FX4100-A1D0",
+        "i-Scan@6C9466A3804"
+      ],
       "lateThresholdMinutes": 10
     }
   },
@@ -1717,10 +1803,14 @@
     },
     "geofence": {
       "enabled": true,
-      "latitude": 0,
-      "longitude": 0,
+      "latitude": 30.158739,
+      "longitude": -97.790959,
       "radiusMeters": 150,
-      "wifiSSIDs": [],
+      "wifiSSIDs": [
+        "TDWIFI",
+        "Fios-5ACXO",
+        "Fios-5ACXO-5G"
+      ],
       "lateThresholdMinutes": 10
     }
   },
@@ -1786,10 +1876,13 @@
     },
     "geofence": {
       "enabled": true,
-      "latitude": 0,
-      "longitude": 0,
+      "latitude": 29.493773,
+      "longitude": -98.7076654,
       "radiusMeters": 150,
-      "wifiSSIDs": [],
+      "wifiSSIDs": [
+        "MyspectrumWIFI-2g",
+        "MyspectrumWIFI-5g"
+      ],
       "lateThresholdMinutes": 10
     }
   },
@@ -1855,8 +1948,8 @@
     },
     "geofence": {
       "enabled": true,
-      "latitude": 0,
-      "longitude": 0,
+      "latitude": 29.572273,
+      "longitude": -95.285577,
       "radiusMeters": 150,
       "wifiSSIDs": [],
       "lateThresholdMinutes": 10

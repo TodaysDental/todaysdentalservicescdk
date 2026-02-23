@@ -38,6 +38,7 @@ import {
   createCampaignViaRest,
   createBudgetViaRest,
   removeBudgetViaRest,
+  uploadImageAssetViaUrl,
 } from '../../shared/utils/google-ads-client';
 import {
   getAllowedClinicIds,
@@ -270,7 +271,7 @@ interface BulkPublishRequest {
   customerIds: string[];
   campaignTemplate: {
     name: string;
-    type: 'SEARCH' | 'DISPLAY' | 'VIDEO';
+    type: 'SEARCH' | 'DISPLAY' | 'VIDEO' | 'DEMAND_GEN';
     dailyBudget: number;
     status: 'ENABLED' | 'PAUSED';
     // Smart bidding options (parity with single-campaign endpoint)
@@ -280,16 +281,20 @@ interface BulkPublishRequest {
   };
   // Ad group template (required for functional campaigns)
   adGroupTemplate?: {
-    name: string; // Use {{clinicName}} placeholder
+    name: string; // Use {{clinic_name}} placeholder
     cpcBid: number; // REQUIRED: CPC bid in dollars (no default - must be explicit)
   };
-  // Ad template for responsive search ads
+  // Ad template for all campaign types
   adTemplate?: {
-    headlines: string[]; // Use {{clinicName}}, {{city}} placeholders
+    headlines: string[]; // Use {{clinic_name}}, {{clinic_city}} placeholders
     descriptions: string[];
-    finalUrlTemplate: string; // e.g., "https://{{domain}}/schedule"
+    finalUrlTemplate: string; // e.g., "https://{{website}}/schedule"
     path1?: string;
     path2?: string;
+    // Display/Demand Gen specific fields
+    businessName?: string; // Required for Display and Demand Gen
+    longHeadline?: string; // Required for Display (90 chars max)
+    imageUrl?: string; // Marketing image URL for Display/Demand Gen
   };
   // Default keywords to add
   defaultKeywords?: Array<{
@@ -610,15 +615,16 @@ async function bulkPublishCampaigns(
         }
       }
 
-      // Map campaign type string to enum value
+      // Map campaign type to Google Ads AdvertisingChannelType enum
+      // Note: DEMAND_GEN (14) is not in the library's TypeScript types but exists at runtime
       const campaignTypeStr = campaignTemplate.type || 'SEARCH';
-      const channelTypeEnum = campaignTypeStr === 'SEARCH'
-        ? enums.AdvertisingChannelType.SEARCH
-        : campaignTypeStr === 'DISPLAY'
-          ? enums.AdvertisingChannelType.DISPLAY
-          : campaignTypeStr === 'VIDEO'
-            ? enums.AdvertisingChannelType.VIDEO
-            : enums.AdvertisingChannelType.SEARCH;
+      const channelTypeMap: Record<string, number> = {
+        'SEARCH': enums.AdvertisingChannelType.SEARCH,
+        'DISPLAY': enums.AdvertisingChannelType.DISPLAY,
+        'VIDEO': enums.AdvertisingChannelType.VIDEO,
+        'DEMAND_GEN': 14, // enums.AdvertisingChannelType.DEMAND_GEN - not in lib types
+      };
+      const channelTypeEnum = channelTypeMap[campaignTypeStr] || enums.AdvertisingChannelType.SEARCH;
 
       // Map status string to enum value
       const statusStr = campaignTemplate.status || 'PAUSED';
@@ -666,38 +672,41 @@ async function bulkPublishCampaigns(
         const adGroupName = replacePlaceholders(adGroupTemplate.name || `${campaignName} - Ad Group`, clinic);
 
         // Get proper ad group type based on campaign type
-        const adGroupType = CAMPAIGN_TYPE_TO_AD_GROUP_TYPE[campaignTemplate.type || 'SEARCH'] || 'SEARCH_STANDARD';
+        // DEMAND_GEN ad groups must NOT have an explicit type — the API infers it from the campaign
+        const adGroupType = CAMPAIGN_TYPE_TO_AD_GROUP_TYPE[campaignTemplate.type || 'SEARCH'];
 
-        const adGroupResource = {
+        const adGroupResource: any = {
           name: adGroupName,
           campaign: campaignResourceName,
           status: 'ENABLED',
-          type: adGroupType,
           cpc_bid_micros: dollarsToMicros(adGroupTemplate.cpcBid),
         };
+        if (adGroupType) {
+          adGroupResource.type = adGroupType;
+        }
 
         const adGroupResponse = await (client as any).adGroups.create([adGroupResource]);
         adGroupResourceName = adGroupResponse.results[0].resource_name;
         console.log(`[GoogleAdsBulk] Created ad group for ${customerId}: ${adGroupResourceName}`);
 
-        // Create Responsive Search Ad if template provided (only for SEARCH campaigns)
-        // NOTE: VIDEO campaigns require VIDEO_IN_STREAM_AD or similar - RSA is not supported
-        if (adTemplate && campaignTemplate.type === 'SEARCH') {
+        // ============================================
+        // CAMPAIGN-TYPE-SPECIFIC AD CREATION
+        // Each campaign type requires a different ad format per Google Ads API
+        // ============================================
+
+        if (adTemplate && campaignTypeStr === 'SEARCH') {
+          // SEARCH → Responsive Search Ad (RSA)
           const rawHeadlines = adTemplate.headlines.map(h => replacePlaceholders(h, clinic));
           const rawDescriptions = adTemplate.descriptions.map(d => replacePlaceholders(d, clinic));
           const finalUrl = replacePlaceholders(adTemplate.finalUrlTemplate, clinic);
 
-          // Validate and truncate to fit Google Ads character limits
           const { validHeadlines, validDescriptions, warnings } = validateAdText(rawHeadlines, rawDescriptions);
-
           if (warnings.length > 0) {
             allWarnings.push(`${clinic.clinicName}: ${warnings.join('; ')}`);
           }
 
-          // Validate path lengths
           let path1 = adTemplate.path1 ? replacePlaceholders(adTemplate.path1, clinic) : undefined;
           let path2 = adTemplate.path2 ? replacePlaceholders(adTemplate.path2, clinic) : undefined;
-
           if (path1 && path1.length > PATH_MAX_CHARS) {
             path1 = truncateToLimit(path1, PATH_MAX_CHARS);
             allWarnings.push(`${clinic.clinicName}: path1 truncated to ${PATH_MAX_CHARS} chars`);
@@ -721,22 +730,127 @@ async function bulkPublishCampaigns(
                 final_urls: [finalUrl],
               },
             };
-
             await (client as any).adGroupAds.create([adResource]);
             adCreated = true;
-            console.log(`[GoogleAdsBulk] Created ad for ${customerId}`);
+            console.log(`[GoogleAdsBulk] Created RSA for ${customerId}`);
           } else {
-            console.warn(`[GoogleAdsBulk] Skipping ad creation for ${customerId}: need at least 3 headlines and 2 descriptions`);
+            console.warn(`[GoogleAdsBulk] Skipping RSA for ${customerId}: need at least 3 headlines and 2 descriptions`);
           }
-        } else if (adTemplate && campaignTemplate.type === 'VIDEO') {
-          // VIDEO campaigns don't support RSA - log informational message
-          console.info(`[GoogleAdsBulk] Skipping RSA for VIDEO campaign ${customerId}: VIDEO campaigns require manual ad creation (VIDEO_IN_STREAM_AD, etc.)`);
+
+        } else if (adTemplate && campaignTypeStr === 'DISPLAY') {
+          // DISPLAY → Responsive Display Ad (uses clinic logo as marketing image)
+          const rawHeadlines = adTemplate.headlines.map(h => replacePlaceholders(h, clinic));
+          const rawDescriptions = adTemplate.descriptions.map(d => replacePlaceholders(d, clinic));
+          const finalUrl = replacePlaceholders(adTemplate.finalUrlTemplate, clinic);
+          const businessName = adTemplate.businessName
+            ? replacePlaceholders(adTemplate.businessName, clinic)
+            : clinic.clinicName;
+          const longHeadline = adTemplate.longHeadline
+            ? replacePlaceholders(adTemplate.longHeadline, clinic)
+            : rawHeadlines[0] || businessName;
+
+          // Get image URL: from template or fall back to clinic logo
+          const imageUrl = adTemplate.imageUrl || clinic.logoUrl;
+
+          if (!imageUrl) {
+            console.warn(`[GoogleAdsBulk] Skipping Display ad for ${customerId}: no image URL or clinic logo available`);
+            allWarnings.push(`${clinic.clinicName}: Display ad skipped - no marketing image available`);
+          } else if (rawHeadlines.length < 1 || rawDescriptions.length < 1) {
+            console.warn(`[GoogleAdsBulk] Skipping Display ad for ${customerId}: need at least 1 headline and 1 description`);
+          } else {
+            try {
+              const imageAssetName = `${campaignName} - Marketing Image - ${Date.now()}`;
+              const imageAssetResourceName = await uploadImageAssetViaUrl(client, imageUrl, imageAssetName);
+
+              let logoAssetResourceName: string | undefined;
+              const logoUrl = clinic.logoUrl;
+              if (logoUrl && logoUrl !== imageUrl) {
+                const logoAssetName = `${campaignName} - Logo - ${Date.now()}`;
+                logoAssetResourceName = await uploadImageAssetViaUrl(client, logoUrl, logoAssetName);
+              }
+
+              const displayAdData: any = {
+                headlines: rawHeadlines.slice(0, 5).map(text => ({ text: text.slice(0, 30) })),
+                long_headline: { text: longHeadline.slice(0, 90) },
+                descriptions: rawDescriptions.slice(0, 5).map(text => ({ text: text.slice(0, 90) })),
+                business_name: businessName,
+                marketing_images: [{ asset: imageAssetResourceName }],
+              };
+              if (logoAssetResourceName) {
+                displayAdData.logo_images = [{ asset: logoAssetResourceName }];
+              }
+
+              const adResource = {
+                ad_group: adGroupResourceName,
+                status: 'ENABLED',
+                ad: {
+                  responsive_display_ad: displayAdData,
+                  final_urls: [finalUrl],
+                },
+              };
+              await (client as any).adGroupAds.create([adResource]);
+              adCreated = true;
+              console.log(`[GoogleAdsBulk] Created Display ad for ${customerId}`);
+            } catch (displayErr: any) {
+              console.error(`[GoogleAdsBulk] Display ad failed for ${customerId}:`, displayErr.message || displayErr);
+              allWarnings.push(`${clinic.clinicName}: Display ad failed - ${displayErr.message || 'Unknown error'}`);
+            }
+          }
+
+        } else if (adTemplate && campaignTypeStr === 'DEMAND_GEN') {
+          // DEMAND_GEN → Demand Gen Multi-Asset Ad (uses clinic logo as image + logo)
+          const rawHeadlines = adTemplate.headlines.map(h => replacePlaceholders(h, clinic));
+          const rawDescriptions = adTemplate.descriptions.map(d => replacePlaceholders(d, clinic));
+          const finalUrl = replacePlaceholders(adTemplate.finalUrlTemplate, clinic);
+          const businessName = adTemplate.businessName
+            ? replacePlaceholders(adTemplate.businessName, clinic)
+            : clinic.clinicName;
+
+          const imageUrl = adTemplate.imageUrl || clinic.logoUrl;
+
+          if (!imageUrl) {
+            console.warn(`[GoogleAdsBulk] Skipping DemandGen ad for ${customerId}: no image URL or clinic logo available`);
+            allWarnings.push(`${clinic.clinicName}: Demand Gen ad skipped - no marketing image available`);
+          } else if (rawHeadlines.length < 1 || rawDescriptions.length < 1) {
+            console.warn(`[GoogleAdsBulk] Skipping DemandGen ad for ${customerId}: need at least 1 headline and 1 description`);
+          } else {
+            try {
+              const imageAssetName = `${campaignName} - Marketing Image - ${Date.now()}`;
+              const imageAssetResourceName = await uploadImageAssetViaUrl(client, imageUrl, imageAssetName);
+
+              const logoUrl = clinic.logoUrl || imageUrl;
+              const logoAssetName = `${campaignName} - Logo - ${Date.now()}`;
+              const logoAssetResourceName = await uploadImageAssetViaUrl(client, logoUrl, logoAssetName);
+
+              const adResource = {
+                ad_group: adGroupResourceName,
+                status: 'ENABLED',
+                ad: {
+                  demand_gen_multi_asset_ad: {
+                    headline_text_list: rawHeadlines.slice(0, 5).map(text => text.slice(0, 40)),
+                    description_text_list: rawDescriptions.slice(0, 5).map(text => text.slice(0, 90)),
+                    marketing_images: [{ asset: imageAssetResourceName }],
+                    logo_images: [{ asset: logoAssetResourceName }],
+                    business_name: businessName,
+                  },
+                  final_urls: [finalUrl],
+                },
+              };
+              await (client as any).adGroupAds.create([adResource]);
+              adCreated = true;
+              console.log(`[GoogleAdsBulk] Created DemandGen ad for ${customerId}`);
+            } catch (dgErr: any) {
+              console.error(`[GoogleAdsBulk] DemandGen ad failed for ${customerId}:`, dgErr.message || dgErr);
+              allWarnings.push(`${clinic.clinicName}: Demand Gen ad failed - ${dgErr.message || 'Unknown error'}`);
+            }
+          }
+
+        } else if (adTemplate && campaignTypeStr === 'VIDEO') {
+          console.info(`[GoogleAdsBulk] Skipping ad for VIDEO campaign ${customerId}: requires YouTube video URL`);
         }
 
-        // Add default keywords if provided
-        // NOTE: The google-ads-api library's create() expects resource objects directly,
-        // NOT wrapped in { create: { ... } } operation objects
-        if (defaultKeywords && defaultKeywords.length > 0) {
+        // Add keywords ONLY for SEARCH campaigns (Display/DemandGen use audience targeting)
+        if (campaignTypeStr === 'SEARCH' && defaultKeywords && defaultKeywords.length > 0) {
           const keywordResources = defaultKeywords.map(kw => ({
             ad_group: adGroupResourceName,
             status: 'ENABLED',
@@ -751,8 +865,8 @@ async function bulkPublishCampaigns(
           console.log(`[GoogleAdsBulk] Added ${keywordsAdded} keywords for ${customerId}`);
         }
 
-        // Add default negative keywords if provided
-        if (defaultNegativeKeywords && defaultNegativeKeywords.length > 0) {
+        // Add negative keywords ONLY for SEARCH campaigns
+        if (campaignTypeStr === 'SEARCH' && defaultNegativeKeywords && defaultNegativeKeywords.length > 0) {
           const negativeKeywordResources = defaultNegativeKeywords.map(text => ({
             ad_group: adGroupResourceName,
             negative: true,
