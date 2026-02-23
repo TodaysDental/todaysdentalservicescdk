@@ -688,7 +688,7 @@ async function createCampaign(
           try {
             // Upload marketing image as asset
             const imageAssetName = `${name} - Marketing Image - ${Date.now()}`;
-            const imageAssetResourceName = await uploadImageAssetViaUrl(client, ad.imageUrl, imageAssetName);
+            const imageAssetResourceName = await uploadImageAssetViaUrl(client, displayImageUrl!, imageAssetName);
             console.log(`[GoogleAds] Uploaded marketing image asset: ${imageAssetResourceName}`);
 
             // Upload logo as asset if provided

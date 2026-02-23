@@ -106,7 +106,7 @@ async function uploadImage(event: APIGatewayProxyEvent, corsHeaders: Record<stri
         body: formParams.toString(),
     });
 
-    const json = await response.json();
+    const json: any = await response.json();
     if (json.error) {
         return metaError(json.error.message, response.status, corsHeaders);
     }
@@ -160,7 +160,7 @@ async function uploadVideo(event: APIGatewayProxyEvent, corsHeaders: Record<stri
         body: formParams.toString(),
     });
 
-    const json = await response.json();
+    const json: any = await response.json();
     if (json.error) {
         return metaError(json.error.message, response.status, corsHeaders);
     }

@@ -1429,13 +1429,174 @@ async function handleTool(
           console.log(`[searchPatients] Normalized birthdate: ${params.Birthdate || sessionAttributes?.Birthdate} → ${normalizedBirthdate}`);
         }
 
-        const providedFName = cleanName(params.FName);
-        const providedLName = cleanName(params.LName);
+        const providedFName = cleanName(params.FName || sessionAttributes?.FName);
+        const providedLName = cleanName(params.LName || sessionAttributes?.LName);
+
+        // If we already have a PatNum (from caller-ID lookup earlier in the call),
+        // short-circuit to avoid re-asking for DOB/name.
+        const patNumFromSession =
+          (typeof params.PatNum === 'string' && params.PatNum.trim()) ||
+          (typeof sessionAttributes?.PatNum === 'string' && sessionAttributes.PatNum.trim()) ||
+          '';
+        if (patNumFromSession) {
+          try {
+            const patient = await odClient.request('GET', `patients/${patNumFromSession}`);
+            const safe = toSafePatient(patient);
+
+            updatedSessionAttributes.PatNum = String(patient?.PatNum ?? patNumFromSession);
+            if (patient?.FName) updatedSessionAttributes.FName = String(patient.FName);
+            if (patient?.LName) updatedSessionAttributes.LName = String(patient.LName);
+            if (patient?.Birthdate) updatedSessionAttributes.Birthdate = String(patient.Birthdate);
+            if (typeof patient?.DateFirstVisit === 'string') {
+              updatedSessionAttributes.IsNewPatient = (patient.DateFirstVisit === '0001-01-01').toString();
+            }
+
+            return {
+              statusCode: 200,
+              body: {
+                status: 'SUCCESS',
+                data: { items: [safe] },
+                message: 'Resolved patient by PatNum',
+              },
+              updatedSessionAttributes,
+            };
+          } catch (error: any) {
+            console.warn('[searchPatients] Failed to resolve patient by PatNum, falling back', {
+              patNum: patNumFromSession,
+              error: error?.message || String(error),
+            });
+          }
+        }
 
         // SAFETY: Require DOB for name-based patient lookup to avoid wrong-patient matches.
         // Caller-ID matching is handled by searchPatientsByPhone.
         const isIsoBirthdate = typeof normalizedBirthdate === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(normalizedBirthdate);
         if (!isIsoBirthdate) {
+          // If the agent didn't provide name or DOB, fall back to caller-id phone matching
+          // to avoid getting stuck asking for DOB when we can identify via phone.
+          const hasAnyName = !!providedFName || !!providedLName;
+
+          const phoneFromParams =
+            (typeof params.WirelessPhone === 'string' && params.WirelessPhone.trim()) ||
+            (typeof params.Phone === 'string' && params.Phone.trim()) ||
+            (typeof params.phoneNumber === 'string' && params.phoneNumber.trim()) ||
+            (typeof params.phone === 'string' && params.phone.trim()) ||
+            '';
+
+          const phoneFromSession =
+            (typeof sessionAttributes?.callerPhone === 'string' && sessionAttributes.callerPhone.trim()) ||
+            (typeof sessionAttributes?.callerNumber === 'string' && sessionAttributes.callerNumber.trim()) ||
+            (typeof sessionAttributes?.PatientPhone === 'string' && sessionAttributes.PatientPhone.trim()) ||
+            '';
+
+          const rawPhone = String(phoneFromParams || phoneFromSession).trim();
+
+          if (!hasAnyName && rawPhone) {
+            // Clean phone number - remove all non-digit characters
+            const cleanPhone = rawPhone.replace(/\D/g, '');
+            const phoneFormatsRaw = [
+              cleanPhone,
+              cleanPhone.length >= 10 ? cleanPhone.slice(-10) : '',
+              cleanPhone.length >= 7 ? cleanPhone.slice(-7) : '',
+            ].filter(Boolean);
+            const phoneFormats = [...new Set(phoneFormatsRaw)].filter((p) => p.length >= 7);
+
+            // Check rate limit ONCE before trying multiple formats
+            const circuitCheck = await checkCircuitBreaker(odClient.getClinicId());
+            if (!circuitCheck.allowed) {
+              throw new Error(circuitCheck.reason || 'Request blocked by circuit breaker');
+            }
+
+            let patients: any[] = [];
+            let usedFormat = '';
+
+            try {
+              for (const phone of phoneFormats) {
+                console.log(`[searchPatients] No DOB/name provided. Falling back to phone lookup: ${phone}`);
+                const resp = await odClient.request('GET', 'patients', {
+                  params: { Phone: phone },
+                  skipRateLimit: true,
+                });
+                const items = Array.isArray(resp) ? resp : resp?.items ?? [];
+                if (items.length > 0) {
+                  patients = items;
+                  usedFormat = phone;
+                  break;
+                }
+              }
+            } catch (searchError: any) {
+              console.error(`[searchPatients] Phone fallback OpenDental API failed:`, searchError);
+
+              const clinicId = sessionAttributes.clinicId || odClient.getClinicId();
+
+              await savePatientSearchFailureAsCallback({
+                clinicId,
+                searchPhone: rawPhone,
+                searchCriteria: { WirelessPhone: rawPhone },
+                failureReason: `OpenDental API error: ${searchError?.message || 'Unknown error'}`,
+                source: 'ai-agent',
+              });
+
+              return {
+                statusCode: searchError?.response?.status || 500,
+                body: {
+                  status: 'FAILURE',
+                  message: 'Unable to search patients by phone - please try again or call the office',
+                  callbackCreated: true,
+                },
+                updatedSessionAttributes,
+              };
+            }
+
+            if (patients.length === 0) {
+              return {
+                statusCode: 404,
+                body: {
+                  status: 'FAILURE',
+                  data: { items: [] },
+                  message: 'No matching patient found for phone number',
+                  usedFormat,
+                },
+                updatedSessionAttributes,
+              };
+            }
+
+            if (patients.length > 1) {
+              // Avoid wrong-patient selection; force confirmation with name + DOB.
+              return {
+                statusCode: 404,
+                body: {
+                  status: 'FAILURE',
+                  data: { items: isPublicRequest ? [] : patients.slice(0, 5).map(toSafePatient) },
+                  message: `Multiple matches found (${patients.length}). Ask the caller for their first name, last name, and date of birth to confirm.`,
+                  usedFormat,
+                },
+                updatedSessionAttributes,
+              };
+            }
+
+            const patient = patients[0];
+            updatedSessionAttributes.PatNum = patient.PatNum.toString();
+            updatedSessionAttributes.FName = patient.FName;
+            updatedSessionAttributes.LName = patient.LName;
+            updatedSessionAttributes.Birthdate = patient.Birthdate;
+            updatedSessionAttributes.IsNewPatient = (patient.DateFirstVisit === '0001-01-01').toString();
+            // Persist caller phone for downstream tools/callbacks
+            updatedSessionAttributes.PatientPhone = rawPhone;
+            updatedSessionAttributes.callerPhone = rawPhone;
+
+            return {
+              statusCode: 200,
+              body: {
+                status: 'SUCCESS',
+                data: { items: [toSafePatient(patient)] },
+                message: 'Found 1 patient(s) by phone',
+                usedFormat,
+              },
+              updatedSessionAttributes,
+            };
+          }
+
           return {
             statusCode: 400,
             body: {
