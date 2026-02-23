@@ -30,6 +30,7 @@ import {
 } from '@aws-sdk/client-bedrock-agent-runtime';
 import { LambdaClient, InvokeCommand } from '@aws-sdk/client-lambda';
 import { v4 as uuidv4 } from 'uuid';
+import { getDateContext } from '../../shared/prompts/ai-prompts';
 
 // ========================================================================
 // CONFIGURATION
@@ -149,46 +150,53 @@ async function getAgentForClinic(clinicId: string): Promise<AgentInfo | null> {
       ExpressionAttributeValues: {
         ':clinicId': clinicId,
       },
-      Limit: 20,
+      Limit: 50,
       ScanIndexForward: false,
     }));
 
-    if (!allAgents.Items || allAgents.Items.length === 0) {
+    const items = (allAgents.Items || []) as any[];
+    if (items.length === 0) {
       agentCache.set(clinicId, { agent: null, timestamp: Date.now() });
       return null;
     }
 
-    // Prioritize: 1) default voice agent, 2) any voice-enabled, 3) any agent
-    let selectedAgent: any = null;
+    // Only consider callable voice agents (consistent with Connect/Lex sync path)
+    const callable = items.filter((a: any) => (
+      a &&
+      a.isActive === true &&
+      a.isVoiceEnabled === true &&
+      a.bedrockAgentStatus === 'PREPARED' &&
+      typeof a.bedrockAgentId === 'string' &&
+      a.bedrockAgentId.trim().length > 0 &&
+      typeof a.bedrockAgentAliasId === 'string' &&
+      a.bedrockAgentAliasId.trim().length > 0
+    ));
 
-    const defaultVoice = allAgents.Items.find(
-      (a: any) => a.isDefaultVoiceAgent === true && a.isVoiceEnabled === true
-    );
-    if (defaultVoice) {
-      selectedAgent = defaultVoice;
-      console.log('[AsyncBedrock] Selected default voice agent:', selectedAgent.agentId);
+    if (callable.length === 0) {
+      console.warn('[AsyncBedrock] No callable voice-capable agent found for clinic', {
+        clinicId,
+        scanned: items.length,
+      });
+      agentCache.set(clinicId, { agent: null, timestamp: Date.now() });
+      return null;
     }
 
-    if (!selectedAgent) {
-      const voiceEnabled = allAgents.Items.find((a: any) => a.isVoiceEnabled === true);
-      if (voiceEnabled) {
-        selectedAgent = voiceEnabled;
-        console.log('[AsyncBedrock] Selected voice-enabled agent:', selectedAgent.agentId);
-      }
-    }
-
-    if (!selectedAgent) {
-      selectedAgent = allAgents.Items[0];
-      console.log('[AsyncBedrock] Using fallback agent:', selectedAgent.agentId);
-    }
+    // Prioritize a default voice agent if present
+    const selectedAgent = callable.find((a: any) => a.isDefaultVoiceAgent === true) || callable[0];
 
     const agentInfo: AgentInfo = {
-      agentId: selectedAgent.bedrockAgentId,
-      aliasId: selectedAgent.bedrockAliasId || 'TSTALIASID',
-      agentName: selectedAgent.agentName || selectedAgent.name,
+      agentId: String(selectedAgent.bedrockAgentId).trim(),
+      // BUGFIX: The column is `bedrockAgentAliasId` (not `bedrockAliasId`).
+      aliasId: String(selectedAgent.bedrockAgentAliasId).trim(),
+      agentName: (selectedAgent.agentName || selectedAgent.name || '').toString(),
     };
 
     agentCache.set(clinicId, { agent: agentInfo, timestamp: Date.now() });
+    console.log('[AsyncBedrock] Selected voice agent for clinic', {
+      clinicId,
+      internalAgentId: selectedAgent.agentId,
+      bedrockAgentId: agentInfo.agentId,
+    });
     return agentInfo;
   } catch (error) {
     console.error('[AsyncBedrock] Error looking up agent:', error);
@@ -334,6 +342,9 @@ async function startAsync(event: any): Promise<{ requestId: string; status: stri
           contactId,
           inputText: inputTranscript.trim(),
           clinicId,
+          callerNumber,
+          dialedNumber,
+          timezone: String(contactAttributes.timezone || 'UTC'),
           ttsSpeakingRate: prosody.speakingRate,
           ttsPitch: prosody.pitch,
           ttsVolume: prosody.volume,
@@ -373,6 +384,9 @@ async function processBedrockInvocation(params: {
   contactId: string;
   inputText: string;
   clinicId: string;
+  callerNumber?: string;
+  dialedNumber?: string;
+  timezone?: string;
   ttsSpeakingRate?: string;
   ttsPitch?: string;
   ttsVolume?: string;
@@ -417,6 +431,15 @@ async function processBedrockInvocation(params: {
       sessionId: session.bedrockSessionId,
     });
 
+    // Add lightweight date context so the agent can resolve "tomorrow", weekdays, etc.
+    const timezone = String(params.timezone || 'UTC').trim() || 'UTC';
+    const d = getDateContext(timezone);
+    const [year, month, day] = d.today.split('-');
+    const todayFormatted = `${month}/${day}/${year}`;
+
+    const callerNumber = String(params.callerNumber || '').trim();
+    const dialedNumber = String(params.dialedNumber || '').trim();
+
     // Invoke Bedrock agent (this can take 10-30+ seconds with tool calls)
     const command = new InvokeAgentCommand({
       agentId: agent.agentId,
@@ -426,8 +449,25 @@ async function processBedrockInvocation(params: {
       sessionState: {
         sessionAttributes: {
           clinicId: session.clinicId,
+          callerNumber,
+          dialedNumber,
+          callerPhone: callerNumber,
+          PatientPhone: callerNumber,
+          contactId,
           inputMode: 'Speech',
           channel: 'voice',
+          todayDate: d.today,
+          todayFormatted,
+          dayName: d.dayName,
+          tomorrowDate: d.tomorrowDate,
+          currentTime: d.currentTime,
+          nextWeekDates: JSON.stringify(d.nextWeekDates),
+          timezone: d.timezone,
+        },
+        promptSessionAttributes: {
+          callerNumber,
+          currentDate: `Today is ${d.dayName}, ${todayFormatted} (${d.today}). Current time: ${d.currentTime} (${d.timezone})`,
+          dateContext: `When scheduling appointments, use ${d.today} as today's date. Tomorrow is ${d.tomorrowDate}. Next week dates: ${JSON.stringify(d.nextWeekDates)}`,
         },
       },
     });
@@ -657,6 +697,7 @@ async function pollResult(event: any): Promise<{
 
   if (!result.Item) {
     // Not found yet (or expired). Keep polling a bit.
+    console.log('[AsyncBedrock] pollResult: request not found yet', { requestId });
     return { status: 'pending' };
   }
 
@@ -670,6 +711,11 @@ async function pollResult(event: any): Promise<{
     })).catch(() => { });
 
     const aiResponse = item.response || '';
+    console.log('[AsyncBedrock] pollResult: completed', {
+      requestId,
+      responseLen: aiResponse.length,
+      ssmlLen: (item.ssmlResponse || '').length,
+    });
     return {
       status: 'completed',
       aiResponse,
@@ -685,6 +731,11 @@ async function pollResult(event: any): Promise<{
     })).catch(() => { });
 
     const aiResponse = item.response || "I'm sorry, I had trouble processing that. Could you please try again?";
+    console.log('[AsyncBedrock] pollResult: error -> completing with fallback message', {
+      requestId,
+      responseLen: aiResponse.length,
+      ssmlLen: (item.ssmlResponse || '').length,
+    });
     return {
       status: 'completed',
       aiResponse,
@@ -773,6 +824,7 @@ async function pollResult(event: any): Promise<{
     };
   }
 
+  console.log('[AsyncBedrock] pollResult: pending', { requestId, pollCount: nextPollCount, maxPollLoops });
   return { status: 'pending' };
 }
 
@@ -819,6 +871,9 @@ export const handler = async (event: any): Promise<any> => {
       const contactId = params.contactId || '';
       const inputText = (params.inputText || '').toString();
       const clinicId = params.clinicId || DEFAULT_CLINIC_ID;
+      const callerNumber = (params.callerNumber || '').toString();
+      const dialedNumber = (params.dialedNumber || '').toString();
+      const timezone = (params.timezone || 'UTC').toString();
       const ttsSpeakingRate = params.ttsSpeakingRate;
       const ttsPitch = params.ttsPitch;
       const ttsVolume = params.ttsVolume;
@@ -833,6 +888,9 @@ export const handler = async (event: any): Promise<any> => {
         contactId,
         inputText: inputText.trim(),
         clinicId,
+        callerNumber,
+        dialedNumber,
+        timezone,
         ttsSpeakingRate,
         ttsPitch,
         ttsVolume,

@@ -28,6 +28,7 @@ import {
   TranscriptBufferManager,
   TranscriptSegment,
 } from '../shared/utils/transcript-buffer-manager';
+import { getDateContext } from '../../shared/prompts/ai-prompts';
 
 // ========================================================================
 // CONFIGURATION
@@ -451,18 +452,59 @@ async function getVoiceSettingsForClinic(clinicId: string): Promise<ClinicVoiceS
     const resp = await docClient.send(new GetCommand({
       TableName: VOICE_CONFIG_TABLE,
       Key: { clinicId: effectiveClinicId },
-      ProjectionExpression: 'voiceSettings',
     }));
 
-    const voiceSettings = (resp.Item as any)?.voiceSettings || {};
-    const rawVoiceId = typeof voiceSettings.voiceId === 'string' ? voiceSettings.voiceId.trim() : '';
+    const item = (resp.Item as any) || {};
+    const voiceSettings = item.voiceSettings || {};
+
+    // Backwards-compatible reads:
+    // Some environments may have older items that stored voice fields at the top-level.
+    const rawVoiceId =
+      (typeof voiceSettings.voiceId === 'string' && voiceSettings.voiceId.trim())
+      || (typeof voiceSettings.VoiceId === 'string' && voiceSettings.VoiceId.trim())
+      || (typeof voiceSettings.TextToSpeechVoice === 'string' && voiceSettings.TextToSpeechVoice.trim())
+      || (typeof item.voiceId === 'string' && item.voiceId.trim())
+      || (typeof item.VoiceId === 'string' && item.VoiceId.trim())
+      || (typeof item.voice_voiceId === 'string' && item.voice_voiceId.trim())
+      || (typeof item.TextToSpeechVoice === 'string' && item.TextToSpeechVoice.trim())
+      || '';
+    const rawEngine =
+      (typeof voiceSettings.engine === 'string' && voiceSettings.engine.trim())
+      || (typeof voiceSettings.Engine === 'string' && voiceSettings.Engine.trim())
+      || (typeof voiceSettings.TextToSpeechEngine === 'string' && voiceSettings.TextToSpeechEngine.trim())
+      || (typeof item.engine === 'string' && item.engine.trim())
+      || (typeof item.Engine === 'string' && item.Engine.trim())
+      || (typeof item.voice_engine === 'string' && item.voice_engine.trim())
+      || (typeof item.TextToSpeechEngine === 'string' && item.TextToSpeechEngine.trim())
+      || '';
+    const rawSpeakingRate =
+      (typeof voiceSettings.speakingRate === 'string' && voiceSettings.speakingRate.trim())
+      || (typeof voiceSettings.SpeakingRate === 'string' && voiceSettings.SpeakingRate.trim())
+      || (typeof item.speakingRate === 'string' && item.speakingRate.trim())
+      || (typeof item.ttsSpeakingRate === 'string' && item.ttsSpeakingRate.trim())
+      || (typeof item.voice_speakingRate === 'string' && item.voice_speakingRate.trim())
+      || '';
+    const rawPitch =
+      (typeof voiceSettings.pitch === 'string' && voiceSettings.pitch.trim())
+      || (typeof voiceSettings.Pitch === 'string' && voiceSettings.Pitch.trim())
+      || (typeof item.pitch === 'string' && item.pitch.trim())
+      || (typeof item.ttsPitch === 'string' && item.ttsPitch.trim())
+      || (typeof item.voice_pitch === 'string' && item.voice_pitch.trim())
+      || '';
+    const rawVolume =
+      (typeof voiceSettings.volume === 'string' && voiceSettings.volume.trim())
+      || (typeof voiceSettings.Volume === 'string' && voiceSettings.Volume.trim())
+      || (typeof item.volume === 'string' && item.volume.trim())
+      || (typeof item.ttsVolume === 'string' && item.ttsVolume.trim())
+      || (typeof item.voice_volume === 'string' && item.voice_volume.trim())
+      || '';
 
     const voice: ClinicVoiceSettings = {
       voiceId: rawVoiceId || DEFAULT_TTS_VOICE.voiceId,
-      engine: normalizeEngine(voiceSettings.engine),
-      speakingRate: normalizeProsody(voiceSettings.speakingRate, ALLOWED_SPEAKING_RATES, DEFAULT_TTS_VOICE.speakingRate),
-      pitch: normalizeProsody(voiceSettings.pitch, ALLOWED_PITCH, DEFAULT_TTS_VOICE.pitch),
-      volume: normalizeProsody(voiceSettings.volume, ALLOWED_VOLUME, DEFAULT_TTS_VOICE.volume),
+      engine: normalizeEngine(rawEngine),
+      speakingRate: normalizeProsody(rawSpeakingRate, ALLOWED_SPEAKING_RATES, DEFAULT_TTS_VOICE.speakingRate),
+      pitch: normalizeProsody(rawPitch, ALLOWED_PITCH, DEFAULT_TTS_VOICE.pitch),
+      volume: normalizeProsody(rawVolume, ALLOWED_VOLUME, DEFAULT_TTS_VOICE.volume),
     };
     return voice;
   } catch (error: any) {
@@ -855,6 +897,8 @@ async function invokeBedrock(params: {
   clinicId: string;
   inputMode?: 'Text' | 'Speech' | 'DTMF';
   channel?: 'voice' | 'chat';
+  sessionAttributes?: Record<string, string>;
+  promptSessionAttributes?: Record<string, string>;
   timeoutMs?: number;
 }): Promise<{ response: string; toolsUsed: string[] }> {
   const { agentId, aliasId, sessionId, inputText, clinicId, inputMode, channel, timeoutMs } = params;
@@ -874,18 +918,24 @@ async function invokeBedrock(params: {
     : effectiveTimeoutMs + 2000;
 
   try {
+    const mergedSessionAttributes: Record<string, string> = {
+      ...(params.sessionAttributes || {}),
+      clinicId,
+      // Pass input mode so agent knows to use voice-optimized responses
+      inputMode: inputMode || 'Text',
+      channel: channel || (inputMode === 'Speech' ? 'voice' : 'chat'),
+    };
+
     const command = new InvokeAgentCommand({
       agentId,
       agentAliasId: aliasId,
       sessionId,
       inputText,
       sessionState: {
-        sessionAttributes: {
-          clinicId,
-          // Pass input mode so agent knows to use voice-optimized responses
-          inputMode: inputMode || 'Text',
-          channel: channel || (inputMode === 'Speech' ? 'voice' : 'chat'),
-        },
+        sessionAttributes: mergedSessionAttributes,
+        ...(params.promptSessionAttributes && Object.keys(params.promptSessionAttributes).length > 0
+          ? { promptSessionAttributes: params.promptSessionAttributes }
+          : {}),
       },
     });
 
@@ -1201,6 +1251,40 @@ async function handleConnectDirectEvent(event: ConnectLambdaEvent): Promise<Conn
     return buildResponse("I'm sorry, I didn't catch that clearly. Could you please repeat what you said?");
   }
 
+  // Add lightweight date context so the agent can resolve "tomorrow", weekdays, etc.
+  // Prefer a timezone passed from Connect if present; otherwise default to UTC.
+  const timezone = String(contactAttributes['timezone'] || 'UTC').trim() || 'UTC';
+  const d = getDateContext(timezone);
+  const [year, month, day] = d.today.split('-');
+  const todayFormatted = `${month}/${day}/${year}`;
+
+  const bedrockSessionAttributes: Record<string, string> = {
+    callerNumber,
+    dialedNumber,
+    // Common aliases used by action-group tools/callbacks
+    callerPhone: callerNumber,
+    PatientPhone: callerNumber,
+    callDirection,
+    contactId,
+    ...(scheduledCallId ? { scheduledCallId } : {}),
+    ...(purpose ? { purpose } : {}),
+    ...(patientName ? { patientName } : {}),
+    // Date context for relative scheduling
+    todayDate: d.today,
+    todayFormatted,
+    dayName: d.dayName,
+    tomorrowDate: d.tomorrowDate,
+    currentTime: d.currentTime,
+    nextWeekDates: JSON.stringify(d.nextWeekDates),
+    timezone: d.timezone,
+  };
+
+  const bedrockPromptSessionAttributes: Record<string, string> = {
+    callerNumber,
+    currentDate: `Today is ${d.dayName}, ${todayFormatted} (${d.today}). Current time: ${d.currentTime} (${d.timezone})`,
+    dateContext: `When scheduling appointments, use ${d.today} as today's date. Tomorrow is ${d.tomorrowDate}. Next week dates: ${JSON.stringify(d.nextWeekDates)}`,
+  };
+
   // Invoke Bedrock
   const { response: aiResponse, toolsUsed } = await invokeBedrock({
     agentId: bedrockAgentId,
@@ -1210,6 +1294,8 @@ async function handleConnectDirectEvent(event: ConnectLambdaEvent): Promise<Conn
     clinicId,
     inputMode: 'Speech',
     channel: 'voice',
+    sessionAttributes: bedrockSessionAttributes,
+    promptSessionAttributes: bedrockPromptSessionAttributes,
     timeoutMs: CONNECT_BEDROCK_TIMEOUT_MS,
   });
 
@@ -1380,6 +1466,34 @@ async function handleLexEvent(event: LexV2Event): Promise<LexV2Response> {
   }
 
   // Invoke Bedrock - pass inputMode so agent uses voice-optimized responses
+  // Add lightweight date context so the agent can resolve "tomorrow", weekdays, etc.
+  const timezone = String(sessionAttributes['timezone'] || 'UTC').trim() || 'UTC';
+  const d = getDateContext(timezone);
+  const [year, month, day] = d.today.split('-');
+  const todayFormatted = `${month}/${day}/${year}`;
+
+  const bedrockSessionAttributes: Record<string, string> = {
+    callerNumber,
+    dialedNumber,
+    callerPhone: callerNumber,
+    PatientPhone: callerNumber,
+    callDirection,
+    contactId: lexSessionId,
+    todayDate: d.today,
+    todayFormatted,
+    dayName: d.dayName,
+    tomorrowDate: d.tomorrowDate,
+    currentTime: d.currentTime,
+    nextWeekDates: JSON.stringify(d.nextWeekDates),
+    timezone: d.timezone,
+  };
+
+  const bedrockPromptSessionAttributes: Record<string, string> = {
+    callerNumber,
+    currentDate: `Today is ${d.dayName}, ${todayFormatted} (${d.today}). Current time: ${d.currentTime} (${d.timezone})`,
+    dateContext: `When scheduling appointments, use ${d.today} as today's date. Tomorrow is ${d.tomorrowDate}. Next week dates: ${JSON.stringify(d.nextWeekDates)}`,
+  };
+
   const { response: aiResponse, toolsUsed } = await invokeBedrock({
     agentId: bedrockAgentId,
     aliasId: bedrockAgentAliasId,
@@ -1388,6 +1502,8 @@ async function handleLexEvent(event: LexV2Event): Promise<LexV2Response> {
     clinicId,
     inputMode: event.inputMode, // 'Speech' for voice calls, 'Text' for chat
     channel: event.inputMode === 'Speech' ? 'voice' : 'chat',
+    sessionAttributes: bedrockSessionAttributes,
+    promptSessionAttributes: bedrockPromptSessionAttributes,
     timeoutMs: event.inputMode === 'Speech' ? CONNECT_BEDROCK_TIMEOUT_MS : CONFIG.BEDROCK_TIMEOUT_MS,
   });
 

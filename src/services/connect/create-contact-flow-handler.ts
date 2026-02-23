@@ -199,6 +199,7 @@ function buildContactFlowContent(params: {
         'set-contact-attrs': { position: { x: 360, y: 20 } },
         'invoke-voice-config': { position: { x: 560, y: 20 } },
         'set-tts-voice': { position: { x: 760, y: 20 } },
+        'set-default-tts-voice': { position: { x: 860, y: 80 } },
         'store-clinic-id': { position: { x: 960, y: 20 } },
         'welcome-message': { position: { x: 1160, y: 20 } },
         'set-disconnect-flow': { position: { x: 1360, y: 20 } },
@@ -206,6 +207,7 @@ function buildContactFlowContent(params: {
         'typing-once': { position: { x: 1760, y: 20 } },
         'invoke-ai': { position: { x: 1960, y: 20 } },
         'speak-ai': { position: { x: 2160, y: 20 } },
+          'speak-ai-text-fallback': { position: { x: 2160, y: 120 } },
         'disconnect-action': { position: { x: 2360, y: 20 } },
       },
     },
@@ -257,6 +259,8 @@ function buildContactFlowContent(params: {
         Parameters: {
           LambdaFunctionARN: lambdaFunctionArn,
           InvocationTimeLimitSeconds: '8',
+          InvocationType: 'SYNCHRONOUS',
+          ResponseValidation: { ResponseType: 'STRING_MAP' },
           LambdaInvocationAttributes: {
             requestType: 'voiceConfig',
             callerNumber: '$.Attributes.callerNumber',
@@ -282,7 +286,22 @@ function buildContactFlowContent(params: {
           TextToSpeechEngine: '$.External.TextToSpeechEngine',
         },
         Transitions: {
-          // Fail open: proceed even if voice/engine was invalid; Connect will fall back to default voice.
+          NextAction: 'store-clinic-id',
+          // If voice/engine are invalid, Connect can take the Error branch and TTS may stop working for the contact.
+          // Attempt to restore a known-good default voice so prompts/responses are still audible.
+          Errors: [{ NextAction: 'set-default-tts-voice', ErrorType: 'NoMatchingError' }],
+        },
+      },
+
+      // 4b) Fallback to a known-good voice if dynamic Set voice fails
+      {
+        Identifier: 'set-default-tts-voice',
+        Type: 'UpdateContactTextToSpeechVoice',
+        Parameters: {
+          TextToSpeechVoice: 'Joanna',
+          TextToSpeechEngine: 'neural',
+        },
+        Transitions: {
           NextAction: 'store-clinic-id',
           Errors: [{ NextAction: 'store-clinic-id', ErrorType: 'NoMatchingError' }],
         },
@@ -316,7 +335,7 @@ function buildContactFlowContent(params: {
           // parameter is a JSONPath (e.g. `$.Attributes.foo`), but does not reliably
           // substitute JSONPath references embedded *inside* SSML tag attributes.
           // A malformed SSML greeting can cause the contact to error out and disconnect.
-          Text: 'Hello! Thank you for calling. How can I help you today?',
+          Text: "Hi! Thank you for calling Today's Dental. How may I help you today?",
         },
         Transitions: {
           NextAction: 'set-disconnect-flow',
@@ -391,6 +410,8 @@ function buildContactFlowContent(params: {
         Parameters: {
           LambdaFunctionARN: lambdaFunctionArn,
           InvocationTimeLimitSeconds: '8',
+          InvocationType: 'SYNCHRONOUS',
+          ResponseValidation: { ResponseType: 'STRING_MAP' },
           LambdaInvocationAttributes: {
             inputTranscript: '$.Lex.SessionAttributes.lastUtterance',
             confidence: '$.Lex.SessionAttributes.lastUtteranceConfidence',
@@ -413,6 +434,20 @@ function buildContactFlowContent(params: {
         },
         Transitions: {
           NextAction: 'lex-asr', // loop for next user turn
+          // If SSML fails, fall back to plain text so the caller still hears a response.
+          Errors: [{ NextAction: 'speak-ai-text-fallback', ErrorType: 'NoMatchingError' }],
+        },
+      },
+
+      // 11b) Fallback: speak plain text if SSML fails
+      {
+        Identifier: 'speak-ai-text-fallback',
+        Type: 'MessageParticipant',
+        Parameters: {
+          Text: '$.External.aiResponse',
+        },
+        Transitions: {
+          NextAction: 'lex-asr',
           Errors: [{ NextAction: 'disconnect-action', ErrorType: 'NoMatchingError' }],
         },
       },
