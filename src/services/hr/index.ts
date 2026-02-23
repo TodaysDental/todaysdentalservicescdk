@@ -1702,6 +1702,360 @@ async function sendShiftNotificationEmail(recipientEmail: string, shiftDetails: 
 }
 
 // ========================================
+// LEAVE STATUS NOTIFICATION EMAIL
+// ========================================
+
+async function sendLeaveStatusNotificationEmail(
+  recipientEmail: string,
+  staffName: string,
+  status: 'approved' | 'denied',
+  leaveStartDate: string,
+  leaveEndDate: string,
+  reason?: string,
+  cancelledShiftCount?: number
+) {
+  if (!FROM_EMAIL || !recipientEmail) {
+    console.warn('Skipping leave status email: Missing FROM_EMAIL or recipientEmail.');
+    return;
+  }
+
+  const statusLabel = status === 'approved' ? 'Approved' : 'Denied';
+  const statusColor = status === 'approved' ? '#34C759' : '#FF3B30';
+  const subject = `Leave Request ${statusLabel} — ${leaveStartDate} to ${leaveEndDate}`;
+
+  const reasonBlock = reason
+    ? `<tr>
+        <td style="padding:6px 0; color:#86868b; font-size:13px; font-weight:500; text-transform:uppercase; letter-spacing:0.5px; width:140px;">Reason</td>
+        <td style="padding:6px 0; color:#1d1d1f; font-size:15px; font-weight:500;">${reason}</td>
+       </tr>
+       <tr><td colspan="2" style="border-bottom:1px solid #e5e5e7; padding:0; height:1px;"></td></tr>`
+    : '';
+
+  const cancelledBlock = (cancelledShiftCount && cancelledShiftCount > 0)
+    ? `<p style="margin:16px 0 0; color:#86868b; font-size:14px; line-height:1.5;">
+        <strong>${cancelledShiftCount}</strong> overlapping shift(s) have been automatically cancelled.
+       </p>`
+    : '';
+
+  const bodyHtml = `
+<!DOCTYPE html>
+<html>
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1.0"></head>
+<body style="margin:0; padding:0; background-color:#f5f5f7; font-family:-apple-system, 'SF Pro Display', 'Helvetica Neue', Arial, sans-serif;">
+  <table width="100%" cellpadding="0" cellspacing="0" style="background-color:#f5f5f7; padding:40px 20px;">
+    <tr><td align="center">
+      <table width="600" cellpadding="0" cellspacing="0" style="background:#ffffff; border-radius:16px; overflow:hidden; box-shadow:0 2px 12px rgba(0,0,0,0.08);">
+        <tr>
+          <td style="background:#1d1d1f; padding:32px 40px; text-align:center;">
+            <h1 style="margin:0; color:#ffffff; font-size:22px; font-weight:600; letter-spacing:-0.3px;">Leave Request ${statusLabel}</h1>
+            <p style="margin:6px 0 0; color:rgba(255,255,255,0.6); font-size:13px; font-weight:400;">Today's Dental Insights</p>
+          </td>
+        </tr>
+        <tr>
+          <td style="padding:32px 40px;">
+            <p style="margin:0 0 20px; color:#1d1d1f; font-size:16px; line-height:1.5;">Hello <strong>${staffName}</strong>,</p>
+            <p style="margin:0 0 24px; color:#1d1d1f; font-size:16px; line-height:1.5;">Your leave request has been <strong style="color:${statusColor};">${statusLabel.toLowerCase()}</strong>.</p>
+
+            <table width="100%" cellpadding="0" cellspacing="0" style="background:#f5f5f7; border-radius:12px; margin:0 0 24px;">
+              <tr><td style="padding:24px;">
+                <table width="100%" cellpadding="0" cellspacing="0">
+                  <tr>
+                    <td style="padding:6px 0; color:#86868b; font-size:13px; font-weight:500; text-transform:uppercase; letter-spacing:0.5px; width:140px;">Status</td>
+                    <td style="padding:6px 0; font-size:15px; font-weight:600; color:${statusColor};">${statusLabel}</td>
+                  </tr>
+                  <tr><td colspan="2" style="border-bottom:1px solid #e5e5e7; padding:0; height:1px;"></td></tr>
+                  <tr>
+                    <td style="padding:6px 0; color:#86868b; font-size:13px; font-weight:500; text-transform:uppercase; letter-spacing:0.5px;">From</td>
+                    <td style="padding:6px 0; color:#1d1d1f; font-size:15px; font-weight:500;">${leaveStartDate}</td>
+                  </tr>
+                  <tr><td colspan="2" style="border-bottom:1px solid #e5e5e7; padding:0; height:1px;"></td></tr>
+                  <tr>
+                    <td style="padding:6px 0; color:#86868b; font-size:13px; font-weight:500; text-transform:uppercase; letter-spacing:0.5px;">To</td>
+                    <td style="padding:6px 0; color:#1d1d1f; font-size:15px; font-weight:500;">${leaveEndDate}</td>
+                  </tr>
+                  <tr><td colspan="2" style="border-bottom:1px solid #e5e5e7; padding:0; height:1px;"></td></tr>
+                  ${reasonBlock}
+                </table>
+              </td></tr>
+            </table>
+            ${cancelledBlock}
+
+            <table width="100%" cellpadding="0" cellspacing="0">
+              <tr><td align="center" style="padding:28px 0 8px;">
+                <a href="https://todaysdentalinsights.com/" style="display:inline-block; background:#1d1d1f; color:#ffffff; text-decoration:none; padding:14px 32px; border-radius:980px; font-size:15px; font-weight:500; letter-spacing:-0.2px;">View Dashboard</a>
+              </td></tr>
+            </table>
+          </td>
+        </tr>
+        <tr>
+          <td style="padding:20px 40px 28px; border-top:1px solid #e5e5e7; text-align:center;">
+            <p style="margin:0; color:#86868b; font-size:12px; line-height:1.6;">This is an automated notification from ${APP_NAME}.<br>Please do not reply to this email.</p>
+          </td>
+        </tr>
+      </table>
+    </td></tr>
+  </table>
+</body>
+</html>`;
+
+  const textBody = `Leave Request ${statusLabel}\n\nHello ${staffName},\n\nYour leave request from ${leaveStartDate} to ${leaveEndDate} has been ${statusLabel.toLowerCase()}.${reason ? `\n\nReason: ${reason}` : ''}${cancelledShiftCount ? `\n\n${cancelledShiftCount} overlapping shift(s) have been automatically cancelled.` : ''}\n\nThis is an automated notification from ${APP_NAME}.`;
+
+  const command = new SendEmailCommand({
+    Destination: { ToAddresses: [recipientEmail] },
+    Content: {
+      Simple: {
+        Subject: { Data: subject },
+        Body: {
+          Html: { Data: bodyHtml },
+          Text: { Data: textBody },
+        },
+      },
+    },
+    FromEmailAddress: FROM_EMAIL,
+  });
+
+  try {
+    await ses.send(command);
+    console.log(`Leave ${status} email sent to ${recipientEmail}`);
+  } catch (e) {
+    console.error(`Failed to send leave ${status} email to ${recipientEmail}:`, e);
+  }
+}
+
+// ========================================
+// SHIFT CANCELLED NOTIFICATION EMAIL
+// ========================================
+
+async function sendShiftCancelledEmail(
+  recipientEmail: string,
+  staffName: string,
+  shiftDetails: any,
+  clinicTimezone: string,
+  cancellationReason?: string
+) {
+  if (!FROM_EMAIL || !recipientEmail) {
+    console.warn('Skipping shift cancellation email: Missing FROM_EMAIL or recipientEmail.');
+    return;
+  }
+
+  const tz = normalizeTimeZoneOrUtc(clinicTimezone);
+  const shiftDate = new Date(shiftDetails.startTime).toLocaleDateString('en-US', {
+    timeZone: tz, weekday: 'long', year: 'numeric', month: 'long', day: 'numeric'
+  });
+  const startTimeLocal = new Date(shiftDetails.startTime).toLocaleTimeString('en-US', {
+    timeZone: tz, hour: 'numeric', minute: '2-digit', hour12: true
+  });
+  const endTimeLocal = new Date(shiftDetails.endTime).toLocaleTimeString('en-US', {
+    timeZone: tz, hour: 'numeric', minute: '2-digit', hour12: true
+  });
+
+  const reasonText = cancellationReason || 'Cancelled by administrator';
+  const subject = `Shift Cancelled — ${shiftDate}`;
+
+  const bodyHtml = `
+<!DOCTYPE html>
+<html>
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1.0"></head>
+<body style="margin:0; padding:0; background-color:#f5f5f7; font-family:-apple-system, 'SF Pro Display', 'Helvetica Neue', Arial, sans-serif;">
+  <table width="100%" cellpadding="0" cellspacing="0" style="background-color:#f5f5f7; padding:40px 20px;">
+    <tr><td align="center">
+      <table width="600" cellpadding="0" cellspacing="0" style="background:#ffffff; border-radius:16px; overflow:hidden; box-shadow:0 2px 12px rgba(0,0,0,0.08);">
+        <tr>
+          <td style="background:#1d1d1f; padding:32px 40px; text-align:center;">
+            <h1 style="margin:0; color:#ffffff; font-size:22px; font-weight:600; letter-spacing:-0.3px;">Shift Cancelled</h1>
+            <p style="margin:6px 0 0; color:rgba(255,255,255,0.6); font-size:13px; font-weight:400;">Today's Dental Insights</p>
+          </td>
+        </tr>
+        <tr>
+          <td style="padding:32px 40px;">
+            <p style="margin:0 0 20px; color:#1d1d1f; font-size:16px; line-height:1.5;">Hello <strong>${staffName}</strong>,</p>
+            <p style="margin:0 0 24px; color:#1d1d1f; font-size:16px; line-height:1.5;">A previously scheduled shift has been <strong style="color:#FF3B30;">cancelled</strong>.</p>
+
+            <table width="100%" cellpadding="0" cellspacing="0" style="background:#f5f5f7; border-radius:12px; margin:0 0 24px;">
+              <tr><td style="padding:24px;">
+                <table width="100%" cellpadding="0" cellspacing="0">
+                  <tr>
+                    <td style="padding:6px 0; color:#86868b; font-size:13px; font-weight:500; text-transform:uppercase; letter-spacing:0.5px; width:140px;">Office</td>
+                    <td style="padding:6px 0; color:#1d1d1f; font-size:15px; font-weight:500;">${shiftDetails.clinicId}</td>
+                  </tr>
+                  <tr><td colspan="2" style="border-bottom:1px solid #e5e5e7; padding:0; height:1px;"></td></tr>
+                  <tr>
+                    <td style="padding:6px 0; color:#86868b; font-size:13px; font-weight:500; text-transform:uppercase; letter-spacing:0.5px;">Date</td>
+                    <td style="padding:6px 0; color:#1d1d1f; font-size:15px; font-weight:500;">${shiftDate}</td>
+                  </tr>
+                  <tr><td colspan="2" style="border-bottom:1px solid #e5e5e7; padding:0; height:1px;"></td></tr>
+                  <tr>
+                    <td style="padding:6px 0; color:#86868b; font-size:13px; font-weight:500; text-transform:uppercase; letter-spacing:0.5px;">Time</td>
+                    <td style="padding:6px 0; color:#1d1d1f; font-size:15px; font-weight:500;">${startTimeLocal} – ${endTimeLocal}</td>
+                  </tr>
+                  <tr><td colspan="2" style="border-bottom:1px solid #e5e5e7; padding:0; height:1px;"></td></tr>
+                  <tr>
+                    <td style="padding:6px 0; color:#86868b; font-size:13px; font-weight:500; text-transform:uppercase; letter-spacing:0.5px;">Reason</td>
+                    <td style="padding:6px 0; color:#1d1d1f; font-size:15px; font-weight:500;">${reasonText}</td>
+                  </tr>
+                </table>
+              </td></tr>
+            </table>
+
+            <table width="100%" cellpadding="0" cellspacing="0">
+              <tr><td align="center" style="padding:28px 0 8px;">
+                <a href="https://todaysdentalinsights.com/" style="display:inline-block; background:#1d1d1f; color:#ffffff; text-decoration:none; padding:14px 32px; border-radius:980px; font-size:15px; font-weight:500; letter-spacing:-0.2px;">View Your Schedule</a>
+              </td></tr>
+            </table>
+          </td>
+        </tr>
+        <tr>
+          <td style="padding:20px 40px 28px; border-top:1px solid #e5e5e7; text-align:center;">
+            <p style="margin:0; color:#86868b; font-size:12px; line-height:1.6;">This is an automated notification from ${APP_NAME}.<br>Please do not reply to this email.</p>
+          </td>
+        </tr>
+      </table>
+    </td></tr>
+  </table>
+</body>
+</html>`;
+
+  const textBody = `Shift Cancelled\n\nHello ${staffName},\n\nYour shift on ${shiftDate} (${startTimeLocal} – ${endTimeLocal}) at ${shiftDetails.clinicId} has been cancelled.\n\nReason: ${reasonText}\n\nView your schedule: https://todaysdentalinsights.com/\n\nThis is an automated notification from ${APP_NAME}.`;
+
+  const command = new SendEmailCommand({
+    Destination: { ToAddresses: [recipientEmail] },
+    Content: {
+      Simple: {
+        Subject: { Data: subject },
+        Body: {
+          Html: { Data: bodyHtml },
+          Text: { Data: textBody },
+        },
+      },
+    },
+    FromEmailAddress: FROM_EMAIL,
+  });
+
+  try {
+    await ses.send(command);
+    console.log(`Shift cancellation email sent to ${recipientEmail}`);
+  } catch (e) {
+    console.error(`Failed to send shift cancellation email to ${recipientEmail}:`, e);
+  }
+}
+
+// ========================================
+// SHIFT REJECTED → ADMIN NOTIFICATION EMAIL
+// ========================================
+
+async function sendShiftRejectedToAdminEmail(
+  adminEmail: string,
+  adminName: string,
+  staffName: string,
+  shiftDetails: any,
+  clinicTimezone: string
+) {
+  if (!FROM_EMAIL || !adminEmail) {
+    console.warn('Skipping shift rejection admin email: Missing FROM_EMAIL or adminEmail.');
+    return;
+  }
+
+  const tz = normalizeTimeZoneOrUtc(clinicTimezone);
+  const shiftDate = new Date(shiftDetails.startTime).toLocaleDateString('en-US', {
+    timeZone: tz, weekday: 'long', year: 'numeric', month: 'long', day: 'numeric'
+  });
+  const startTimeLocal = new Date(shiftDetails.startTime).toLocaleTimeString('en-US', {
+    timeZone: tz, hour: 'numeric', minute: '2-digit', hour12: true
+  });
+  const endTimeLocal = new Date(shiftDetails.endTime).toLocaleTimeString('en-US', {
+    timeZone: tz, hour: 'numeric', minute: '2-digit', hour12: true
+  });
+
+  const subject = `Shift Rejected by ${staffName} — ${shiftDate}`;
+
+  const bodyHtml = `
+<!DOCTYPE html>
+<html>
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1.0"></head>
+<body style="margin:0; padding:0; background-color:#f5f5f7; font-family:-apple-system, 'SF Pro Display', 'Helvetica Neue', Arial, sans-serif;">
+  <table width="100%" cellpadding="0" cellspacing="0" style="background-color:#f5f5f7; padding:40px 20px;">
+    <tr><td align="center">
+      <table width="600" cellpadding="0" cellspacing="0" style="background:#ffffff; border-radius:16px; overflow:hidden; box-shadow:0 2px 12px rgba(0,0,0,0.08);">
+        <tr>
+          <td style="background:#1d1d1f; padding:32px 40px; text-align:center;">
+            <h1 style="margin:0; color:#ffffff; font-size:22px; font-weight:600; letter-spacing:-0.3px;">Shift Rejected</h1>
+            <p style="margin:6px 0 0; color:rgba(255,255,255,0.6); font-size:13px; font-weight:400;">Today's Dental Insights</p>
+          </td>
+        </tr>
+        <tr>
+          <td style="padding:32px 40px;">
+            <p style="margin:0 0 20px; color:#1d1d1f; font-size:16px; line-height:1.5;">Hello <strong>${adminName || 'Admin'}</strong>,</p>
+            <p style="margin:0 0 24px; color:#1d1d1f; font-size:16px; line-height:1.5;"><strong>${staffName}</strong> has <strong style="color:#FF3B30;">rejected</strong> a shift you scheduled.</p>
+
+            <table width="100%" cellpadding="0" cellspacing="0" style="background:#f5f5f7; border-radius:12px; margin:0 0 24px;">
+              <tr><td style="padding:24px;">
+                <table width="100%" cellpadding="0" cellspacing="0">
+                  <tr>
+                    <td style="padding:6px 0; color:#86868b; font-size:13px; font-weight:500; text-transform:uppercase; letter-spacing:0.5px; width:140px;">Staff Member</td>
+                    <td style="padding:6px 0; color:#1d1d1f; font-size:15px; font-weight:500;">${staffName}</td>
+                  </tr>
+                  <tr><td colspan="2" style="border-bottom:1px solid #e5e5e7; padding:0; height:1px;"></td></tr>
+                  <tr>
+                    <td style="padding:6px 0; color:#86868b; font-size:13px; font-weight:500; text-transform:uppercase; letter-spacing:0.5px;">Office</td>
+                    <td style="padding:6px 0; color:#1d1d1f; font-size:15px; font-weight:500;">${shiftDetails.clinicId}</td>
+                  </tr>
+                  <tr><td colspan="2" style="border-bottom:1px solid #e5e5e7; padding:0; height:1px;"></td></tr>
+                  <tr>
+                    <td style="padding:6px 0; color:#86868b; font-size:13px; font-weight:500; text-transform:uppercase; letter-spacing:0.5px;">Date</td>
+                    <td style="padding:6px 0; color:#1d1d1f; font-size:15px; font-weight:500;">${shiftDate}</td>
+                  </tr>
+                  <tr><td colspan="2" style="border-bottom:1px solid #e5e5e7; padding:0; height:1px;"></td></tr>
+                  <tr>
+                    <td style="padding:6px 0; color:#86868b; font-size:13px; font-weight:500; text-transform:uppercase; letter-spacing:0.5px;">Time</td>
+                    <td style="padding:6px 0; color:#1d1d1f; font-size:15px; font-weight:500;">${startTimeLocal} – ${endTimeLocal}</td>
+                  </tr>
+                </table>
+              </td></tr>
+            </table>
+
+            <table width="100%" cellpadding="0" cellspacing="0">
+              <tr><td align="center" style="padding:28px 0 8px;">
+                <a href="https://todaysdentalinsights.com/" style="display:inline-block; background:#1d1d1f; color:#ffffff; text-decoration:none; padding:14px 32px; border-radius:980px; font-size:15px; font-weight:500; letter-spacing:-0.2px;">View Schedule</a>
+              </td></tr>
+            </table>
+          </td>
+        </tr>
+        <tr>
+          <td style="padding:20px 40px 28px; border-top:1px solid #e5e5e7; text-align:center;">
+            <p style="margin:0; color:#86868b; font-size:12px; line-height:1.6;">This is an automated notification from ${APP_NAME}.<br>Please do not reply to this email.</p>
+          </td>
+        </tr>
+      </table>
+    </td></tr>
+  </table>
+</body>
+</html>`;
+
+  const textBody = `Shift Rejected\n\nHello ${adminName || 'Admin'},\n\n${staffName} has rejected a shift you scheduled.\n\nShift Details:\nOffice: ${shiftDetails.clinicId}\nDate: ${shiftDate}\nTime: ${startTimeLocal} – ${endTimeLocal}\n\nView the schedule: https://todaysdentalinsights.com/\n\nThis is an automated notification from ${APP_NAME}.`;
+
+  const command = new SendEmailCommand({
+    Destination: { ToAddresses: [adminEmail] },
+    Content: {
+      Simple: {
+        Subject: { Data: subject },
+        Body: {
+          Html: { Data: bodyHtml },
+          Text: { Data: textBody },
+        },
+      },
+    },
+    FromEmailAddress: FROM_EMAIL,
+  });
+
+  try {
+    await ses.send(command);
+    console.log(`Shift rejection email sent to admin ${adminEmail}`);
+  } catch (e) {
+    console.error(`Failed to send shift rejection email to admin ${adminEmail}:`, e);
+  }
+}
+
+// ========================================
 // MAIN HANDLER (ROUTER)
 // ========================================
 
@@ -2923,6 +3277,28 @@ async function deleteShift(shiftId: string, allowedClinics: Set<string>, userPer
     });
   }
 
+  // Send shift cancellation email to staff
+  try {
+    const staffEmail = Item.staffId;
+    let staffName = staffEmail;
+    try {
+      const { Item: staffUser } = await ddb.send(new GetCommand({
+        TableName: STAFF_USER_TABLE,
+        Key: { email: staffEmail.toLowerCase() },
+      }));
+      if (staffUser) {
+        staffName = `${staffUser.givenName || ''} ${staffUser.familyName || ''}`.trim() || staffEmail;
+      }
+    } catch (lookupErr) {
+      console.warn('Could not look up staff name for cancellation email:', lookupErr);
+    }
+
+    const clinicTimezone = await getClinicTimezone(Item.clinicId);
+    await sendShiftCancelledEmail(staffEmail, staffName, Item, clinicTimezone);
+  } catch (emailErr) {
+    console.error('Failed to send shift cancellation email (shift still deleted):', emailErr);
+  }
+
   return httpOk({ message: "Shift deleted successfully" });
 }
 
@@ -2966,6 +3342,27 @@ async function rejectShift(shiftId: string, userPerms: UserPermissions, event?: 
     },
     ...AuditLogger.extractRequestContext(event),
   });
+
+  // Send rejection notification email to admin who scheduled this shift
+  try {
+    // Get staff name for the email
+    const staffName = `${userPerms.givenName || ''} ${userPerms.familyName || ''}`.trim() || userPerms.email;
+    const clinicTimezone = await getClinicTimezone(shift.clinicId);
+
+    // Find the admin who created this shift by querying audit logs
+    const auditResult = await auditLogger.queryByResource('SHIFT' as AuditResource, shiftId, { limit: 10 });
+    const createEntry = auditResult.auditLogs.find((log: any) => log.action === 'CREATE');
+
+    if (createEntry && createEntry.userId) {
+      const adminEmail = createEntry.userId;
+      const adminName = createEntry.userName || adminEmail;
+      await sendShiftRejectedToAdminEmail(adminEmail, adminName, staffName, shift, clinicTimezone);
+    } else {
+      console.warn('Could not find admin who created shift for rejection email, shiftId:', shiftId);
+    }
+  } catch (emailErr) {
+    console.error('Failed to send shift rejection email to admin (shift still rejected):', emailErr);
+  }
 
   return httpOk({ message: "Shift rejected successfully" });
 }
@@ -3438,6 +3835,53 @@ async function approveLeave(leaveId: string, userPerms?: UserPermissions, event?
       }
     }
 
+    // Send leave approval email to staff + shift cancellation emails
+    try {
+      let staffName = leave.staffId;
+      try {
+        const { Item: staffUser } = await ddb.send(new GetCommand({
+          TableName: STAFF_USER_TABLE,
+          Key: { email: leave.staffId.toLowerCase() },
+        }));
+        if (staffUser) {
+          staffName = `${staffUser.givenName || ''} ${staffUser.familyName || ''}`.trim() || leave.staffId;
+        }
+      } catch (lookupErr) {
+        console.warn('Could not look up staff name for leave approval email:', lookupErr);
+      }
+
+      // Send leave approval email
+      await sendLeaveStatusNotificationEmail(
+        leave.staffId,
+        staffName,
+        'approved',
+        leave.startDate,
+        leave.endDate,
+        approvalNotes,
+        overlappingShifts.length
+      );
+
+      // Send individual shift cancellation emails for each deleted shift
+      if (overlappingShifts.length > 0) {
+        for (const shift of overlappingShifts) {
+          try {
+            const clinicTimezone = await getClinicTimezone(shift.clinicId);
+            await sendShiftCancelledEmail(
+              leave.staffId,
+              staffName,
+              shift,
+              clinicTimezone,
+              `Cancelled due to approved leave (${leave.startDate} to ${leave.endDate})`
+            );
+          } catch (shiftEmailErr) {
+            console.warn('Failed to send shift cancellation email for shift:', shift.shiftId, shiftEmailErr);
+          }
+        }
+      }
+    } catch (emailErr) {
+      console.error('Failed to send leave approval emails (leave still approved):', emailErr);
+    }
+
     const response = {
       leaveId,
       status: 'approved',
@@ -3524,6 +3968,35 @@ async function updateLeaveStatus(leaveId: string, status: 'approved' | 'denied',
         },
         ...AuditLogger.extractRequestContext(event),
       });
+    }
+  }
+
+  // Send leave status email to staff (only for denied — approved uses approveLeave())
+  if (status === 'denied') {
+    try {
+      let staffName = leave.staffId;
+      try {
+        const { Item: staffUser } = await ddb.send(new GetCommand({
+          TableName: STAFF_USER_TABLE,
+          Key: { email: leave.staffId.toLowerCase() },
+        }));
+        if (staffUser) {
+          staffName = `${staffUser.givenName || ''} ${staffUser.familyName || ''}`.trim() || leave.staffId;
+        }
+      } catch (lookupErr) {
+        console.warn('Could not look up staff name for leave denial email:', lookupErr);
+      }
+
+      await sendLeaveStatusNotificationEmail(
+        leave.staffId,
+        staffName,
+        'denied',
+        leave.startDate,
+        leave.endDate,
+        reason
+      );
+    } catch (emailErr) {
+      console.error('Failed to send leave denial email (leave still denied):', emailErr);
     }
   }
 
