@@ -2115,6 +2115,12 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
       return createBatchShifts(parsedBody, allowedClinics, userPerms, event);
     }
 
+    // --- SHIFT REJECTION (must come before generic PUT /shifts/{id}) ---
+    if (method === 'PUT' && path.startsWith('/shifts/') && path.endsWith('/reject')) {
+      const shiftId = path.split('/')[2];
+      return rejectShift(shiftId, userPerms, event);
+    }
+
     if (method === 'PUT' && path.startsWith('/shifts/')) {
       const shiftId = path.split('/')[2];
       const parsedBody = typeof event.body === 'string' ? JSON.parse(event.body) : event.body;
@@ -2169,11 +2175,6 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
       return deleteLeave(leaveId, userPerms, isAdmin, event);
     }
 
-    // --- SHIFT REJECTION ---
-    if (method === 'POST' && path.startsWith('/shifts/') && path.endsWith('/reject')) {
-      const shiftId = path.split('/')[2];
-      return rejectShift(shiftId, userPerms, event);
-    }
 
     // --- HR CONFIG (For frontend to consume business rule constants) ---
     if (method === 'GET' && path === '/config') {
