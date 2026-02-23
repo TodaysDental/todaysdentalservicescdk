@@ -498,13 +498,13 @@ async function processBedrockInvocation(params: {
       toolsUsed,
     });
 
+    const rawResponse = (fullResponse.trim() || "I'm sorry, I couldn't process that. How else can I help you?");
+    const safeResponse = sanitizeVoiceTtsText(rawResponse);
+
     await updateResult(requestId, {
       status: 'completed',
-      response: (fullResponse.trim() || "I'm sorry, I couldn't process that. How else can I help you?"),
-      ssmlResponse: buildProsodySsml(
-        (fullResponse.trim() || "I'm sorry, I couldn't process that. How else can I help you?"),
-        prosody
-      ),
+      response: safeResponse,
+      ssmlResponse: buildProsodySsml(safeResponse, prosody),
       toolsUsed: [...new Set(toolsUsed)],
     });
 
@@ -841,8 +841,19 @@ function escapeSSML(text: string): string {
     .replace(/'/g, '&apos;');
 }
 
+function sanitizeVoiceTtsText(text: string): string {
+  let out = String(text || '');
+  out = out.replace(/\s+([?.!,;:])/g, '$1');
+  out = out.replace(/(?<=\b[A-Za-z])\s*[\/\\]\s*(?=[A-Za-z]\b)/g, ' ');
+  out = out.replace(/(?<=\b[A-Za-z])\s*-\s*(?=[A-Za-z]\b)/g, ' ');
+  out = out.replace(/(?<=\b[A-Za-z])\s*_\s*(?=[A-Za-z]\b)/g, ' ');
+  out = out.replace(/(?<=\b[A-Za-z])\s*\.\s*(?=[A-Za-z]\b)/g, ' ');
+  out = out.replace(/\s{2,}/g, ' ').trim();
+  return out;
+}
+
 function buildProsodySsml(text: string, prosody: ProsodySettings): string {
-  const escaped = escapeSSML(text || '');
+  const escaped = escapeSSML(sanitizeVoiceTtsText(text || ''));
   return `<speak><prosody rate="${prosody.speakingRate}" pitch="${prosody.pitch}" volume="${prosody.volume}">${escaped}</prosody></speak>`;
 }
 

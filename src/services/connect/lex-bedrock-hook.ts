@@ -1168,11 +1168,14 @@ async function handleConnectDirectEvent(event: ConnectLambdaEvent): Promise<Conn
   }
 
   const prosody = getProsodyFromContactAttributes(contactAttributes);
-  const buildResponse = (text: string): ConnectLambdaResponse => ({
-    aiResponse: text,
-    ssmlResponse: buildProsodySsml(text, prosody),
-    clinicId,
-  });
+  const buildResponse = (text: string): ConnectLambdaResponse => {
+    const safeText = sanitizeVoiceTtsText(text);
+    return {
+      aiResponse: safeText,
+      ssmlResponse: buildProsodySsml(safeText, prosody),
+      clinicId,
+    };
+  };
 
   // Determine call direction + outbound context from attributes/params
   const callDirectionRaw = String(params['callDirection'] || contactAttributes['callDirection'] || '').trim().toLowerCase();
@@ -1584,6 +1587,35 @@ function escapeSSML(text: string): string {
     .replace(/'/g, '&apos;');
 }
 
+/**
+ * Sanitize text for voice TTS.
+ *
+ * Some LLM outputs include isolated punctuation tokens like:
+ *   "S / U / N / I / L ?"
+ * which Polly/Connect will literally speak as "slash" and "question mark".
+ *
+ * We normalize common spelling separators into spaces and remove spacing that
+ * turns punctuation into standalone speakable tokens.
+ */
+function sanitizeVoiceTtsText(text: string): string {
+  let out = String(text || '');
+
+  // Remove spaces BEFORE common punctuation so they aren't spoken as tokens (" ?")
+  out = out.replace(/\s+([?.!,;:])/g, '$1');
+
+  // Convert spelling separators between single letters into spaces:
+  // "S/U/N/I/L" or "S / U / N / I / L" -> "S U N I L"
+  out = out.replace(/(?<=\b[A-Za-z])\s*[\/\\]\s*(?=[A-Za-z]\b)/g, ' ');
+  out = out.replace(/(?<=\b[A-Za-z])\s*-\s*(?=[A-Za-z]\b)/g, ' ');
+  out = out.replace(/(?<=\b[A-Za-z])\s*_\s*(?=[A-Za-z]\b)/g, ' ');
+  out = out.replace(/(?<=\b[A-Za-z])\s*\.\s*(?=[A-Za-z]\b)/g, ' ');
+
+  // Collapse repeated whitespace
+  out = out.replace(/\s{2,}/g, ' ').trim();
+
+  return out;
+}
+
 function getProsodyFromContactAttributes(
   attrs: Record<string, string>
 ): Pick<ClinicVoiceSettings, 'speakingRate' | 'pitch' | 'volume'> {
@@ -1598,7 +1630,7 @@ function buildProsodySsml(
   text: string,
   prosody: Pick<ClinicVoiceSettings, 'speakingRate' | 'pitch' | 'volume'>
 ): string {
-  const escaped = escapeSSML(text || '');
+  const escaped = escapeSSML(sanitizeVoiceTtsText(text || ''));
   return `<speak><prosody rate="${prosody.speakingRate}" pitch="${prosody.pitch}" volume="${prosody.volume}">${escaped}</prosody></speak>`;
 }
 

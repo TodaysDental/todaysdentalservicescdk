@@ -1423,14 +1423,30 @@ async function handleTool(
         });
 
         // Normalize birthdate to YYYY-MM-DD format (OpenDental API requirement)
-        let normalizedBirthdate = params.Birthdate;
+        let normalizedBirthdate = params.Birthdate || sessionAttributes?.Birthdate;
         if (normalizedBirthdate) {
           normalizedBirthdate = normalizeDateFormat(normalizedBirthdate);
-          console.log(`[searchPatients] Normalized birthdate: ${params.Birthdate} → ${normalizedBirthdate}`);
+          console.log(`[searchPatients] Normalized birthdate: ${params.Birthdate || sessionAttributes?.Birthdate} → ${normalizedBirthdate}`);
         }
 
         const providedFName = cleanName(params.FName);
         const providedLName = cleanName(params.LName);
+
+        // SAFETY: Require DOB for name-based patient lookup to avoid wrong-patient matches.
+        // Caller-ID matching is handled by searchPatientsByPhone.
+        const isIsoBirthdate = typeof normalizedBirthdate === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(normalizedBirthdate);
+        if (!isIsoBirthdate) {
+          return {
+            statusCode: 400,
+            body: {
+              status: 'FAILURE',
+              message:
+                'Birthdate is required to look up a patient by name. Ask for the caller’s date of birth, then call searchPatients again.',
+              missingFields: ['Birthdate'],
+            },
+            updatedSessionAttributes,
+          };
+        }
 
         const buildSearchParams = (p: { LName?: string; FName?: string; Birthdate?: string }) => {
           const out: any = {};
