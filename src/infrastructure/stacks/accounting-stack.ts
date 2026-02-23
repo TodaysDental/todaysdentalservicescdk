@@ -366,6 +366,10 @@ export class AccountingStack extends Stack {
     // ---- BRS (Bank Reconciliation Statement) ROUTES ----
     const brsRes = this.api.root.addResource('brs');
 
+    // Payment modes list endpoint
+    const paymentModesRes = brsRes.addResource('payment-modes');
+    paymentModesRes.addMethod('GET', lambdaIntegration, { ...authOptions, methodResponses: defaultMethodResponses });
+
     // OpenDental data endpoint
     const openDentalRes = brsRes.addResource('open-dental');
     openDentalRes.addMethod('GET', lambdaIntegration, { ...authOptions, methodResponses: defaultMethodResponses });
@@ -380,6 +384,10 @@ export class AccountingStack extends Stack {
 
     const bankFileUploadRes = bankFileRes.addResource('upload');
     bankFileUploadRes.addMethod('POST', lambdaIntegration, { ...authOptions, methodResponses: defaultMethodResponses });
+
+    // Cherry transactions endpoint
+    const cherryRes = brsRes.addResource('cherry');
+    cherryRes.addMethod('GET', lambdaIntegration, { ...authOptions, methodResponses: defaultMethodResponses });
 
     // Reconciliation
     const reconcileRes = brsRes.addResource('reconcile');
