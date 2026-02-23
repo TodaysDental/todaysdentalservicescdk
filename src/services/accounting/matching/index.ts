@@ -582,73 +582,147 @@ abstract class BaseMatchingStrategy implements MatchingStrategy {
     }
 
     // ===== PASS 2c: Batch Settlement matching =====
-    // Some gateways (PayConnect, Authorize.Net, Credit Card) settle in daily batches:
+    // Card processors (PayConnect, Authorize.Net, Credit Card) settle in daily batches:
     // Multiple individual OD payments → one lump-sum bank deposit.
-    // Group remaining unmatched OD rows by date, sum them, match against bank rows.
+    //
+    // Strategy: For each unmatched bank deposit, find a group of OD payments
+    // whose dates are within the batch window that sum to the bank amount.
+    // We try:
+    //   (a) Same-date exact sum (gross)
+    //   (b) Same-date net sum (gross minus processing fees)
+    //   (c) Multi-day rolling window gross sum
+    //   (d) Multi-day rolling window net sum
+    //   (e) Greedy accumulation: sort OD rows by proximity to bank date,
+    //       accumulate until sum reaches bank amount
     if (this.supportsBatchSettlement()) {
       const batchWindow = this.getBatchDateWindowDays();
-      const unmatchedODRows = openDentalRows.filter(r => !usedODRows.has(r.rowId));
 
-      // Group OD payments by date
-      const odByDate = new Map<string, OpenDentalPaymentRow[]>();
-      for (const od of unmatchedODRows) {
-        const dateKey = od.paymentDate.substring(0, 10);
-        if (!odByDate.has(dateKey)) odByDate.set(dateKey, []);
-        odByDate.get(dateKey)!.push(od);
-      }
-      const odByDateEntries = Array.from(odByDate.entries());
-      for (const [dateKey, dateODRows] of odByDateEntries) {
-        if (dateODRows.every(r => usedODRows.has(r.rowId))) continue;
-        const availableInDate = dateODRows.filter(r => !usedODRows.has(r.rowId));
-        if (availableInDate.length < 2) continue; // Need at least 2 for a batch
+      // Sort bank rows by amount (largest first) - larger deposits are more likely batch settlements
+      const unmatchedBankRows = bankRows
+        .filter(br => !usedBankRows.has(br.rowId))
+        .sort((a, b) => b.amount - a.amount);
 
-        const grossSum = availableInDate.reduce((sum, r) => sum + r.expectedAmount, 0);
+      for (const bankRow of unmatchedBankRows) {
+        if (usedBankRows.has(bankRow.rowId)) continue;
 
-        for (const bankRow of bankRows) {
-          if (usedBankRows.has(bankRow.rowId)) continue;
-          if (!datesWithinDays(dateKey, bankRow.date, batchWindow)) continue;
+        // Find all unmatched OD rows within the batch date window of this bank row
+        const candidateOD = openDentalRows.filter(od =>
+          !usedODRows.has(od.rowId) &&
+          datesWithinDays(od.paymentDate, bankRow.date, batchWindow)
+        );
+        if (candidateOD.length < 2) continue; // Need at least 2 for a batch
 
-          // Check if bank amount equals gross sum
-          let batchMatched = false;
-          let batchReason = '';
+        // --- Attempt (a): Sum of ALL candidates matches bank amount (gross) ---
+        const grossSum = candidateOD.reduce((sum, r) => sum + r.expectedAmount, 0);
+        let batchMatched = false;
+        let matchedRows: OpenDentalPaymentRow[] = [];
+        let batchReason = '';
 
-          if (amountsMatch(grossSum, bankRow.amount, amtTolerance + 0.05)) {
+        if (amountsMatch(grossSum, bankRow.amount, amtTolerance + 1.00)) {
+          batchMatched = true;
+          matchedRows = candidateOD;
+          batchReason = `✅ Batch settlement: ${candidateOD.length} OD payments ` +
+            `totaling ${fmtAmt(grossSum)} ↔ Bank deposit ${fmtAmt(bankRow.amount)} (${bankRow.date}).`;
+        }
+
+        // --- Attempt (b): Sum of ALL candidates matches after fees ---
+        if (!batchMatched && hasFees) {
+          const netResult = netAmountMatch(
+            grossSum, bankRow.amount,
+            feeRange.min, feeRange.max,
+            flatFeeRange.min * candidateOD.length, flatFeeRange.max * candidateOD.length
+          );
+          if (netResult.matched) {
             batchMatched = true;
-            batchReason = `✅ Batch settlement: ${availableInDate.length} OD payments from ${dateKey} ` +
-              `totaling ${fmtAmt(grossSum)} ↔ Bank deposit ${fmtAmt(bankRow.amount)} (${bankRow.date}).`;
-          } else if (hasFees) {
-            // Check if bank amount equals sum after fees
-            const netResult = netAmountMatch(grossSum, bankRow.amount, feeRange.min, feeRange.max, flatFeeRange.min * availableInDate.length, flatFeeRange.max * availableInDate.length);
-            if (netResult.matched) {
+            matchedRows = candidateOD;
+            batchReason = `✅ Batch settlement (net): ${candidateOD.length} OD payments ` +
+              `totaling ${fmtAmt(grossSum)} → Net deposit: ${fmtAmt(bankRow.amount)}. ` +
+              `Fees: ${fmtAmt(netResult.estimatedFee)} (${netResult.feePercent.toFixed(1)}%).`;
+          }
+        }
+
+        // --- Attempt (c): Greedy accumulation by date proximity ---
+        // Sort candidates by date proximity, then greedily accumulate until we hit the target
+        if (!batchMatched) {
+          const sortedCandidates = [...candidateOD].sort((a, b) => {
+            const distA = Math.abs(new Date(a.paymentDate).getTime() - new Date(bankRow.date).getTime());
+            const distB = Math.abs(new Date(b.paymentDate).getTime() - new Date(bankRow.date).getTime());
+            return distA - distB;
+          });
+
+          // Try to accumulate OD rows to match the bank amount
+          const targetGross = bankRow.amount; // Try gross first
+          let runningSum = 0;
+          const accumulated: OpenDentalPaymentRow[] = [];
+
+          for (const od of sortedCandidates) {
+            if (runningSum + od.expectedAmount > targetGross + amtTolerance + 1.00) continue; // Skip if adding this would overshoot
+            accumulated.push(od);
+            runningSum += od.expectedAmount;
+
+            // Check gross match
+            if (amountsMatch(runningSum, targetGross, amtTolerance + 1.00)) {
               batchMatched = true;
-              batchReason = `✅ Batch settlement (net): ${availableInDate.length} OD payments from ${dateKey} ` +
-                `totaling ${fmtAmt(grossSum)} → Net deposit: ${fmtAmt(bankRow.amount)}. ` +
-                `Total fees: ${fmtAmt(netResult.estimatedFee)} (${netResult.feePercent.toFixed(1)}%).`;
+              matchedRows = accumulated;
+              batchReason = `✅ Batch settlement (accumulated): ${accumulated.length} OD payments ` +
+                `totaling ${fmtAmt(runningSum)} ↔ Bank deposit ${fmtAmt(bankRow.amount)} (${bankRow.date}).`;
+              break;
             }
           }
 
-          if (batchMatched) {
-            // Mark all OD rows in this batch as matched
-            const patientNames = availableInDate.map(r => r.patientName).join(', ');
-            results.push({
-              row: {
-                rowId: generateRowId(),
-                referenceId: `BATCH-${dateKey} (${availableInDate.length} txns)`,
-                expectedAmount: grossSum,
-                receivedAmount: bankRow.amount,
-                status: 'MATCHED',
-                difference: bankRow.amount - grossSum,
-                reason: batchReason + ` Patients: ${patientNames.substring(0, 100)}${patientNames.length > 100 ? '...' : ''}.`,
-                openDentalRowId: availableInDate.map(r => r.rowId).join(','),
-                bankRowId: bankRow.rowId,
-                patientName: `Batch (${availableInDate.length} patients)`,
-              },
-              bankRow,
-            });
-            for (const od of availableInDate) usedODRows.add(od.rowId);
-            usedBankRows.add(bankRow.rowId);
-            break;
+          // If gross accumulation didn't work, try net accumulation (if fees apply)
+          if (!batchMatched && hasFees) {
+            runningSum = 0;
+            accumulated.length = 0;
+
+            for (const od of sortedCandidates) {
+              accumulated.push(od);
+              runningSum += od.expectedAmount;
+            }
+
+            // Check if accumulated gross → net matches bank amount
+            if (accumulated.length >= 2) {
+              const netResult = netAmountMatch(
+                runningSum, bankRow.amount,
+                feeRange.min, feeRange.max,
+                flatFeeRange.min * accumulated.length, flatFeeRange.max * accumulated.length
+              );
+              if (netResult.matched) {
+                batchMatched = true;
+                matchedRows = accumulated;
+                batchReason = `✅ Batch settlement (accumulated net): ${accumulated.length} OD payments ` +
+                  `totaling ${fmtAmt(runningSum)} → Net deposit: ${fmtAmt(bankRow.amount)}. ` +
+                  `Fees: ${fmtAmt(netResult.estimatedFee)} (${netResult.feePercent.toFixed(1)}%).`;
+              }
+            }
           }
+        }
+
+        // Record batch match result
+        if (batchMatched && matchedRows.length >= 2) {
+          const patientNames = matchedRows.map(r => r.patientName).join(', ');
+          const dateRange = matchedRows.map(r => r.paymentDate.substring(0, 10));
+          const uniqueDates = Array.from(new Set(dateRange)).sort();
+          const dateLabel = uniqueDates.length === 1 ? uniqueDates[0] : `${uniqueDates[0]} to ${uniqueDates[uniqueDates.length - 1]}`;
+          const batchGross = matchedRows.reduce((s, r) => s + r.expectedAmount, 0);
+
+          results.push({
+            row: {
+              rowId: generateRowId(),
+              referenceId: `BATCH-${dateLabel} (${matchedRows.length} txns)`,
+              expectedAmount: batchGross,
+              receivedAmount: bankRow.amount,
+              status: 'MATCHED',
+              difference: bankRow.amount - batchGross,
+              reason: batchReason + ` Patients: ${patientNames.substring(0, 200)}${patientNames.length > 200 ? '...' : ''}.`,
+              openDentalRowId: matchedRows.map(r => r.rowId).join(','),
+              bankRowId: bankRow.rowId,
+              patientName: `Batch (${matchedRows.length} patients)`,
+            },
+            bankRow,
+          });
+          for (const od of matchedRows) usedODRows.add(od.rowId);
+          usedBankRows.add(bankRow.rowId);
         }
       }
     }
@@ -969,9 +1043,9 @@ class CreditCardMatchingStrategy extends BaseMatchingStrategy {
   getFeeRateRange() { return { min: 0.015, max: 0.035 }; }
   getFlatFeeRange() { return { min: 0.10, max: 0.30 }; }
 
-  // CC processors batch-settle daily
+  // CC processors batch-settle daily, but settlement can be 1-3 days delayed
   supportsBatchSettlement(): boolean { return true; }
-  getBatchDateWindowDays(): number { return 2; }
+  getBatchDateWindowDays(): number { return 3; }
 
   getReferenceFieldName(): string { return 'transaction ID in PayNote'; }
 }
@@ -1005,9 +1079,9 @@ class PayConnectMatchingStrategy extends BaseMatchingStrategy {
   getFeeRateRange() { return { min: 0.025, max: 0.035 }; }
   getFlatFeeRange() { return { min: 0.20, max: 0.30 }; }
 
-  // PayConnect batch-settles daily
+  // PayConnect batch-settles daily, but settlement can be 1-3 days delayed
   supportsBatchSettlement(): boolean { return true; }
-  getBatchDateWindowDays(): number { return 2; }
+  getBatchDateWindowDays(): number { return 3; }
 
   getReferenceFieldName(): string { return 'PayConnect transaction ID in PayNote'; }
 }
@@ -1087,9 +1161,9 @@ class AuthorizeNetMatchingStrategy extends BaseMatchingStrategy {
   getFeeRateRange() { return { min: 0.025, max: 0.035 }; }
   getFlatFeeRange() { return { min: 0.25, max: 0.35 }; }
 
-  // Authorize.Net uses daily batch settlement
+  // Authorize.Net uses daily batch settlement, can be 1-3 days delayed
   supportsBatchSettlement(): boolean { return true; }
-  getBatchDateWindowDays(): number { return 2; }
+  getBatchDateWindowDays(): number { return 3; }
 
   getReferenceFieldName(): string { return 'Authorize.Net transaction ID in PayNote'; }
 }

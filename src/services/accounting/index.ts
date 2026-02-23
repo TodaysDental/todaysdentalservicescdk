@@ -668,15 +668,31 @@ const PAYMENT_MODE_KEYWORDS: Record<PaymentMode, string[]> = {
  * This prevents Cherry reconciliation from showing wire transfers, etc.
  */
 const BANK_ROW_FILTER_KEYWORDS: Partial<Record<PaymentMode, string[]>> = {
-  EFT: ['wire', 'neft', 'rtgs', 'imps', 'transfer', 'eft'],
-  ACH: ['ach', 'direct deposit', 'zelle', 'clearing house', 'autopay'],
+  EFT: ['wire', 'neft', 'rtgs', 'imps', 'transfer', 'eft', 'utr'],
+  ACH: ['ach', 'direct deposit', 'zelle', 'clearing house', 'autopay', 'nacha'],
   CHEQUE: ['check', 'cheque', 'chq', 'chk', 'money order', 'cashier'],
-  CREDIT_CARD: ['visa', 'mastercard', 'amex', 'discover', 'card', 'credit card', 'debit card', 'cc payment'],
-  PAYCONNECT: ['payconnect', 'pay connect'],
-  AUTHORIZE_NET: ['authorize', 'auth.net', 'authorizenet'],
-  CHERRY: ['cherry'],
-  SUNBIT: ['sunbit'],
-  CARE_CREDIT: ['carecredit', 'care credit', 'synchrony'],
+  // Credit card settlement deposits appear in banks as generic merchant deposits,
+  // not as "visa" or "mastercard". Banks use terms like:
+  //   "MERCHANT DEPOSIT", "POS SETTLEMENT", "BATCH SETTLEMENT", etc.
+  CREDIT_CARD: [
+    'visa', 'mastercard', 'amex', 'discover', 'card', 'credit card', 'debit card',
+    'merchant', 'merchant deposit', 'pos', 'settlement', 'batch',
+    'dda deposit', 'card services', 'worldpay', 'fiserv', 'elavon',
+    'first data', 'global payments', 'heartland', 'square', 'stripe', 'clover',
+  ],
+  PAYCONNECT: [
+    'payconnect', 'pay connect', 'dentalxchange',
+    'merchant', 'merchant deposit', 'settlement', 'batch',
+    'dda deposit', 'card services',
+  ],
+  AUTHORIZE_NET: [
+    'authorize', 'auth.net', 'authorizenet', 'authorize.net',
+    'merchant', 'merchant deposit', 'settlement', 'batch',
+    'dda deposit', 'card services',
+  ],
+  CHERRY: ['cherry', 'cherry payment', 'cherry financial'],
+  SUNBIT: ['sunbit', 'sunbit payment'],
+  CARE_CREDIT: ['carecredit', 'care credit', 'synchrony', 'synchrony bank'],
 };
 
 /**
@@ -795,7 +811,7 @@ async function fetchPatientNames(
   patNums: number[]
 ): Promise<Map<number, string>> {
   const nameMap = new Map<number, string>();
-  const uniquePatNums = [...new Set(patNums.filter(n => n > 0))];
+  const uniquePatNums = Array.from(new Set(patNums.filter(n => n > 0)));
 
   if (uniquePatNums.length === 0) return nameMap;
 
@@ -1195,7 +1211,11 @@ async function fetchOdooBankRows(
 
     console.log(`[Reconciliation][${modeLabel}] Got ${transactions.length} Odoo bank transactions`);
 
-    // Filter by mode-specific keywords so each gateway only sees relevant bank rows
+    // Filter by mode-specific keywords so each gateway only sees relevant bank rows.
+    // If no keywords are defined for this mode, return ALL transactions.
+    // If keywords are defined but none match, DO NOT FALL BACK to all —
+    //   returning all transactions pollutes the matching pool with irrelevant rows
+    //   and causes false "Amount-only" partial matches everywhere.
     let filtered = transactions;
     const keywords = BANK_ROW_FILTER_KEYWORDS[modeLabel as PaymentMode];
     if (keywords && keywords.length > 0) {
@@ -1210,11 +1230,23 @@ async function fetchOdooBankRows(
       });
       console.log(`[Reconciliation][${modeLabel}] After keyword filtering: ${filtered.length}/${transactions.length} transactions`);
 
-      // Fallback to all rows if no matches (clinic may not tag bank entries)
+      // If keyword filtering eliminated everything, it means the bank doesn't tag
+      // transactions with recognizable keywords for this mode. For card modes,
+      // this likely means deposits are generic. Use ALL credit-side rows as fallback.
       if (filtered.length === 0) {
-        console.warn(`[Reconciliation][${modeLabel}] No keyword matches — using all ${transactions.length} rows`);
-        filtered = transactions;
+        const cardModes: PaymentMode[] = ['CREDIT_CARD', 'PAYCONNECT', 'AUTHORIZE_NET'];
+        if (cardModes.includes(modeLabel as PaymentMode)) {
+          // For card modes: use ALL credit (positive amount) transactions
+          // since card settlements always appear as credits/deposits
+          filtered = transactions.filter((txn: any) => (txn.amount || 0) > 0);
+          console.warn(`[Reconciliation][${modeLabel}] No keyword matches — using all ${filtered.length} CREDIT transactions as fallback`);
+        } else {
+          console.warn(`[Reconciliation][${modeLabel}] No keyword matches — returning 0 rows. Bank may not have ${modeLabel} deposits in this period.`);
+          // Return empty — better to show 0 bank rows than match against irrelevant data
+        }
       }
+    } else {
+      console.log(`[Reconciliation][${modeLabel}] No keyword filter defined — using all ${transactions.length} transactions`);
     }
 
     return filtered.map((txn: any, idx: number) => {
@@ -1236,7 +1268,7 @@ async function fetchOdooBankRows(
 
       // Build a rich description combining all available fields
       const descParts = [paymentRef, ref, name, narration].filter(Boolean);
-      const description = [...new Set(descParts)].join(' | ') || '';
+      const description = Array.from(new Set(descParts)).join(' | ') || '';
 
       return {
         rowId: `odoo-${txn.id || idx}`,
