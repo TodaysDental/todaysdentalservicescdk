@@ -61,6 +61,7 @@ interface ConversationState {
     meetingId: string;
     callId: string;
     clinicId: string;
+    callerPhone: string;
     sessionId: string;
     lastProcessedText: string;
     lastResponseTime: number;
@@ -79,30 +80,30 @@ export async function handler(event: any): Promise<void> {
     // Handle EventBridge event structure
     const detail = event.detail || event;
     const eventType = event['detail-type'] || detail.eventType || 'unknown';
-    
+
     try {
         switch (eventType) {
             case 'Chime Meeting State Change':
                 await handleMeetingStateChange(detail);
                 break;
-                
+
             case 'Chime Meeting Transcription':
             case 'Transcript':
                 await handleTranscript(detail);
                 break;
-                
+
             case 'TranscriptionStarted':
                 await handleTranscriptionStarted(detail);
                 break;
-                
+
             case 'TranscriptionStopped':
                 await handleTranscriptionStopped(detail);
                 break;
-                
+
             case 'TranscriptionFailed':
                 await handleTranscriptionFailed(detail);
                 break;
-                
+
             default:
                 console.log(`[TranscriptionHandler] Unhandled event type: ${eventType}`);
         }
@@ -118,9 +119,9 @@ export async function handler(event: any): Promise<void> {
 async function handleMeetingStateChange(detail: any): Promise<void> {
     const meetingId = detail.meetingId || detail.MeetingId;
     const state = detail.state || detail.State;
-    
+
     console.log(`[TranscriptionHandler] Meeting ${meetingId} state change: ${state}`);
-    
+
     if (state === 'ENDED') {
         // Clean up conversation state
         conversationStates.delete(meetingId);
@@ -134,7 +135,7 @@ async function handleMeetingStateChange(detail: any): Promise<void> {
 async function handleTranscriptionStarted(detail: any): Promise<void> {
     const meetingId = detail.meetingId || detail.MeetingId;
     console.log(`[TranscriptionHandler] Transcription started for meeting ${meetingId}`);
-    
+
     // Update meeting status
     try {
         await ddb.send(new UpdateCommand({
@@ -156,7 +157,7 @@ async function handleTranscriptionStarted(detail: any): Promise<void> {
 async function handleTranscriptionStopped(detail: any): Promise<void> {
     const meetingId = detail.meetingId || detail.MeetingId;
     console.log(`[TranscriptionHandler] Transcription stopped for meeting ${meetingId}`);
-    
+
     // Clean up
     conversationStates.delete(meetingId);
     pendingTranscripts.delete(meetingId);
@@ -168,9 +169,9 @@ async function handleTranscriptionStopped(detail: any): Promise<void> {
 async function handleTranscriptionFailed(detail: any): Promise<void> {
     const meetingId = detail.meetingId || detail.MeetingId;
     const reason = detail.reason || detail.Reason || 'Unknown';
-    
+
     console.error(`[TranscriptionHandler] Transcription failed for meeting ${meetingId}: ${reason}`);
-    
+
     // Update meeting status
     try {
         await ddb.send(new UpdateCommand({
@@ -195,7 +196,7 @@ async function handleTranscript(detail: any): Promise<void> {
     const attendeeId = detail.attendeeId || detail.AttendeeId;
     const transcript = detail.transcript || detail.Transcript || detail.results;
     const isPartial = detail.isPartial || detail.IsPartial || false;
-    
+
     // Extract text from transcript structure
     let text = '';
     if (typeof transcript === 'string') {
@@ -211,17 +212,17 @@ async function handleTranscript(detail: any): Promise<void> {
             .map((r: any) => r.alternatives?.[0]?.transcript || r.transcript || '')
             .join(' ');
     }
-    
+
     if (!text || text.trim().length === 0) {
         return;
     }
-    
+
     console.log(`[TranscriptionHandler] Received transcript for meeting ${meetingId}:`, {
         attendeeId,
         text: text.substring(0, 100) + (text.length > 100 ? '...' : ''),
         isPartial
     });
-    
+
     // Skip partial results to avoid processing incomplete sentences
     if (isPartial) {
         // Update pending transcript for debouncing
@@ -235,7 +236,7 @@ async function handleTranscript(detail: any): Promise<void> {
         });
         return;
     }
-    
+
     // Get or create conversation state
     let state = conversationStates.get(meetingId);
     if (!state) {
@@ -245,11 +246,12 @@ async function handleTranscript(detail: any): Promise<void> {
             console.warn(`[TranscriptionHandler] No meeting info found for ${meetingId}`);
             return;
         }
-        
+
         state = {
             meetingId,
             callId: meetingInfo.callId,
             clinicId: meetingInfo.clinicId,
+            callerPhone: String(meetingInfo.callerPhone || meetingInfo.callerNumber || meetingInfo.fromNumber || '').trim(),
             sessionId: randomUUID(),
             lastProcessedText: '',
             lastResponseTime: 0,
@@ -258,23 +260,23 @@ async function handleTranscript(detail: any): Promise<void> {
         };
         conversationStates.set(meetingId, state);
     }
-    
+
     // Avoid processing duplicate text
     if (text === state.lastProcessedText) {
         console.log(`[TranscriptionHandler] Skipping duplicate text`);
         return;
     }
-    
+
     // Avoid processing while already processing
     if (state.isProcessing) {
         console.log(`[TranscriptionHandler] Already processing, queuing transcript`);
         // Could implement a queue here for better handling
         return;
     }
-    
+
     state.isProcessing = true;
     state.lastProcessedText = text;
-    
+
     try {
         // Add to conversation history
         state.conversationHistory.push({
@@ -282,18 +284,19 @@ async function handleTranscript(detail: any): Promise<void> {
             content: text,
             timestamp: Date.now()
         });
-        
+
         // Store transcript for analytics
         await storeTranscriptForAnalytics(state.callId, meetingId, text, 'user');
-        
+
         // Invoke Bedrock Agent
         const aiResponse = await invokeBedrockAgent(
             text,
             state.sessionId,
             state.clinicId,
-            state.callId
+            state.callId,
+            state.callerPhone
         );
-        
+
         if (aiResponse) {
             // Add AI response to history
             state.conversationHistory.push({
@@ -301,13 +304,13 @@ async function handleTranscript(detail: any): Promise<void> {
                 content: aiResponse,
                 timestamp: Date.now()
             });
-            
+
             // Store AI response for analytics
             await storeTranscriptForAnalytics(state.callId, meetingId, aiResponse, 'assistant');
-            
+
             // Convert AI response to speech and play to meeting
             await playAiResponseToMeeting(meetingId, state.callId, aiResponse);
-            
+
             state.lastResponseTime = Date.now();
         }
     } catch (error) {
@@ -340,10 +343,13 @@ async function invokeBedrockAgent(
     userText: string,
     sessionId: string,
     clinicId: string,
-    callId: string
+    callId: string,
+    callerPhone?: string
 ): Promise<string | null> {
     console.log(`[TranscriptionHandler] Invoking Bedrock Agent for session ${sessionId}`);
-    
+
+    const phone = String(callerPhone || '').trim();
+
     try {
         const response = await bedrock.send(new InvokeAgentCommand({
             agentId: BEDROCK_AGENT_ID,
@@ -354,11 +360,14 @@ async function invokeBedrockAgent(
                 sessionAttributes: {
                     clinicId,
                     callId,
-                    source: 'meeting-transcription'
+                    source: 'meeting-transcription',
+                    // Pass caller phone so the Bedrock agent can do automatic
+                    // caller-ID-based patient lookup via searchPatientsByPhone
+                    ...(phone ? { callerPhone: phone, callerNumber: phone, PatientPhone: phone } : {}),
                 }
             }
         }));
-        
+
         // Collect response chunks
         let responseText = '';
         if (response.completion) {
@@ -368,13 +377,13 @@ async function invokeBedrockAgent(
                 }
             }
         }
-        
+
         console.log(`[TranscriptionHandler] Bedrock response:`, {
             sessionId,
             responseLength: responseText.length,
             preview: responseText.substring(0, 100) + (responseText.length > 100 ? '...' : '')
         });
-        
+
         return responseText.trim() || null;
     } catch (error) {
         console.error(`[TranscriptionHandler] Error invoking Bedrock Agent:`, error);
@@ -394,11 +403,11 @@ async function playAiResponseToMeeting(
     responseText: string
 ): Promise<void> {
     console.log(`[TranscriptionHandler] Playing AI response to meeting ${meetingId}`);
-    
+
     try {
         // Synthesize speech using Polly
         const audioKey = `tts/${callId}/${Date.now()}.wav`;
-        
+
         const pollyResponse = await polly.send(new SynthesizeSpeechCommand({
             Engine: 'neural' as Engine,
             OutputFormat: 'pcm' as OutputFormat,
@@ -406,15 +415,15 @@ async function playAiResponseToMeeting(
             VoiceId: POLLY_VOICE_ID,
             SampleRate: '8000' // 8kHz for telephony
         }));
-        
+
         if (!pollyResponse.AudioStream) {
             throw new Error('No audio stream from Polly');
         }
-        
+
         // Convert to WAV format
         const audioData = await streamToBuffer(pollyResponse.AudioStream);
         const wavData = pcmToWav(audioData, 8000, 16, 1);
-        
+
         // Upload to S3
         await s3.send(new PutObjectCommand({
             Bucket: TTS_BUCKET,
@@ -422,10 +431,10 @@ async function playAiResponseToMeeting(
             Body: wavData,
             ContentType: 'audio/wav'
         }));
-        
+
         const audioUrl = `s3://${TTS_BUCKET}/${audioKey}`;
         console.log(`[TranscriptionHandler] Uploaded TTS audio: ${audioUrl}`);
-        
+
         // Update the SIP Media Application call to play the audio
         // This works because the PSTN participant is connected via JoinChimeMeeting
         // and has an associated SMA call leg
@@ -438,7 +447,7 @@ async function playAiResponseToMeeting(
                 meetingId
             }
         }));
-        
+
         console.log(`[TranscriptionHandler] Sent PlayAudio command for call ${callId}`);
     } catch (error) {
         console.error(`[TranscriptionHandler] Error playing AI response:`, error);
@@ -464,7 +473,7 @@ async function storeTranscriptForAnalytics(
         timestamp: Date.now(),
         source: 'meeting-transcription'
     }));
-    
+
     // Store in DynamoDB conversations table for persistence
     try {
         await ddb.send(new PutCommand({

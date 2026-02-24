@@ -251,7 +251,7 @@ export class AccountingStack extends Stack {
       entry: path.join(__dirname, '..', '..', 'services', 'accounting', 'index.ts'),
       handler: 'handler',
       runtime: lambda.Runtime.NODEJS_20_X,
-      memorySize: 512,
+      memorySize: 10240,
       timeout: Duration.seconds(120),
       bundling: { format: lambdaNode.OutputFormat.ESM, target: 'node20' },
       environment: {

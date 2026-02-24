@@ -1,137 +1,271 @@
 /**
- * Cherry API Client Utility
+ * Cherry API Client — GraphQL
  * 
- * Provides functions for interacting with Cherry's partner API
- * to fetch financing transaction and settlement data for reconciliation.
+ * Cherry's provider portal uses a GraphQL API at https://gql.withcherry.com/
+ * with a `fetchLoans` query to retrieve financing transaction (loan) data.
  * 
- * Cherry is a patient financing company — each clinic has its own API key
- * from Cherry's partner portal (partner.withcherry.com).
- * 
+ * Each clinic has its own API key from Cherry's partner portal.
  * API keys are stored per-clinic in the ClinicSecrets DynamoDB table.
  * 
- * Usage:
- *   import { CherryClient } from '../../shared/utils/cherry-api';
- *   
- *   const client = new CherryClient({ apiKey: 'B-xxxx...' });
- *   const transactions = await client.getTransactions({ dateStart: '2024-01-01', dateEnd: '2024-01-31' });
+ * Data flow:
+ *   1. Backend calls Cherry GraphQL → fetchLoans query
+ *   2. Cherry returns loans with fund transfer details
+ *   3. We extract MERCHANT_CREDIT funds (actual ACH deposits to clinic bank)
+ *   4. Convert to BankStatementRow format for reconciliation
+ * 
+ * Key fields for reconciliation:
+ *   - merchantFund: Actual amount deposited to merchant's bank account
+ *   - funds[].amount (MERCHANT_CREDIT): Individual ACH deposit amounts
+ *   - contractId: Unique loan contract reference (e.g., "L-CPRUK6708867-2")
+ *   - fundedAt: When the loan was funded (use as transaction date)
  */
 
+import { BankStatementRow } from '../../services/accounting/types';
+
 // ========================================
-// TYPES
+// TYPES — matching Cherry's actual GraphQL schema
 // ========================================
 
 export interface CherryConfig {
     apiKey: string;
-    baseUrl?: string; // Default: https://partner.withcherry.com/api
+    baseUrl?: string; // Default: https://gql.withcherry.com/
 }
 
-export interface CherryTransaction {
-    id: string;                    // Cherry transaction ID
-    transactionId: string;         // Unique transaction reference
-    patientName: string;           // Patient's full name
-    amount: number;                // Total financing amount
-    merchantAmount: number;        // Amount paid to merchant (after Cherry fees)
-    status: string;                // approved, funded, settled, refunded, etc.
-    createdAt: string;             // Transaction creation date (ISO)
-    fundedAt?: string;             // Date funds were sent to merchant
-    settledAt?: string;            // Date settlement was completed
-    applicationId?: string;        // Cherry application ID
-    planType?: string;             // Financing plan type (e.g., "12mo_0apr")
-    merchantFee?: number;          // Cherry's merchant fee amount
-    refundAmount?: number;         // Refund amount if applicable
+/** Cherry loan fund transfer (ACH deposit or debit) */
+export interface CherryFund {
+    id: string;
+    accountNumber: string;        // e.g., "****5610"
+    directionType: string;        // "MERCHANT_CREDIT" or "MERCHANT_DEBIT"
+    amount: number;               // Transfer amount
+    event: string | null;         // e.g., "completed"
+    type: string;                 // "LEAD" or "ACH"
+    status: string;               // "COMPLETED", "PENDING", etc.
+    createdAt: string;            // ISO datetime
+    updatedAt: string;            // ISO datetime
 }
 
-export interface CherrySettlement {
-    id: string;                    // Settlement batch ID
-    settlementDate: string;        // Date of settlement
-    totalAmount: number;           // Total settlement amount
-    transactionCount: number;      // Number of transactions in batch
-    status: string;                // pending, completed
-    transactions: CherrySettlementTransaction[];
+/** Cherry loan product/plan details */
+export interface CherryProduct {
+    id: string;
+    mdf: number;                  // Merchant discount fee %
+    promoMdf: number | null;      // Promo MDF %
+    term: number;                 // Loan term (months)
+    periodLength: string | null;  // "MONTHLY", "BIWEEKLY"
 }
 
-export interface CherrySettlementTransaction {
-    transactionId: string;
-    patientName: string;
+/** Cherry refund details */
+export interface CherryRefund {
+    id: string;
+    loanId: string;
+    fundId: string;
     amount: number;
-    merchantAmount: number;
-    fee: number;
+    merchantFund: number;
+    type: string;                 // "PARTIAL_REFUND", "FULL_REFUND"
+    merchantRevenue: number;
+    status: string;
+    refundFee: number;
+    createdAt: string;
+}
+
+/** Cherry loan modification */
+export interface CherryModification {
+    id: string;
+    type: string;
+    amount: number;
+}
+
+/** Cherry checkout user */
+export interface CherryCheckoutUser {
+    id: string;
+    firstName: string;
+    lastName: string;
+}
+
+/** Single Cherry loan/transaction — matches the actual GraphQL `LoanSearch` type */
+export interface CherryLoan {
+    id: string;                           // Loan ID (e.g., "3016993")
+    contractId: string;                   // Contract reference (e.g., "L-CPRUK6708867-2")
+    applicationId: number;                // Cherry application ID
+    applicationBalanceAvailable: number;
+    borrowerId: number;
+    borrowerName: string;                 // Patient name
+    borrowerPhone: string;
+    amount: number;                       // Net loan amount
+    grossAmount: number;                  // Gross amount before fees
+    purchaseAmount: number;               // Original purchase/treatment amount
+    totalAmount: number;                  // Total amount including finance charges
+    merchantFund: number;                 // Amount deposited to merchant bank (KEY for reconciliation)
+    merchantRevenue: number;              // Cherry's fee (grossAmount - merchantFund)
+    merchantId: number;
+    downPaymentAmount: number;
+    financeCharge: number;
+    installmentAmount: number;
+    transactionType: string;              // "STANDARD"
+    status: string;                       // "FUNDED", "COMPLETED", "VOIDED"
+    subStatus: string;                    // "COMPLETED", "CLOSED", "VOIDED"
+    contractType: string;                 // "DEPOSIT", "REFUND"
+    selfCheckout: boolean;
+    promoUsed: boolean;
+    dispute: boolean;
+    tierLabel: string;                    // "Silver", "Gold", etc.
+    createdAt: string;                    // ISO datetime
+    updatedAt: string;
+    createdBy: string;
+    updatedBy: string;
+    fundedAt: string | null;              // When funds were sent to merchant
+    originalClosedAt: string;             // Expected loan close date
+    refundAmount: number | null;
+    demo: boolean | null;
+    product: CherryProduct | null;
+    funds: CherryFund[];                  // ACH transfer details
+    plans: { balance: number }[];
+    refunds: CherryRefund[];
+    modifications: CherryModification[];
+    checkoutUser: CherryCheckoutUser | null;
+}
+
+/** GraphQL fetchLoans response */
+export interface CherryFetchLoansResponse {
+    data: {
+        fetchLoans: {
+            success: boolean;
+            contents: CherryLoan[];
+            total: number;
+        };
+    };
 }
 
 export interface CherryTransactionQueryOptions {
     dateStart: string;             // YYYY-MM-DD
     dateEnd: string;               // YYYY-MM-DD
     status?: string;               // Filter by status
-    limit?: number;                // Max results (default: 500)
+    limit?: number;                // Max results (default: 100)
     offset?: number;               // Pagination offset
 }
 
 // ========================================
-// CHERRY API CLIENT
+// GRAPHQL QUERY
 // ========================================
 
-const DEFAULT_BASE_URL = 'https://partner.withcherry.com/api/v1';
-
 /**
- * Make an authenticated HTTP request to the Cherry API
- * Uses native fetch API (same pattern as odoo-api.ts)
+ * GraphQL query for fetching Cherry loans.
+ * Reconstructed from actual Cherry portal network traffic.
  */
-async function makeRequest<T>(
-    config: CherryConfig,
-    method: string,
-    path: string,
-    queryParams?: Record<string, string>,
-    body?: any
-): Promise<T> {
-    const baseUrl = config.baseUrl || DEFAULT_BASE_URL;
-
-    // Build full URL with query string
-    let fullUrl = `${baseUrl}${path}`;
-    if (queryParams && Object.keys(queryParams).length > 0) {
-        const params = new URLSearchParams(queryParams);
-        fullUrl += `?${params.toString()}`;
+const FETCH_LOANS_QUERY = `
+query FetchLoans(
+  $merchantId: Int
+  $limit: Int
+  $offset: Int
+  $startDate: String
+  $endDate: String
+  $status: [String]
+  $sortBy: String
+  $sortDirection: String
+) {
+  fetchLoans(
+    merchantId: $merchantId
+    limit: $limit
+    offset: $offset
+    startDate: $startDate
+    endDate: $endDate
+    status: $status
+    sortBy: $sortBy
+    sortDirection: $sortDirection
+  ) {
+    success
+    total
+    contents {
+      id
+      contractId
+      applicationId
+      applicationBalanceAvailable
+      borrowerId
+      borrowerName
+      borrowerPhone
+      amount
+      grossAmount
+      purchaseAmount
+      totalAmount
+      merchantFund
+      merchantRevenue
+      merchantId
+      downPaymentAmount
+      financeCharge
+      installmentAmount
+      transactionType
+      status
+      subStatus
+      contractType
+      selfCheckout
+      promoUsed
+      dispute
+      tierLabel
+      createdAt
+      updatedAt
+      createdBy
+      updatedBy
+      fundedAt
+      originalClosedAt
+      refundAmount
+      demo
+      product {
+        id
+        mdf
+        promoMdf
+        term
+        periodLength
+      }
+      funds {
+        id
+        accountNumber
+        directionType
+        amount
+        event
+        type
+        status
+        createdAt
+        updatedAt
+      }
+      plans {
+        balance
+      }
+      refunds {
+        id
+        loanId
+        fundId
+        amount
+        merchantFund
+        type
+        merchantRevenue
+        status
+        refundFee
+        createdAt
+      }
+      modifications {
+        id
+        type
+        amount
+      }
+      checkoutUser {
+        id
+        firstName
+        lastName
+      }
     }
-
-    const headers: Record<string, string> = {
-        'Authorization': `Bearer ${config.apiKey}`,
-        'Content-Type': 'application/json',
-        'Accept': 'application/json',
-    };
-
-    console.log(`[CherryAPI] ${method} ${fullUrl}`);
-
-    const fetchOptions: RequestInit = {
-        method,
-        headers,
-    };
-
-    if (body) {
-        fetchOptions.body = JSON.stringify(body);
-    }
-
-    const response = await fetch(fullUrl, fetchOptions);
-
-    if (!response.ok) {
-        const errorBody = await response.text().catch(() => '');
-        if (response.status === 401) {
-            throw new Error(`Cherry API authentication failed (401). Check API key.`);
-        } else if (response.status === 403) {
-            throw new Error(`Cherry API access denied (403). API key may lack permissions.`);
-        } else if (response.status === 429) {
-            throw new Error(`Cherry API rate limited (429). Try again later.`);
-        } else {
-            throw new Error(`Cherry API returned ${response.status}: ${errorBody.substring(0, 500)}`);
-        }
-    }
-
-    const data = await response.json();
-    return data as T;
+  }
 }
+`;
+
+// ========================================
+// CHERRY GRAPHQL CLIENT
+// ========================================
+
+const GQL_ENDPOINT = 'https://gql.withcherry.com/';
 
 /**
- * Cherry API Client
+ * Cherry API Client — uses the GraphQL endpoint at gql.withcherry.com
  * 
- * Fetches transaction and settlement data from Cherry's partner API.
+ * Fetches loan/transaction data from Cherry's provider portal API.
  * Each clinic has its own API key from Cherry's partner portal.
  */
 export class CherryClient {
@@ -145,130 +279,173 @@ export class CherryClient {
     }
 
     /**
-     * Fetch transactions from Cherry for a date range.
-     * Returns individual patient financing transactions.
+     * Execute a GraphQL query against Cherry's API.
+     * Tries multiple authentication strategies since we need to determine
+     * which auth header format Cherry expects for API keys.
      */
-    async getTransactions(options: CherryTransactionQueryOptions): Promise<CherryTransaction[]> {
-        const { dateStart, dateEnd, status, limit = 500, offset = 0 } = options;
+    private async executeQuery<T>(query: string, variables: Record<string, any>): Promise<T> {
+        const endpoint = this.config.baseUrl || GQL_ENDPOINT;
+        const apiKey = this.config.apiKey;
 
-        console.log(`[CherryAPI] Fetching transactions from ${dateStart} to ${dateEnd}`);
+        // Auth strategies to try — Cherry may accept any of these
+        const authAttempts: { name: string; headers: Record<string, string> }[] = [
+            {
+                name: 'Bearer token',
+                headers: { 'Authorization': `Bearer ${apiKey}` },
+            },
+            {
+                name: 'X-Api-Key header',
+                headers: { 'X-Api-Key': apiKey },
+            },
+            {
+                name: 'Basic auth (key as user)',
+                headers: { 'Authorization': `Basic ${Buffer.from(apiKey + ':').toString('base64')}` },
+            },
+            {
+                name: 'Api-Key header',
+                headers: { 'Api-Key': apiKey },
+            },
+        ];
 
-        const queryParams: Record<string, string> = {
-            start_date: dateStart,
-            end_date: dateEnd,
-            limit: String(limit),
-            offset: String(offset),
+        let lastError: Error | null = null;
+        let lastStatus = 0;
+        let lastBody = '';
+
+        for (const attempt of authAttempts) {
+            try {
+                console.log(`[CherryGQL] Trying ${attempt.name} → POST ${endpoint}`);
+
+                const response = await fetch(endpoint, {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                        'Accept': 'application/json',
+                        ...attempt.headers,
+                    },
+                    body: JSON.stringify({ query, variables }),
+                });
+
+                lastStatus = response.status;
+
+                if (response.ok) {
+                    const data: any = await response.json();
+
+                    // Check for GraphQL-level errors
+                    if (data.errors && data.errors.length > 0) {
+                        const gqlError = data.errors[0].message || JSON.stringify(data.errors[0]);
+                        console.warn(`[CherryGQL] GraphQL error with ${attempt.name}: ${gqlError}`);
+                        lastError = new Error(`Cherry GraphQL error: ${gqlError}`);
+                        lastBody = JSON.stringify(data.errors);
+                        continue;
+                    }
+
+                    console.log(`[CherryGQL] ✅ Success with ${attempt.name}`);
+                    return data as T;
+                }
+
+                lastBody = await response.text().catch(() => '');
+                console.warn(`[CherryGQL] ${attempt.name} → HTTP ${response.status}: ${lastBody.substring(0, 200)}`);
+
+                // If 400/422, the auth probably worked but query was bad
+                if (response.status === 400 || response.status === 422) {
+                    throw new Error(`Cherry GQL bad request (${response.status}): ${lastBody.substring(0, 500)}`);
+                }
+            } catch (error: any) {
+                if (error.message.includes('Cherry GQL bad request')) throw error;
+                lastError = error;
+                console.warn(`[CherryGQL] ${attempt.name} failed: ${error.message}`);
+            }
+        }
+
+        // All auth attempts failed
+        const errorMsg = lastStatus === 401 || lastStatus === 403
+            ? `Cherry API authentication failed (${lastStatus}). Check API key. Tried: ${authAttempts.map(a => a.name).join(', ')}. Response: ${lastBody.substring(0, 300)}`
+            : lastStatus === 429
+                ? `Cherry API rate limited (429). Try again later.`
+                : `Cherry API failed (${lastStatus}): ${lastError?.message || lastBody.substring(0, 500)}`;
+
+        throw new Error(errorMsg);
+    }
+
+    /**
+     * Fetch Cherry loans (financing transactions) for a date range.
+     * Returns the raw loan data from Cherry's GraphQL API.
+     */
+    async getLoans(options: CherryTransactionQueryOptions): Promise<CherryLoan[]> {
+        const { dateStart, dateEnd, status, limit = 100, offset = 0 } = options;
+
+        console.log(`[CherryGQL] Fetching loans from ${dateStart} to ${dateEnd}`);
+
+        const variables: Record<string, any> = {
+            startDate: dateStart,
+            endDate: dateEnd,
+            limit,
+            offset,
+            sortBy: 'createdAt',
+            sortDirection: 'DESC',
         };
 
         if (status) {
-            queryParams.status = status;
+            variables.status = [status.toUpperCase()];
         }
 
-        try {
-            const response = await makeRequest<any>(
-                this.config,
-                'GET',
-                '/transactions',
-                queryParams
-            );
+        const response = await this.executeQuery<CherryFetchLoansResponse>(
+            FETCH_LOANS_QUERY,
+            variables
+        );
 
-            // Normalize the response — Cherry API may return { data: [...] } or [...] directly
-            const rawTransactions = Array.isArray(response) ? response : (response?.data || response?.transactions || []);
-
-            if (!Array.isArray(rawTransactions)) {
-                console.warn('[CherryAPI] Unexpected response format:', typeof response);
-                return [];
-            }
-
-            // Map Cherry API response to our CherryTransaction type
-            const transactions: CherryTransaction[] = rawTransactions.map((txn: any) => ({
-                id: String(txn.id || txn.transaction_id || ''),
-                transactionId: String(txn.transaction_id || txn.id || txn.reference_id || ''),
-                patientName: txn.patient_name || txn.consumer_name || txn.customer_name || '',
-                amount: Number(txn.amount || txn.total_amount || 0),
-                merchantAmount: Number(txn.merchant_amount || txn.net_amount || txn.funded_amount || txn.amount || 0),
-                status: String(txn.status || 'unknown'),
-                createdAt: txn.created_at || txn.date || txn.transaction_date || '',
-                fundedAt: txn.funded_at || txn.funding_date || undefined,
-                settledAt: txn.settled_at || txn.settlement_date || undefined,
-                applicationId: txn.application_id || txn.app_id || undefined,
-                planType: txn.plan_type || txn.financing_plan || undefined,
-                merchantFee: txn.merchant_fee != null ? Number(txn.merchant_fee) : undefined,
-                refundAmount: txn.refund_amount != null ? Number(txn.refund_amount) : undefined,
-            }));
-
-            console.log(`[CherryAPI] Fetched ${transactions.length} transactions`);
-            return transactions;
-        } catch (error: any) {
-            console.error(`[CherryAPI] Error fetching transactions: ${error.message}`);
-            throw error;
+        if (!response?.data?.fetchLoans?.success) {
+            console.warn('[CherryGQL] fetchLoans returned success=false');
+            return [];
         }
+
+        const loans = response.data.fetchLoans.contents || [];
+        const total = response.data.fetchLoans.total;
+
+        console.log(`[CherryGQL] Fetched ${loans.length} of ${total} total loans`);
+
+        // If there are more pages, fetch them
+        if (total > offset + limit && loans.length === limit) {
+            console.log(`[CherryGQL] Fetching additional pages (total: ${total})`);
+            const nextPage = await this.getLoans({
+                ...options,
+                limit,
+                offset: offset + limit,
+            });
+            return [...loans, ...nextPage];
+        }
+
+        return loans;
     }
 
     /**
-     * Fetch settlements (funding batches) from Cherry for a date range.
-     * Settlements represent batches of transactions funded to the merchant.
+     * Fetch loans and return them in the legacy CherryTransaction format
+     * for backward compatibility with existing reconciliation code.
      */
-    async getSettlements(dateStart: string, dateEnd: string): Promise<CherrySettlement[]> {
-        console.log(`[CherryAPI] Fetching settlements from ${dateStart} to ${dateEnd}`);
-
-        try {
-            const response = await makeRequest<any>(
-                this.config,
-                'GET',
-                '/settlements',
-                {
-                    start_date: dateStart,
-                    end_date: dateEnd,
-                }
-            );
-
-            const rawSettlements = Array.isArray(response) ? response : (response?.data || response?.settlements || []);
-
-            if (!Array.isArray(rawSettlements)) {
-                console.warn('[CherryAPI] Unexpected settlements response format:', typeof response);
-                return [];
-            }
-
-            const settlements: CherrySettlement[] = rawSettlements.map((s: any) => ({
-                id: String(s.id || s.settlement_id || ''),
-                settlementDate: s.settlement_date || s.date || '',
-                totalAmount: Number(s.total_amount || s.amount || 0),
-                transactionCount: Number(s.transaction_count || s.count || 0),
-                status: String(s.status || 'unknown'),
-                transactions: Array.isArray(s.transactions) ? s.transactions.map((t: any) => ({
-                    transactionId: String(t.transaction_id || t.id || ''),
-                    patientName: t.patient_name || t.consumer_name || '',
-                    amount: Number(t.amount || 0),
-                    merchantAmount: Number(t.merchant_amount || t.net_amount || 0),
-                    fee: Number(t.fee || t.merchant_fee || 0),
-                })) : [],
-            }));
-
-            console.log(`[CherryAPI] Fetched ${settlements.length} settlements`);
-            return settlements;
-        } catch (error: any) {
-            console.error(`[CherryAPI] Error fetching settlements: ${error.message}`);
-            throw error;
-        }
+    async getTransactions(options: CherryTransactionQueryOptions): Promise<CherryTransactionCompat[]> {
+        const loans = await this.getLoans(options);
+        return loans.map(loanToTransaction);
     }
 
     /**
-     * Test the API connection by fetching a small batch of recent transactions.
-     * Useful for validating API key configuration.
+     * Test the API connection by fetching a small batch of recent loans.
      */
-    async testConnection(): Promise<{ success: boolean; message: string }> {
+    async testConnection(): Promise<{ success: boolean; message: string; total?: number }> {
         try {
             const today = new Date().toISOString().split('T')[0];
             const lastMonth = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString().split('T')[0];
 
-            await this.getTransactions({
+            const loans = await this.getLoans({
                 dateStart: lastMonth,
                 dateEnd: today,
                 limit: 1,
             });
 
-            return { success: true, message: 'Cherry API connection successful' };
+            return {
+                success: true,
+                message: `Cherry API connection successful. Found loans.`,
+                total: loans.length,
+            };
         } catch (error: any) {
             return { success: false, message: `Cherry API connection failed: ${error.message}` };
         }
@@ -276,30 +453,158 @@ export class CherryClient {
 }
 
 // ========================================
-// HELPER: Convert Cherry transactions to BankStatementRow format
+// BACKWARD COMPATIBILITY — CherryTransaction type
 // ========================================
 
-import { BankStatementRow } from '../../services/accounting/types';
+/**
+ * Backward-compatible transaction type for existing code.
+ * Maps from the actual Cherry GraphQL LoanSearch type.
+ */
+export interface CherryTransactionCompat {
+    id: string;                    // Cherry loan ID
+    transactionId: string;         // contractId (unique reference)
+    patientName: string;           // borrowerName
+    amount: number;                // purchaseAmount (treatment cost)
+    merchantAmount: number;        // merchantFund (actual bank deposit)
+    status: string;                // status
+    createdAt: string;
+    fundedAt?: string;
+    settledAt?: string;
+    applicationId?: string;
+    planType?: string;             // e.g., "3mo MONTHLY"
+    merchantFee?: number;          // merchantRevenue (Cherry's cut)
+    refundAmount?: number;
+    // Extended fields from GraphQL
+    contractId?: string;
+    grossAmount?: number;
+    downPaymentAmount?: number;
+    financeCharge?: number;
+    subStatus?: string;
+    contractType?: string;
+    borrowerPhone?: string;
+    tierLabel?: string;
+    funds?: CherryFund[];
+}
+
+/** Convert a Cherry GraphQL LoanSearch to the backward-compatible format */
+function loanToTransaction(loan: CherryLoan): CherryTransactionCompat {
+    const planDesc = loan.product
+        ? `${loan.product.term}mo ${loan.product.periodLength || 'MONTHLY'}`
+        : 'financing';
+
+    return {
+        id: loan.id,
+        transactionId: loan.contractId,
+        patientName: loan.borrowerName,
+        amount: loan.purchaseAmount,
+        merchantAmount: loan.merchantFund,
+        status: loan.status,
+        createdAt: loan.createdAt,
+        fundedAt: loan.fundedAt || undefined,
+        settledAt: undefined, // Cherry doesn't have a separate "settled" date
+        applicationId: String(loan.applicationId),
+        planType: planDesc,
+        merchantFee: loan.merchantRevenue,
+        refundAmount: loan.refundAmount || undefined,
+        contractId: loan.contractId,
+        grossAmount: loan.grossAmount,
+        downPaymentAmount: loan.downPaymentAmount,
+        financeCharge: loan.financeCharge,
+        subStatus: loan.subStatus,
+        contractType: loan.contractType,
+        borrowerPhone: loan.borrowerPhone,
+        tierLabel: loan.tierLabel,
+        funds: loan.funds,
+    };
+}
+
+// ========================================
+// HELPER: Convert Cherry loans to BankStatementRow format
+// ========================================
 
 /**
- * Convert Cherry transactions into BankStatementRow format
+ * Convert Cherry loans into BankStatementRow format
  * for use in the reconciliation matching engine.
  * 
- * Cherry pays the merchant the `merchantAmount` (after fees),
- * so we use merchantAmount as the bank-side amount for reconciliation.
- * The reference field uses the Cherry transaction ID for matching.
+ * For reconciliation, we use the individual fund transfers (MERCHANT_CREDIT)
+ * because those represent the actual ACH deposits to the clinic's bank account.
+ * 
+ * Each funded loan has a `funds[]` array. Each fund entry with
+ * directionType="MERCHANT_CREDIT" is an actual bank deposit.
+ * 
+ * The `merchantFund` on the loan itself is the total of all MERCHANT_CREDIT funds.
  */
-export function cherryTransactionsToBankRows(transactions: CherryTransaction[]): BankStatementRow[] {
+export function cherryLoansToBankRows(loans: CherryLoan[]): BankStatementRow[] {
+    const rows: BankStatementRow[] = [];
+
+    for (const loan of loans) {
+        // Skip voided/demo loans
+        if (loan.status === 'VOIDED' || loan.demo) continue;
+
+        // Extract actual bank deposits from the funds array
+        const creditFunds = loan.funds.filter(
+            f => f.directionType === 'MERCHANT_CREDIT' && f.status === 'COMPLETED'
+        );
+
+        if (creditFunds.length > 0) {
+            // Create a bank row for each completed credit fund transfer
+            for (const fund of creditFunds) {
+                rows.push({
+                    rowId: `cherry-${loan.id}-${fund.id}`,
+                    date: (fund.createdAt || loan.fundedAt || loan.createdAt).substring(0, 10),
+                    reference: loan.contractId,
+                    description: `Cherry - ${loan.borrowerName} (${loan.product?.term || '?'}mo, acct ${fund.accountNumber})`,
+                    amount: Math.abs(fund.amount),
+                    type: 'CREDIT' as const,
+                });
+            }
+        } else if (loan.merchantFund > 0 && (loan.status === 'FUNDED' || loan.status === 'COMPLETED')) {
+            // Fallback: use loan-level merchantFund if no individual fund entries
+            rows.push({
+                rowId: `cherry-${loan.id}`,
+                date: (loan.fundedAt || loan.createdAt).substring(0, 10),
+                reference: loan.contractId,
+                description: `Cherry - ${loan.borrowerName} (${loan.product?.term || '?'}mo)`,
+                amount: Math.abs(loan.merchantFund),
+                type: 'CREDIT' as const,
+            });
+        }
+
+        // Also add MERCHANT_DEBIT entries (refund clawbacks) as debits
+        const debitFunds = loan.funds.filter(
+            f => f.directionType === 'MERCHANT_DEBIT' && f.status === 'COMPLETED'
+        );
+
+        for (const fund of debitFunds) {
+            rows.push({
+                rowId: `cherry-refund-${loan.id}-${fund.id}`,
+                date: (fund.createdAt || loan.createdAt).substring(0, 10),
+                reference: loan.contractId,
+                description: `Cherry Refund - ${loan.borrowerName} (clawback)`,
+                amount: Math.abs(fund.amount),
+                type: 'DEBIT' as const,
+            });
+        }
+    }
+
+    return rows;
+}
+
+/**
+ * Backward-compatible wrapper: converts CherryTransactionCompat[] to BankStatementRows.
+ * Used by the existing accounting index.ts code.
+ */
+export function cherryTransactionsToBankRows(transactions: CherryTransactionCompat[]): BankStatementRow[] {
     return transactions
         .filter(txn => {
-            // Only include funded/settled transactions (money actually received by clinic)
-            const status = txn.status.toLowerCase();
-            return status === 'funded' || status === 'settled' || status === 'completed' || status === 'approved';
+            const status = txn.status.toUpperCase();
+            return status === 'FUNDED' || status === 'COMPLETED';
         })
+        .filter(txn => txn.merchantAmount > 0)  // Skip voided transactions with 0 amount
         .map((txn, idx) => ({
             rowId: `cherry-${txn.transactionId || txn.id || idx}`,
-            date: (txn.fundedAt || txn.settledAt || txn.createdAt || '').substring(0, 10),
-            reference: txn.transactionId || txn.id || '',
+            date: (txn.fundedAt || txn.createdAt || '').substring(0, 10),
+            reference: txn.transactionId || txn.contractId || txn.id || '',
             description: `Cherry - ${txn.patientName || 'Unknown'} (${txn.planType || 'financing'})`,
             amount: Math.abs(txn.merchantAmount || txn.amount || 0),
             type: 'CREDIT' as const,
