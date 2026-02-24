@@ -30,6 +30,7 @@ import {
 } from '@aws-sdk/client-bedrock-agent-runtime';
 import { LambdaClient, InvokeCommand } from '@aws-sdk/client-lambda';
 import { v4 as uuidv4 } from 'uuid';
+import { getDateContext } from '../../shared/prompts/ai-prompts';
 
 // ========================================================================
 // CONFIGURATION
@@ -38,6 +39,7 @@ import { v4 as uuidv4 } from 'uuid';
 const ASYNC_RESULTS_TABLE = process.env.ASYNC_RESULTS_TABLE || 'ConnectAsyncResults';
 const SESSIONS_TABLE = process.env.SESSIONS_TABLE || 'AiAgentSessions';
 const AGENTS_TABLE = process.env.AGENTS_TABLE || 'AiAgents';
+const VOICE_CONFIG_TABLE = process.env.VOICE_CONFIG_TABLE || '';
 const RESULT_TTL_SECONDS = 300; // 5 minutes
 const DEFAULT_CLINIC_ID = process.env.DEFAULT_CLINIC_ID || 'dentistingreenville';
 
@@ -124,6 +126,7 @@ interface AgentInfo {
   agentId: string;
   aliasId: string;
   agentName?: string;
+  internalAgentId?: string;
 }
 
 // PERFORMANCE: Cache agent lookups to avoid repeated DynamoDB queries
@@ -134,64 +137,162 @@ const AGENT_CACHE_TTL_MS = 5 * 60 * 1000; // 5 minutes
 // AGENT LOOKUP (reused from lex-bedrock-hook.ts)
 // ========================================================================
 
+function isCallableVoiceAgentRecord(agent: any, clinicId: string): boolean {
+  if (!agent) return false;
+  const belongsToClinic = agent.clinicId === clinicId || agent.isPublic === true;
+  return (
+    belongsToClinic &&
+    agent.isActive === true &&
+    agent.isVoiceEnabled === true &&
+    agent.bedrockAgentStatus === 'PREPARED' &&
+    typeof agent.bedrockAgentId === 'string' &&
+    agent.bedrockAgentId.trim().length > 0 &&
+    typeof agent.bedrockAgentAliasId === 'string' &&
+    agent.bedrockAgentAliasId.trim().length > 0
+  );
+}
+
+function toAgentInfo(agent: any): AgentInfo | null {
+  const bedrockAgentId = typeof agent?.bedrockAgentId === 'string' ? agent.bedrockAgentId.trim() : '';
+  const bedrockAgentAliasId = typeof agent?.bedrockAgentAliasId === 'string' ? agent.bedrockAgentAliasId.trim() : '';
+  if (!bedrockAgentId || !bedrockAgentAliasId) return null;
+
+  return {
+    agentId: bedrockAgentId,
+    aliasId: bedrockAgentAliasId,
+    agentName: (agent.agentName || agent.name || '').toString(),
+    internalAgentId: (agent.agentId || '').toString(),
+  };
+}
+
+async function getAgentRecordById(agentId: string): Promise<any | null> {
+  const id = typeof agentId === 'string' ? agentId.trim() : '';
+  if (!id) return null;
+
+  try {
+    const resp = await docClient.send(new GetCommand({
+      TableName: AGENTS_TABLE,
+      Key: { agentId: id },
+    }));
+    return resp.Item || null;
+  } catch (error: any) {
+    console.warn('[AsyncBedrock] Error getting agent by id', {
+      agentId: id,
+      error: error?.message || String(error),
+    });
+    return null;
+  }
+}
+
+async function getConfiguredInboundAgentIdFromVoiceConfig(clinicId: string): Promise<string | null> {
+  const effectiveClinicId = clinicId || DEFAULT_CLINIC_ID;
+  if (!VOICE_CONFIG_TABLE) return null;
+
+  try {
+    const resp = await docClient.send(new GetCommand({
+      TableName: VOICE_CONFIG_TABLE,
+      Key: { clinicId: effectiveClinicId },
+      ProjectionExpression: 'inboundAgentId, aiInboundEnabled',
+    }));
+    const cfg = resp.Item as any;
+    if (!cfg) return null;
+
+    // If explicitly disabled, do not use a configured agent.
+    if (cfg.aiInboundEnabled === false) return null;
+
+    const id = typeof cfg.inboundAgentId === 'string' ? cfg.inboundAgentId.trim() : '';
+    return id || null;
+  } catch (error: any) {
+    console.warn('[AsyncBedrock] Failed to load configured inbound agent from voice config', {
+      clinicId: effectiveClinicId,
+      error: error?.message || String(error),
+    });
+    return null;
+  }
+}
+
 async function getAgentForClinic(clinicId: string): Promise<AgentInfo | null> {
+  const effectiveClinicId = clinicId || DEFAULT_CLINIC_ID;
+
   // Check cache first
-  const cached = agentCache.get(clinicId);
+  const cached = agentCache.get(effectiveClinicId);
   if (cached && Date.now() - cached.timestamp < AGENT_CACHE_TTL_MS) {
     return cached.agent;
   }
 
+  // 1) Prefer configured inbound agent from VoiceAgentConfig (matches lex-bedrock-hook behavior)
+  const configuredId = await getConfiguredInboundAgentIdFromVoiceConfig(effectiveClinicId);
+  if (configuredId) {
+    const record = await getAgentRecordById(configuredId);
+    if (isCallableVoiceAgentRecord(record, effectiveClinicId)) {
+      const resolved = toAgentInfo(record);
+      if (resolved) {
+        agentCache.set(effectiveClinicId, { agent: resolved, timestamp: Date.now() });
+        console.log('[AsyncBedrock] Using configured inbound voice agent', {
+          clinicId: effectiveClinicId,
+          internalAgentId: resolved.internalAgentId,
+          bedrockAgentId: resolved.agentId,
+        });
+        return resolved;
+      }
+    }
+
+    console.warn('[AsyncBedrock] Configured inbound agent not callable; falling back', {
+      clinicId: effectiveClinicId,
+      configuredId,
+      hasRecord: !!record,
+      isVoiceEnabled: record?.isVoiceEnabled,
+      status: record?.bedrockAgentStatus,
+    });
+  }
+
+  // 2) Fallback: choose best callable voice agent for the clinic
   try {
     const allAgents = await docClient.send(new QueryCommand({
       TableName: AGENTS_TABLE,
       IndexName: 'ClinicIndex',
       KeyConditionExpression: 'clinicId = :clinicId',
       ExpressionAttributeValues: {
-        ':clinicId': clinicId,
+        ':clinicId': effectiveClinicId,
       },
-      Limit: 20,
+      Limit: 50,
       ScanIndexForward: false,
     }));
 
-    if (!allAgents.Items || allAgents.Items.length === 0) {
-      agentCache.set(clinicId, { agent: null, timestamp: Date.now() });
+    const items = (allAgents.Items || []) as any[];
+    if (items.length === 0) {
+      agentCache.set(effectiveClinicId, { agent: null, timestamp: Date.now() });
       return null;
     }
 
-    // Prioritize: 1) default voice agent, 2) any voice-enabled, 3) any agent
-    let selectedAgent: any = null;
-
-    const defaultVoice = allAgents.Items.find(
-      (a: any) => a.isDefaultVoiceAgent === true && a.isVoiceEnabled === true
-    );
-    if (defaultVoice) {
-      selectedAgent = defaultVoice;
-      console.log('[AsyncBedrock] Selected default voice agent:', selectedAgent.agentId);
+    const callable = items.filter((a: any) => isCallableVoiceAgentRecord(a, effectiveClinicId));
+    if (callable.length === 0) {
+      console.warn('[AsyncBedrock] No callable voice-capable agent found for clinic', {
+        clinicId: effectiveClinicId,
+        scanned: items.length,
+      });
+      agentCache.set(effectiveClinicId, { agent: null, timestamp: Date.now() });
+      return null;
     }
 
-    if (!selectedAgent) {
-      const voiceEnabled = allAgents.Items.find((a: any) => a.isVoiceEnabled === true);
-      if (voiceEnabled) {
-        selectedAgent = voiceEnabled;
-        console.log('[AsyncBedrock] Selected voice-enabled agent:', selectedAgent.agentId);
-      }
+    // Prioritize a default voice agent if present
+    const selectedAgent = callable.find((a: any) => a.isDefaultVoiceAgent === true) || callable[0];
+    const agentInfo = toAgentInfo(selectedAgent);
+    if (!agentInfo) {
+      agentCache.set(effectiveClinicId, { agent: null, timestamp: Date.now() });
+      return null;
     }
 
-    if (!selectedAgent) {
-      selectedAgent = allAgents.Items[0];
-      console.log('[AsyncBedrock] Using fallback agent:', selectedAgent.agentId);
-    }
-
-    const agentInfo: AgentInfo = {
-      agentId: selectedAgent.bedrockAgentId,
-      aliasId: selectedAgent.bedrockAliasId || 'TSTALIASID',
-      agentName: selectedAgent.agentName || selectedAgent.name,
-    };
-
-    agentCache.set(clinicId, { agent: agentInfo, timestamp: Date.now() });
+    agentCache.set(effectiveClinicId, { agent: agentInfo, timestamp: Date.now() });
+    console.log('[AsyncBedrock] Selected fallback voice agent for clinic', {
+      clinicId: effectiveClinicId,
+      internalAgentId: agentInfo.internalAgentId,
+      bedrockAgentId: agentInfo.agentId,
+    });
     return agentInfo;
   } catch (error) {
     console.error('[AsyncBedrock] Error looking up agent:', error);
+    agentCache.set(effectiveClinicId, { agent: null, timestamp: Date.now() });
     return null;
   }
 }
@@ -334,9 +435,21 @@ async function startAsync(event: any): Promise<{ requestId: string; status: stri
           contactId,
           inputText: inputTranscript.trim(),
           clinicId,
+          callerNumber,
+          dialedNumber,
+          timezone: String(contactAttributes.timezone || 'UTC'),
           ttsSpeakingRate: prosody.speakingRate,
           ttsPitch: prosody.pitch,
           ttsVolume: prosody.volume,
+          // Patient identity from the welcome lookup (if present)
+          PatNum: String(contactAttributes.PatNum || '').trim(),
+          FName: String(contactAttributes.FName || '').trim(),
+          LName: String(contactAttributes.LName || '').trim(),
+          Birthdate: String(contactAttributes.Birthdate || '').trim(),
+          IsNewPatient: String(contactAttributes.IsNewPatient || contactAttributes.isNewPatient || '').trim(),
+          patientName: String(contactAttributes.patientName || '').trim(),
+          patientFirstName: String(contactAttributes.patientFirstName || '').trim(),
+          initialGreetingAlreadyPlayed: 'true',
         },
       },
     };
@@ -373,9 +486,21 @@ async function processBedrockInvocation(params: {
   contactId: string;
   inputText: string;
   clinicId: string;
+  callerNumber?: string;
+  dialedNumber?: string;
+  timezone?: string;
   ttsSpeakingRate?: string;
   ttsPitch?: string;
   ttsVolume?: string;
+  // Patient identity from welcome lookup (optional)
+  PatNum?: string;
+  FName?: string;
+  LName?: string;
+  Birthdate?: string;
+  IsNewPatient?: string;
+  patientName?: string;
+  patientFirstName?: string;
+  initialGreetingAlreadyPlayed?: string;
 }): Promise<void> {
   const { requestId, contactId, inputText, clinicId } = params;
   const prosody: ProsodySettings = {
@@ -417,17 +542,89 @@ async function processBedrockInvocation(params: {
       sessionId: session.bedrockSessionId,
     });
 
+    // Add lightweight date context so the agent can resolve "tomorrow", weekdays, etc.
+    const timezone = String(params.timezone || 'UTC').trim() || 'UTC';
+    const d = getDateContext(timezone);
+    const [year, month, day] = d.today.split('-');
+    const todayFormatted = `${month}/${day}/${year}`;
+
+    const callerNumber = String(params.callerNumber || '').trim();
+    const dialedNumber = String(params.dialedNumber || '').trim();
+    const patNum = String(params.PatNum || '').trim();
+    const fName = String(params.FName || params.patientFirstName || '').trim();
+    const lName = String(params.LName || '').trim();
+    const birthdate = String(params.Birthdate || '').trim();
+    const isNewPatient = String(params.IsNewPatient || '').trim();
+    const resolvedPatientName =
+      String(params.patientName || '').trim() ||
+      [fName, lName].filter(Boolean).join(' ').trim();
+
+    // Bedrock Agents do not always reliably surface session attributes to the LLM.
+    // To prevent the agent from re-asking for name/DOB when we already identified the caller,
+    // include a compact, non-spoken context prefix in the input text.
+    const inputTextForAgent = (() => {
+      const raw = String(inputText || '').trim();
+      if (!patNum) return raw;
+      const name = resolvedPatientName || 'the caller';
+      const newFlag = isNewPatient === 'true' || isNewPatient === 'false' ? isNewPatient : 'unknown';
+      const context = [
+        'SYSTEM CONTEXT (do not read aloud):',
+        `Caller is already identified in OpenDental: ${name} (PatNum ${patNum}).`,
+        `IsNewPatient=${newFlag}.`,
+        'Do NOT ask for first name, last name, date of birth, or phone number again.',
+        'Use the inbound caller ID as the phone number unless the caller says it is different or blocked.',
+        'If they want to book/schedule an appointment and have NOT given a reason yet: ask "Perfect. May I know the reason for the appointment?" and STOP. Wait for their answer before calling any scheduling tools.',
+        'After you have the reason, ask: "When would you like to schedule?"',
+        'When booking, choose an appointment type that matches BOTH the reason and patient status (IsNewPatient=false → "existing patient" types; IsNewPatient=true → "new patient" types).',
+      ].join(' ');
+      return `${context}\n\nCaller: ${raw}`;
+    })();
+
+    const sessionAttributes: Record<string, string> = {
+      clinicId: session.clinicId,
+      callerNumber,
+      dialedNumber,
+      callerPhone: callerNumber,
+      PatientPhone: callerNumber,
+      contactId,
+      inputMode: 'Speech',
+      channel: 'voice',
+      initialGreetingAlreadyPlayed: 'true',
+      todayDate: d.today,
+      todayFormatted,
+      dayName: d.dayName,
+      tomorrowDate: d.tomorrowDate,
+      currentTime: d.currentTime,
+      nextWeekDates: JSON.stringify(d.nextWeekDates),
+      timezone: d.timezone,
+    };
+
+    // If we already identified the patient at call start, pass it into the agent session
+    // so it DOES NOT re-ask for first name / DOB.
+    if (patNum) sessionAttributes.PatNum = patNum;
+    if (fName) sessionAttributes.FName = fName;
+    if (lName) sessionAttributes.LName = lName;
+    if (birthdate) sessionAttributes.Birthdate = birthdate;
+    if (isNewPatient === 'true' || isNewPatient === 'false') sessionAttributes.IsNewPatient = isNewPatient;
+    if (resolvedPatientName) sessionAttributes.patientName = resolvedPatientName;
+
     // Invoke Bedrock agent (this can take 10-30+ seconds with tool calls)
     const command = new InvokeAgentCommand({
       agentId: agent.agentId,
       agentAliasId: agent.aliasId,
       sessionId: session.bedrockSessionId,
-      inputText,
+      inputText: inputTextForAgent,
       sessionState: {
-        sessionAttributes: {
-          clinicId: session.clinicId,
-          inputMode: 'Speech',
-          channel: 'voice',
+        sessionAttributes,
+        promptSessionAttributes: {
+          callerNumber,
+          currentDate: `Today is ${d.dayName}, ${todayFormatted} (${d.today}). Current time: ${d.currentTime} (${d.timezone})`,
+          dateContext: `When scheduling appointments, use ${d.today} as today's date. Tomorrow is ${d.tomorrowDate}. Next week dates: ${JSON.stringify(d.nextWeekDates)}`,
+          ...(patNum
+            ? {
+                patientContext: `Caller already identified in OpenDental: ${resolvedPatientName || 'Patient'} (PatNum ${patNum}). IsNewPatient=${(isNewPatient === 'true' || isNewPatient === 'false') ? isNewPatient : 'unknown'}. Do NOT ask for first name, last name, date of birth, or phone number again. Use the inbound caller ID as the phone number unless the caller says it is different or blocked. If they want to book/schedule an appointment and have NOT given a reason yet: ask "Perfect. May I know the reason for the appointment?" and STOP. Wait for their answer before calling any scheduling tools. After you have the reason, ask: "When would you like to schedule?" When booking, choose an appointment type that matches BOTH the reason and patient status (IsNewPatient=false → "existing patient" types; IsNewPatient=true → "new patient" types).`,
+              }
+            : {}),
         },
       },
     });
@@ -458,13 +655,13 @@ async function processBedrockInvocation(params: {
       toolsUsed,
     });
 
+    const rawResponse = (fullResponse.trim() || "I'm sorry, I couldn't process that. How else can I help you?");
+    const safeResponse = sanitizeVoiceTtsText(rawResponse);
+
     await updateResult(requestId, {
       status: 'completed',
-      response: (fullResponse.trim() || "I'm sorry, I couldn't process that. How else can I help you?"),
-      ssmlResponse: buildProsodySsml(
-        (fullResponse.trim() || "I'm sorry, I couldn't process that. How else can I help you?"),
-        prosody
-      ),
+      response: safeResponse,
+      ssmlResponse: buildProsodySsml(safeResponse, prosody),
       toolsUsed: [...new Set(toolsUsed)],
     });
 
@@ -657,6 +854,7 @@ async function pollResult(event: any): Promise<{
 
   if (!result.Item) {
     // Not found yet (or expired). Keep polling a bit.
+    console.log('[AsyncBedrock] pollResult: request not found yet', { requestId });
     return { status: 'pending' };
   }
 
@@ -670,6 +868,11 @@ async function pollResult(event: any): Promise<{
     })).catch(() => { });
 
     const aiResponse = item.response || '';
+    console.log('[AsyncBedrock] pollResult: completed', {
+      requestId,
+      responseLen: aiResponse.length,
+      ssmlLen: (item.ssmlResponse || '').length,
+    });
     return {
       status: 'completed',
       aiResponse,
@@ -685,6 +888,11 @@ async function pollResult(event: any): Promise<{
     })).catch(() => { });
 
     const aiResponse = item.response || "I'm sorry, I had trouble processing that. Could you please try again?";
+    console.log('[AsyncBedrock] pollResult: error -> completing with fallback message', {
+      requestId,
+      responseLen: aiResponse.length,
+      ssmlLen: (item.ssmlResponse || '').length,
+    });
     return {
       status: 'completed',
       aiResponse,
@@ -773,6 +981,7 @@ async function pollResult(event: any): Promise<{
     };
   }
 
+  console.log('[AsyncBedrock] pollResult: pending', { requestId, pollCount: nextPollCount, maxPollLoops });
   return { status: 'pending' };
 }
 
@@ -789,8 +998,19 @@ function escapeSSML(text: string): string {
     .replace(/'/g, '&apos;');
 }
 
+function sanitizeVoiceTtsText(text: string): string {
+  let out = String(text || '');
+  out = out.replace(/\s+([?.!,;:])/g, '$1');
+  out = out.replace(/(?<=\b[A-Za-z])\s*[\/\\]\s*(?=[A-Za-z]\b)/g, ' ');
+  out = out.replace(/(?<=\b[A-Za-z])\s*-\s*(?=[A-Za-z]\b)/g, ' ');
+  out = out.replace(/(?<=\b[A-Za-z])\s*_\s*(?=[A-Za-z]\b)/g, ' ');
+  out = out.replace(/(?<=\b[A-Za-z])\s*\.\s*(?=[A-Za-z]\b)/g, ' ');
+  out = out.replace(/\s{2,}/g, ' ').trim();
+  return out;
+}
+
 function buildProsodySsml(text: string, prosody: ProsodySettings): string {
-  const escaped = escapeSSML(text || '');
+  const escaped = escapeSSML(sanitizeVoiceTtsText(text || ''));
   return `<speak><prosody rate="${prosody.speakingRate}" pitch="${prosody.pitch}" volume="${prosody.volume}">${escaped}</prosody></speak>`;
 }
 
@@ -819,9 +1039,21 @@ export const handler = async (event: any): Promise<any> => {
       const contactId = params.contactId || '';
       const inputText = (params.inputText || '').toString();
       const clinicId = params.clinicId || DEFAULT_CLINIC_ID;
+      const callerNumber = (params.callerNumber || '').toString();
+      const dialedNumber = (params.dialedNumber || '').toString();
+      const timezone = (params.timezone || 'UTC').toString();
       const ttsSpeakingRate = params.ttsSpeakingRate;
       const ttsPitch = params.ttsPitch;
       const ttsVolume = params.ttsVolume;
+      // Patient identity from welcome lookup (if present)
+      const patNum = String(params.PatNum || '').trim();
+      const fName = String(params.FName || '').trim();
+      const lName = String(params.LName || '').trim();
+      const birthdate = String(params.Birthdate || '').trim();
+      const isNewPatient = String(params.IsNewPatient || '').trim();
+      const patientName = String(params.patientName || '').trim();
+      const patientFirstName = String(params.patientFirstName || '').trim();
+      const initialGreetingAlreadyPlayed = String(params.initialGreetingAlreadyPlayed || '').trim();
 
       if (!requestId) {
         console.error('[AsyncBedrock] process called without requestId');
@@ -833,9 +1065,20 @@ export const handler = async (event: any): Promise<any> => {
         contactId,
         inputText: inputText.trim(),
         clinicId,
+        callerNumber,
+        dialedNumber,
+        timezone,
         ttsSpeakingRate,
         ttsPitch,
         ttsVolume,
+        ...(patNum ? { PatNum: patNum } : {}),
+        ...(fName ? { FName: fName } : {}),
+        ...(lName ? { LName: lName } : {}),
+        ...(birthdate ? { Birthdate: birthdate } : {}),
+        ...((isNewPatient === 'true' || isNewPatient === 'false') ? { IsNewPatient: isNewPatient } : {}),
+        ...(patientName ? { patientName } : {}),
+        ...(patientFirstName ? { patientFirstName } : {}),
+        ...(initialGreetingAlreadyPlayed ? { initialGreetingAlreadyPlayed } : {}),
       });
       return { status: 'processing_complete' };
     }

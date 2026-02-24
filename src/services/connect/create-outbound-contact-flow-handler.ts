@@ -160,6 +160,7 @@ function buildOutboundFlowContent(params: {
                 'set-outbound-attrs': { position: { x: 160, y: 20 } },
                 'invoke-voice-config': { position: { x: 360, y: 20 } },
                 'set-tts-voice': { position: { x: 560, y: 20 } },
+                'set-default-tts-voice': { position: { x: 660, y: 80 } },
                 'store-clinic-id': { position: { x: 760, y: 20 } },
                 'speak-greeting': { position: { x: 960, y: 20 } },
                 'set-disconnect-flow': { position: { x: 1160, y: 20 } },
@@ -167,6 +168,7 @@ function buildOutboundFlowContent(params: {
                 'typing-once': { position: { x: 1560, y: 20 } },
                 'invoke-ai': { position: { x: 1760, y: 20 } },
                 'speak-ai': { position: { x: 1960, y: 20 } },
+                'speak-ai-text-fallback': { position: { x: 1960, y: 120 } },
                 'disconnect-action': { position: { x: 2160, y: 20 } },
             },
         },
@@ -216,6 +218,8 @@ function buildOutboundFlowContent(params: {
                 Parameters: {
                     LambdaFunctionARN: lambdaFunctionArn,
                     InvocationTimeLimitSeconds: '8',
+                    InvocationType: 'SYNCHRONOUS',
+                    ResponseValidation: { ResponseType: 'STRING_MAP' },
                     LambdaInvocationAttributes: {
                         requestType: 'voiceConfig',
                         callerNumber: '$.Attributes.callerNumber',
@@ -237,6 +241,21 @@ function buildOutboundFlowContent(params: {
                 Parameters: {
                     TextToSpeechVoice: '$.External.TextToSpeechVoice',
                     TextToSpeechEngine: '$.External.TextToSpeechEngine',
+                },
+                Transitions: {
+                    NextAction: 'store-clinic-id',
+                    // If dynamic voice/engine is invalid, restore a known-good default voice so TTS remains audible.
+                    Errors: [{ NextAction: 'set-default-tts-voice', ErrorType: 'NoMatchingError' }],
+                },
+            },
+
+            // 4b) Fallback to a safe default voice (prevents silent contacts when Set voice fails)
+            {
+                Identifier: 'set-default-tts-voice',
+                Type: 'UpdateContactTextToSpeechVoice',
+                Parameters: {
+                    TextToSpeechVoice: 'Joanna',
+                    TextToSpeechEngine: 'neural',
                 },
                 Transitions: {
                     NextAction: 'store-clinic-id',
@@ -336,6 +355,8 @@ function buildOutboundFlowContent(params: {
                 Parameters: {
                     LambdaFunctionARN: lambdaFunctionArn,
                     InvocationTimeLimitSeconds: '8',
+                    InvocationType: 'SYNCHRONOUS',
+                    ResponseValidation: { ResponseType: 'STRING_MAP' },
                     LambdaInvocationAttributes: {
                         inputTranscript: '$.Lex.SessionAttributes.lastUtterance',
                         confidence: '$.Lex.SessionAttributes.lastUtteranceConfidence',
@@ -360,6 +381,20 @@ function buildOutboundFlowContent(params: {
                 },
                 Transitions: {
                     NextAction: 'lex-asr', // loop for next turn
+                    // If SSML fails, fall back to plain text so the contact doesn't sound "broken".
+                    Errors: [{ NextAction: 'speak-ai-text-fallback', ErrorType: 'NoMatchingError' }],
+                },
+            },
+
+            // 11b) Fallback: speak plain text if SSML fails
+            {
+                Identifier: 'speak-ai-text-fallback',
+                Type: 'MessageParticipant',
+                Parameters: {
+                    Text: '$.External.aiResponse',
+                },
+                Transitions: {
+                    NextAction: 'lex-asr',
                     Errors: [{ NextAction: 'disconnect-action', ErrorType: 'NoMatchingError' }],
                 },
             },

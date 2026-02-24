@@ -1027,6 +1027,82 @@ function normalizeDateFormat(dateStr: string): string {
   return dateStr; // Return as-is if we can't parse
 }
 
+/**
+ * Normalize datetime format to "YYYY-MM-DD HH:mm:ss" for OpenDental API.
+ * Accepts common variants like:
+ * - "YYYY-MM-DDTHH:mm:ss", "YYYY-MM-DD HH:mm", "YYYY-MM-DDTHH:mm:ssZ"
+ * - "MM/DD/YYYY 2:30 PM", "MM-DD-YYYY 14:00"
+ *
+ * NOTE: This function does NOT do timezone conversion. It only normalizes formatting.
+ */
+function normalizeDateTimeFormat(dateTimeStr: string): string {
+  if (!dateTimeStr) return dateTimeStr;
+
+  const raw = String(dateTimeStr).trim();
+  if (!raw) return raw;
+
+  // Already in target format
+  if (/^\d{4}-\d{2}-\d{2}\s+\d{2}:\d{2}:\d{2}$/.test(raw)) {
+    return raw;
+  }
+
+  // ISO-like: YYYY-MM-DD[T ]HH:mm[:ss][.sss][Z|±HH:MM]
+  const iso = raw.match(
+    /^(\d{4}-\d{2}-\d{2})[T\s](\d{2}:\d{2})(?::(\d{2}))?(?:\.\d{1,3})?(?:Z|[+-]\d{2}:?\d{2})?$/
+  );
+  if (iso) {
+    const [, datePart, hhmm, ssMaybe] = iso;
+    const ss = ssMaybe || '00';
+    return `${datePart} ${hhmm}:${ss}`;
+  }
+
+  // Numeric date + time with optional AM/PM: "MM/DD/YYYY 2:30 PM", "MM-DD-YYYY 14:00"
+  const numeric = raw.match(
+    /^(\d{1,2}[\/\-]\d{1,2}[\/\-]\d{4})\s+(\d{1,2})(?::(\d{2}))?(?::(\d{2}))?\s*([AaPp][Mm])?$/
+  );
+  if (numeric) {
+    const [, datePartRaw, hourRaw, minuteRaw, secondRaw, ampmRaw] = numeric;
+    const datePart = normalizeDateFormat(datePartRaw);
+    if (/^\d{4}-\d{2}-\d{2}$/.test(datePart)) {
+      const hour = parseInt(hourRaw, 10);
+      const minute = parseInt(minuteRaw || '0', 10);
+      const second = parseInt(secondRaw || '0', 10);
+      if (Number.isFinite(hour) && Number.isFinite(minute) && Number.isFinite(second)) {
+        let hour24 = hour;
+        const ampm = (ampmRaw || '').toLowerCase();
+        if (ampm === 'am') {
+          hour24 = hour === 12 ? 0 : hour;
+        } else if (ampm === 'pm') {
+          hour24 = hour === 12 ? 12 : hour + 12;
+        }
+        if (hour24 >= 0 && hour24 <= 23 && minute >= 0 && minute <= 59 && second >= 0 && second <= 59) {
+          return `${datePart} ${String(hour24).padStart(2, '0')}:${String(minute).padStart(2, '0')}:${String(second).padStart(2, '0')}`;
+        }
+      }
+    }
+  }
+
+  // Fallback: native parsing (best-effort). This may interpret as UTC in Lambda.
+  try {
+    const d = new Date(raw);
+    if (!isNaN(d.getTime())) {
+      const year = d.getFullYear();
+      if (year >= 1900 && year <= 2100) {
+        const month = String(d.getMonth() + 1).padStart(2, '0');
+        const day = String(d.getDate()).padStart(2, '0');
+        const hour = String(d.getHours()).padStart(2, '0');
+        const minute = String(d.getMinutes()).padStart(2, '0');
+        const second = String(d.getSeconds()).padStart(2, '0');
+        return `${year}-${month}-${day} ${hour}:${minute}:${second}`;
+      }
+    }
+  } catch {
+    // Ignore parsing errors
+  }
+
+  return raw;
+}
+
 function parseValue(value: string, type: string): any {
   switch (type.toLowerCase()) {
     case 'integer':
@@ -1223,6 +1299,149 @@ async function handleTool(
         return { statusCode: 200, body: { status: 'SUCCESS', data } };
       }
 
+      case 'searchPatientsByPhone': {
+        const isPublicRequest = sessionAttributes?.isPublicRequest === 'true';
+
+        const phoneFromParams =
+          (typeof params.WirelessPhone === 'string' && params.WirelessPhone.trim()) ||
+          (typeof params.Phone === 'string' && params.Phone.trim()) ||
+          (typeof params.phoneNumber === 'string' && params.phoneNumber.trim()) ||
+          (typeof params.phone === 'string' && params.phone.trim()) ||
+          '';
+
+        const phoneFromSession =
+          (typeof sessionAttributes?.callerPhone === 'string' && sessionAttributes.callerPhone.trim()) ||
+          (typeof sessionAttributes?.callerNumber === 'string' && sessionAttributes.callerNumber.trim()) ||
+          (typeof sessionAttributes?.PatientPhone === 'string' && sessionAttributes.PatientPhone.trim()) ||
+          '';
+
+        const rawPhone = (phoneFromParams || phoneFromSession).trim();
+
+        if (!rawPhone) {
+          return {
+            statusCode: 400,
+            body: {
+              status: 'FAILURE',
+              message: 'WirelessPhone (or callerNumber/callerPhone in session) is required to search by phone',
+              missingFields: ['WirelessPhone'],
+            },
+            updatedSessionAttributes,
+          };
+        }
+
+        const toSafePatient = (p: any) => ({
+          PatNum: p.PatNum,
+          LName: p.LName,
+          FName: p.FName,
+          Birthdate: p.Birthdate,
+          DateFirstVisit: p.DateFirstVisit,
+        });
+
+        // Clean phone number - remove all non-digit characters
+        const cleanPhone = rawPhone.replace(/\D/g, '');
+        const phoneFormatsRaw = [
+          cleanPhone,
+          cleanPhone.length >= 10 ? cleanPhone.slice(-10) : '',
+          cleanPhone.length >= 7 ? cleanPhone.slice(-7) : '',
+        ].filter(Boolean);
+        const phoneFormats = [...new Set(phoneFormatsRaw)].filter((p) => p.length >= 7);
+
+        // Check rate limit ONCE before trying multiple formats
+        const circuitCheck = await checkCircuitBreaker(odClient.getClinicId());
+        if (!circuitCheck.allowed) {
+          throw new Error(circuitCheck.reason || 'Request blocked by circuit breaker');
+        }
+
+        let patients: any[] = [];
+        let usedFormat = '';
+
+        try {
+          for (const phone of phoneFormats) {
+            console.log(`[searchPatientsByPhone] Attempt with phone: ${phone}`);
+            const resp = await odClient.request('GET', 'patients', {
+              params: { Phone: phone },
+              skipRateLimit: true,
+            });
+            const items = Array.isArray(resp) ? resp : resp?.items ?? [];
+            if (items.length > 0) {
+              patients = items;
+              usedFormat = phone;
+              break;
+            }
+          }
+        } catch (searchError: any) {
+          console.error(`[searchPatientsByPhone] OpenDental API failed:`, searchError);
+
+          const clinicId = sessionAttributes.clinicId || odClient.getClinicId();
+
+          await savePatientSearchFailureAsCallback({
+            clinicId,
+            searchPhone: rawPhone,
+            searchCriteria: { WirelessPhone: rawPhone },
+            failureReason: `OpenDental API error: ${searchError?.message || 'Unknown error'}`,
+            source: 'ai-agent',
+          });
+
+          return {
+            statusCode: searchError?.response?.status || 500,
+            body: {
+              status: 'FAILURE',
+              message: 'Unable to search patients by phone - please try again or call the office',
+              callbackCreated: true,
+            },
+            updatedSessionAttributes,
+          };
+        }
+
+        if (patients.length === 0) {
+          return {
+            statusCode: 404,
+            body: {
+              status: 'FAILURE',
+              data: { items: [] },
+              message: 'No matching patient found for phone number',
+              usedFormat,
+            },
+            updatedSessionAttributes,
+          };
+        }
+
+        if (patients.length > 1) {
+          // Avoid wrong-patient selection; force confirmation with name + DOB.
+          return {
+            statusCode: 404,
+            body: {
+              status: 'FAILURE',
+              data: { items: isPublicRequest ? [] : patients.slice(0, 5).map(toSafePatient) },
+              message: `Multiple matches found (${patients.length}). Ask the caller for their first name, last name, and date of birth to confirm.`,
+              usedFormat,
+            },
+            updatedSessionAttributes,
+          };
+        }
+
+        const patient = patients[0];
+        updatedSessionAttributes.PatNum = patient.PatNum.toString();
+        updatedSessionAttributes.FName = patient.FName;
+        updatedSessionAttributes.LName = patient.LName;
+        updatedSessionAttributes.Birthdate = patient.Birthdate;
+        updatedSessionAttributes.IsNewPatient = (patient.DateFirstVisit === '0001-01-01').toString();
+        // Persist caller phone for downstream tools/callbacks
+        updatedSessionAttributes.PatientPhone = rawPhone;
+        updatedSessionAttributes.callerPhone = rawPhone;
+
+        return {
+          statusCode: 200,
+          body: {
+            status: 'SUCCESS',
+            data: { items: [toSafePatient(patient)] },
+            message: 'Found 1 patient(s) by phone',
+            usedFormat,
+          },
+          updatedSessionAttributes,
+        };
+      }
+
       case 'searchPatients': {
         const isPublicRequest = sessionAttributes?.isPublicRequest === 'true';
 
@@ -1280,14 +1499,30 @@ async function handleTool(
         });
 
         // Normalize birthdate to YYYY-MM-DD format (OpenDental API requirement)
-        let normalizedBirthdate = params.Birthdate;
+        let normalizedBirthdate = params.Birthdate || sessionAttributes?.Birthdate;
         if (normalizedBirthdate) {
           normalizedBirthdate = normalizeDateFormat(normalizedBirthdate);
-          console.log(`[searchPatients] Normalized birthdate: ${params.Birthdate} → ${normalizedBirthdate}`);
+          console.log(`[searchPatients] Normalized birthdate: ${params.Birthdate || sessionAttributes?.Birthdate} → ${normalizedBirthdate}`);
         }
 
         const providedFName = cleanName(params.FName);
         const providedLName = cleanName(params.LName);
+
+        // SAFETY: Require DOB for name-based patient lookup to avoid wrong-patient matches.
+        // Caller-ID matching is handled by searchPatientsByPhone.
+        const isIsoBirthdate = typeof normalizedBirthdate === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(normalizedBirthdate);
+        if (!isIsoBirthdate) {
+          return {
+            statusCode: 400,
+            body: {
+              status: 'FAILURE',
+              message:
+                'Birthdate is required to look up a patient by name. Ask for the caller’s date of birth, then call searchPatients again.',
+              missingFields: ['Birthdate'],
+            },
+            updatedSessionAttributes,
+          };
+        }
 
         const buildSearchParams = (p: { LName?: string; FName?: string; Birthdate?: string }) => {
           const out: any = {};
@@ -1452,22 +1687,67 @@ async function handleTool(
       }
 
       case 'createPatient': {
-        let phoneNumber = params.WirelessPhone;
+        const cleanName = (value: any): string => {
+          if (!value || typeof value !== 'string') return '';
+          return value
+            .trim()
+            .replace(/\s+/g, ' ')
+            // keep common name punctuation
+            .replace(/[^a-zA-Z\s'\-]/g, '')
+            .trim();
+        };
+
+        const rawFName = cleanName(params.FName);
+        const rawLName = cleanName(params.LName);
+
+        let phoneNumber =
+          params.WirelessPhone ||
+          params.Phone ||
+          params.phoneNumber ||
+          params.phone ||
+          sessionAttributes?.callerPhone ||
+          sessionAttributes?.callerNumber ||
+          sessionAttributes?.PatientPhone;
+
         if (phoneNumber) {
-          const parsedPhone = parsePhoneNumberFromString(phoneNumber, 'US');
+          const rawPhone = String(phoneNumber).trim();
+          const parsedPhone = parsePhoneNumberFromString(rawPhone, 'US');
           if (parsedPhone?.isValid()) {
             phoneNumber = parsedPhone.formatNational();
+          } else {
+            phoneNumber = rawPhone;
           }
         }
 
         // Normalize birthdate to YYYY-MM-DD format
-        const normalizedBirthdate = params.Birthdate ? normalizeDateFormat(params.Birthdate) : undefined;
+        const normalizedBirthdateRaw = params.Birthdate ? normalizeDateFormat(params.Birthdate) : '';
+        const normalizedBirthdate = typeof normalizedBirthdateRaw === 'string' ? normalizedBirthdateRaw.trim() : '';
+        const isIsoBirthdate = /^\d{4}-\d{2}-\d{2}$/.test(normalizedBirthdate);
+
+        const missing: string[] = [];
+        if (!rawFName) missing.push('FName');
+        if (!rawLName) missing.push('LName');
+        if (!isIsoBirthdate) missing.push('Birthdate');
+
+        if (missing.length > 0) {
+          return {
+            statusCode: 400,
+            body: {
+              status: 'FAILURE',
+              message:
+                `Missing required patient details (${missing.join(', ')}). ` +
+                `Ask the caller for their first name, last name, and date of birth, then call createPatient again.`,
+              missingFields: missing,
+            },
+            updatedSessionAttributes,
+          };
+        }
 
         // NOTE: OpenDental returns 400 if TxtMsgOk='Yes' but WirelessPhone is empty.
         // Only set TxtMsgOk when we have a valid wireless phone number.
         const createData: any = {
-          LName: params.LName,
-          FName: params.FName,
+          LName: rawLName,
+          FName: rawFName,
           Birthdate: normalizedBirthdate,
         };
         if (phoneNumber) {
@@ -1480,6 +1760,10 @@ async function handleTool(
         updatedSessionAttributes.FName = newPatient.FName;
         updatedSessionAttributes.LName = newPatient.LName;
         updatedSessionAttributes.IsNewPatient = 'true';
+        if (phoneNumber) {
+          updatedSessionAttributes.PatientPhone = String(phoneNumber);
+          updatedSessionAttributes.callerPhone = updatedSessionAttributes.callerPhone || String(phoneNumber);
+        }
 
         return {
           statusCode: 201,
@@ -3969,61 +4253,186 @@ async function handleTool(
 
       // ===== APPOINTMENT TOOLS =====
       case 'scheduleAppointment': {
-        // The AI agent should call getClinicAppointmentTypes first to get available types,
-        // then pass the appropriate Op, ProvNum, AppointmentTypeNum based on patient needs.
-        const isNewPatient = sessionAttributes.IsNewPatient === 'true' || params.IsNewPatient === true || params.IsNewPatient === 'true';
-        const reason = params.Reason || params.reason || 'Appointment';
+        // The AI agent can call getClinicAppointmentTypes first and pass Op/ProvNum/AppointmentTypeNum/duration.
+        // For reliability, this handler also supports passing appointmentType (label) so we can default
+        // Op/ProvNum/AppointmentTypeNum/duration when missing.
         const clinicId = sessionAttributes.clinicId || params.clinicId;
+        const appointmentTypeLabelFromParams = String(params.appointmentType || params.label || '').trim();
+        const appointmentTypeLabelLower = appointmentTypeLabelFromParams.toLowerCase();
+        let isNewPatient =
+          sessionAttributes.IsNewPatient === 'true' ||
+          params.IsNewPatient === true ||
+          params.IsNewPatient === 'true' ||
+          appointmentTypeLabelLower.includes('new patient');
+        const reason = String(params.Reason || params.reason || '').trim() || 'Appointment';
+        const reasonLower = reason.toLowerCase();
+
+        // Best-effort: Look up appointment type details (duration, Op, provider defaults)
+        let apptType: AppointmentTypeRecord | null = null;
+        let selectedAppointmentTypeLabel = appointmentTypeLabelFromParams;
+
+        // If appointmentType label wasn't provided, infer from clinic types + reason keywords.
+        // This keeps scheduleAppointment resilient even if the agent forgets to pass Op/TypeNum/duration.
+        if (clinicId && !selectedAppointmentTypeLabel) {
+          try {
+            const allLookup = await lookupAppointmentTypes({}, clinicId);
+            const allTypes = Array.isArray((allLookup as any)?.body?.data?.appointmentTypes)
+              ? ((allLookup as any).body.data.appointmentTypes as AppointmentTypeRecord[])
+              : [];
+
+            const candidates = allTypes.filter((t) => {
+              const label = String(t.label || '').toLowerCase();
+              const isNew = label.includes('new patient');
+              return isNewPatient ? isNew : !isNew;
+            });
+
+            const wantsTreatmentPlan =
+              reasonLower.includes('treatment plan') ||
+              reasonLower.includes('treatment-plan');
+            const wantsEmergency = /(emerg|pain|swelling|abscess|toothache|broken|knocked)/.test(reasonLower);
+
+            const pickBy = (pred: (t: AppointmentTypeRecord) => boolean) =>
+              candidates.find(pred) || null;
+
+            apptType =
+              (wantsTreatmentPlan ? pickBy((t) => String(t.label || '').toLowerCase().includes('treatment')) : null) ||
+              (wantsEmergency ? pickBy((t) => String(t.label || '').toLowerCase().includes('emergency')) : null) ||
+              pickBy((t) => String(t.label || '').toLowerCase().includes('other')) ||
+              (candidates.length > 0 ? candidates[0] : null) ||
+              (allTypes.length > 0 ? allTypes[0] : null);
+
+            if (apptType?.label) {
+              selectedAppointmentTypeLabel = String(apptType.label || '').trim();
+              // If we inferred a "new patient" type, keep IsNewPatient consistent.
+              if (!isNewPatient && selectedAppointmentTypeLabel.toLowerCase().includes('new patient')) {
+                isNewPatient = true;
+              }
+            }
+          } catch (e: any) {
+            console.warn('[scheduleAppointment] Failed to infer appointment type from clinic list', {
+              clinicId,
+              error: e?.message || String(e),
+            });
+          }
+        }
+
+        // If we have a label (provided or inferred) but not a full record, do a targeted lookup.
+        if (clinicId && selectedAppointmentTypeLabel && !apptType) {
+          const typeLookup = await lookupAppointmentTypes({ label: selectedAppointmentTypeLabel }, clinicId);
+          const types = (typeLookup as any)?.body?.data?.appointmentTypes;
+          if (typeLookup?.statusCode === 200 && Array.isArray(types) && types.length > 0) {
+            apptType = types[0] as AppointmentTypeRecord;
+          }
+        }
 
         // Get operatory number - use clinic-specific lookup when OpName is provided
         // This resolves the "Op is invalid" error when hardcoded defaults don't match clinic operatories
         let opNum: number | null = null;
-        const opInput = params.Op || params.OpName || params.opNum;
+        const opInput = params.Op ?? params.OpName ?? params.opNum ?? params.OperatoryNum;
 
-        if (opInput && clinicId) {
-          // Use async clinic-specific lookup
-          opNum = await resolveOperatoryNumber(opInput, clinicId, isNewPatient);
-          if (opNum) {
-            console.log(`[scheduleAppointment] Resolved Op ${opNum} from input "${opInput}" for clinic ${clinicId}`);
+        if (typeof opInput === 'number' && Number.isFinite(opInput) && opInput > 0) {
+          opNum = opInput;
+        } else if (typeof opInput === 'string' && opInput.trim()) {
+          if (clinicId) {
+            // Use async clinic-specific lookup
+            opNum = await resolveOperatoryNumber(opInput, clinicId, isNewPatient);
+            if (opNum) {
+              console.log(`[scheduleAppointment] Resolved Op ${opNum} from input "${opInput}" for clinic ${clinicId}`);
+            }
           }
-        } else {
-          // Fallback to synchronous lookup (backwards compatibility)
-          opNum = getOperatoryNumber(opInput);
+          if (!opNum) {
+            // Fallback to synchronous lookup (backwards compatibility)
+            opNum = getOperatoryNumber(opInput);
+          }
+        }
+
+        // If Op isn't provided, default from appointment type lookup (if available)
+        if (!opNum && apptType && Number.isFinite(apptType.opNum) && apptType.opNum > 0) {
+          opNum = apptType.opNum;
+        }
+
+        // If still no Op, try clinic-specific defaults based on common OpName conventions
+        // (most clinics map Online Booking types to ONLINE_BOOKING_EXAM / ONLINE_BOOKING_MINOR).
+        if (!opNum && clinicId) {
+          const defaultOpName = isNewPatient ? 'ONLINE_BOOKING_EXAM' : 'ONLINE_BOOKING_MINOR';
+          opNum = await resolveOperatoryNumber(defaultOpName, clinicId, isNewPatient);
+          if (opNum) {
+            console.log(`[scheduleAppointment] Defaulted Op ${opNum} using OpName "${defaultOpName}" for clinic ${clinicId}`);
+          }
         }
 
         if (!opNum) {
-          // Fallback to default if nothing resolved
+          // Final fallback to hardcoded default mapping (may be invalid for some clinics)
           opNum = isNewPatient ? DEFAULT_OPERATORY_MAP.EXAM : DEFAULT_OPERATORY_MAP.MINOR;
-          console.log(`[scheduleAppointment] No Op resolved, using default: ${opNum}`);
+          console.log(`[scheduleAppointment] No Op resolved, using hardcoded default: ${opNum}`);
+        }
+
+        const patNumRaw = params.PatNum;
+        const patNum = (() => {
+          const n = typeof patNumRaw === 'number' ? patNumRaw : parseInt(String(patNumRaw || ''), 10);
+          return Number.isFinite(n) && n > 0 ? n : NaN;
+        })();
+
+        const aptDateTimeRaw =
+          params.Date ??
+          (params as any).AptDateTime ??
+          (params as any).aptDateTime ??
+          (params as any).dateTime ??
+          (params as any).datetime ??
+          '';
+        const aptDateTime = normalizeDateTimeFormat(String(aptDateTimeRaw || '').trim());
+        const isValidAptDateTime = /^\d{4}-\d{2}-\d{2}\s+\d{2}:\d{2}:\d{2}$/.test(aptDateTime);
+
+        if (!Number.isFinite(patNum) || !isValidAptDateTime) {
+          const missingBits: string[] = [];
+          if (!Number.isFinite(patNum)) missingBits.push('PatNum');
+          if (!isValidAptDateTime) missingBits.push('Date (YYYY-MM-DD HH:mm:ss)');
+
+          return {
+            statusCode: 400,
+            body: {
+              status: 'FAILURE',
+              message:
+                `Missing or invalid scheduling details (${missingBits.join(', ')}). ` +
+                `Search/select the patient first (PatNum), then pick an available slot and pass the exact DateTime.`,
+              missingFields: missingBits,
+            },
+            updatedSessionAttributes,
+          };
         }
 
         // Build appointment data using values provided by the AI agent
         const appointmentData: Record<string, any> = {
-          PatNum: parseInt(params.PatNum.toString()),
+          PatNum: patNum,
           Op: opNum,
-          AptDateTime: params.Date,
+          AptDateTime: aptDateTime,
           ProcDescript: reason,
           Note: params.Note || `${reason} - Created by AI Agent`,
           ClinicNum: 0,
-          IsNewPatient: isNewPatient,
+          IsNewPatient: isNewPatient ? 'true' : 'false',
         };
 
         // Add provider if specified by agent (from appointment type's defaultProvNum)
         if (params.ProvNum || params.provNum || params.defaultProvNum) {
-          appointmentData.ProvNum = parseInt((params.ProvNum || params.provNum || params.defaultProvNum).toString());
+          appointmentData.ProvNum = parseInt((params.ProvNum || params.provNum || params.defaultProvNum).toString(), 10);
+        } else if (apptType?.defaultProvNum) {
+          appointmentData.ProvNum = apptType.defaultProvNum;
         }
 
         // Add appointment type number if specified by agent
         if (params.AppointmentTypeNum || params.appointmentTypeNum) {
-          appointmentData.AppointmentTypeNum = parseInt((params.AppointmentTypeNum || params.appointmentTypeNum).toString());
+          appointmentData.AppointmentTypeNum = parseInt((params.AppointmentTypeNum || params.appointmentTypeNum).toString(), 10);
+        } else if (apptType?.AppointmentTypeNum) {
+          appointmentData.AppointmentTypeNum = apptType.AppointmentTypeNum;
         }
 
         // Add pattern (duration) if specified - OpenDental uses Pattern string
         // Pattern is made of 'X' characters where each X is 5 minutes
-        if (params.duration && !params.Pattern) {
-          const patternLength = Math.ceil(parseInt(params.duration.toString()) / 5);
+        const durationMinutes = params.duration || params.lengthMinutes || apptType?.duration || 30;
+        if (!params.Pattern) {
+          const patternLength = Math.ceil(parseInt(durationMinutes.toString(), 10) / 5);
           appointmentData.Pattern = 'X'.repeat(patternLength);
-        } else if (params.Pattern) {
+        } else {
           appointmentData.Pattern = params.Pattern;
         }
 
@@ -4035,11 +4444,71 @@ async function handleTool(
             body: {
               status: 'SUCCESS',
               data: newAppt,
-              message: `Appointment scheduled successfully for ${params.Date}`,
+              message: `Appointment scheduled successfully for ${aptDateTime}`,
             },
           };
         } catch (scheduleError: any) {
           console.error(`[scheduleAppointment] Failed to schedule appointment:`, scheduleError);
+
+          // Common failure: Op is invalid (agent forgot to pass Op, or clinic defaults don't match).
+          // Attempt a one-time recovery by looking up the OpNum for the requested DateTime via Slots API
+          // and retry scheduling using that OpNum.
+          const errData = scheduleError?.response?.data;
+          const errText = `${scheduleError?.message || ''} ${typeof errData === 'string' ? errData : ''}`.toLowerCase();
+          const isOpInvalid = errText.includes('op is invalid');
+          if (isOpInvalid) {
+            try {
+              const dateOnly = aptDateTime.split(' ')[0];
+              const slotParams: any = {
+                dateStart: dateOnly,
+                dateEnd: dateOnly,
+                lengthMinutes: durationMinutes,
+              };
+              if (appointmentData.ProvNum) slotParams.ProvNum = appointmentData.ProvNum;
+
+              const slots = await odClient.request('GET', 'appointments/Slots', { params: slotParams });
+              const slotsArray = Array.isArray(slots) ? slots : (slots?.items ?? []);
+              const match = slotsArray.find((s: any) =>
+                String(s?.DateTimeStart || '').trim() === aptDateTime
+              );
+              const fallbackOpNumRaw = match?.OpNum;
+              const fallbackOpNum = typeof fallbackOpNumRaw === 'number'
+                ? fallbackOpNumRaw
+                : parseInt(String(fallbackOpNumRaw || ''), 10);
+
+              if (Number.isFinite(fallbackOpNum) && fallbackOpNum > 0) {
+                console.warn('[scheduleAppointment] Retrying after Op invalid using OpNum from Slots', {
+                  clinicId: clinicId || odClient.getClinicId(),
+                  aptDateTime,
+                  previousOp: appointmentData.Op,
+                  fallbackOp: fallbackOpNum,
+                });
+                appointmentData.Op = fallbackOpNum;
+                // Keep ProvNum consistent with the slot if we didn't already set it.
+                if (!appointmentData.ProvNum && match?.ProvNum) {
+                  const pn = parseInt(String(match.ProvNum || ''), 10);
+                  if (Number.isFinite(pn) && pn > 0) appointmentData.ProvNum = pn;
+                }
+
+                const retryAppt = await odClient.request('POST', 'appointments', { data: appointmentData });
+                return {
+                  statusCode: 201,
+                  body: {
+                    status: 'SUCCESS',
+                    data: retryAppt,
+                    message: `Appointment scheduled successfully for ${aptDateTime}`,
+                    recoveredFromOpInvalid: true,
+                  },
+                };
+              }
+            } catch (retryError: any) {
+              console.warn('[scheduleAppointment] Retry after Op invalid failed', {
+                clinicId: clinicId || odClient.getClinicId(),
+                aptDateTime,
+                error: retryError?.message || String(retryError),
+              });
+            }
+          }
 
           // Save callback for failed appointment booking
           const patientName = sessionAttributes.FName && sessionAttributes.LName
@@ -4052,7 +4521,7 @@ async function handleTool(
             patientName,
             patientPhone,
             patNum: parseInt(params.PatNum.toString()),
-            requestedDate: params.Date,
+            requestedDate: aptDateTime,
             reason,
             errorMessage: scheduleError?.message || 'Unknown scheduling error',
             source: 'ai-agent',
@@ -4589,13 +5058,13 @@ async function handleTool(
 
         // Support date or dateStart/dateEnd
         if (params.date || params.Date) {
-          slotParams.date = params.date || params.Date;
+          slotParams.date = normalizeDateFormat(String(params.date || params.Date).trim());
         }
         if (params.dateStart || params.DateStart) {
-          slotParams.dateStart = params.dateStart || params.DateStart;
+          slotParams.dateStart = normalizeDateFormat(String(params.dateStart || params.DateStart).trim());
         }
         if (params.dateEnd || params.DateEnd) {
-          slotParams.dateEnd = params.dateEnd || params.DateEnd;
+          slotParams.dateEnd = normalizeDateFormat(String(params.dateEnd || params.DateEnd).trim());
         }
         if (params.lengthMinutes || params.duration) {
           slotParams.lengthMinutes = params.lengthMinutes || params.duration || 30;

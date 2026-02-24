@@ -410,6 +410,11 @@ EXAMPLE - Get clinic info:
   Required: LName, FName, Birthdate (YYYY-MM-DD or any common format)
   Returns: List of matching patients with PatNum
   Notes: PatNum is saved to session if single match found
+
+▸ searchPatientsByPhone - Search for patients by phone number (caller ID)
+  Optional: WirelessPhone (if omitted, uses callerNumber/callerPhone from session attributes)
+  Returns: List of matching patients with PatNum
+  Notes: If exactly 1 match found, PatNum is saved to session
   
 ▸ createPatient - Create a new patient record
   Required: LName, FName, Birthdate
@@ -1277,6 +1282,7 @@ IMPORTANT: Use these tools FIRST for insurance questions - NO patient lookup nee
 
                 // ===== PATIENT TOOLS =====
                 'searchPatients',
+                'searchPatientsByPhone',
                 'createPatient',
                 'getPatientByPatNum',
                 'updatePatient',
@@ -1618,6 +1624,7 @@ INSURANCE LOOKUP (no PatNum needed):
 
 PATIENT LOOKUP:
 - {"LName": "Smith", "FName": "John", "Birthdate": "1990-01-15"}
+- By phone (caller ID): {"WirelessPhone": "+15551234567"}
 
 APPOINTMENT BOOKING:
 - {"PatNum": 123, "Reason": "Crown", "Date": "2024-12-20 09:00:00", "OpName": "ONLINE_BOOKING_MAJOR"}

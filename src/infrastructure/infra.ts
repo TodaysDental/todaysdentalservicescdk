@@ -847,6 +847,11 @@ const connectLexAiStack = new ConnectLexAiStack(app, 'TodaysDentalInsightsConnec
   aiPhoneNumbersJson: JSON.stringify(aiPhoneNumbersMap),
   defaultClinicId: defaultClinicForAi,
   thinkingAudioMode: 'verbal',
+  // SecretsStack tables for OpenDental caller lookup + clinic display name
+  clinicSecretsTableName: secretsStack.clinicSecretsTable.tableName,
+  clinicConfigTableName: secretsStack.clinicConfigTable.tableName,
+  globalSecretsTableName: secretsStack.globalSecretsTable.tableName,
+  secretsEncryptionKeyArn: secretsStack.secretsEncryptionKey.keyArn,
   // Enable async pattern for 60s Bedrock timeout (overcomes Connect's 8s sync limit)
   // This allows complex tool calls (patient search, appointment booking) to complete
   // while playing continuous keyboard sounds to the caller
@@ -855,6 +860,7 @@ const connectLexAiStack = new ConnectLexAiStack(app, 'TodaysDentalInsightsConnec
 });
 connectLexAiStack.addDependency(aiAgentsStack);
 connectLexAiStack.addDependency(analyticsStack);
+connectLexAiStack.addDependency(secretsStack);
 // ConnectLexAiStack is standalone for AI calling (no Chime dependency).
 
 // Query Generator Stack - AI-powered SQL query generation using Bedrock

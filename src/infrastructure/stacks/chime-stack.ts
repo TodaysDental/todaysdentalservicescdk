@@ -323,6 +323,37 @@ export class ChimeStack extends Stack {
     // Grant write access to the clinics table
     this.clinicsTable.grantWriteData(seedClinicsRole);
 
+    // TEMPORARY FIX: Grant Chime VoiceConnector streaming permissions to SeedClinicsRole.
+    // Old AwsCustomResource constructs (VCStreaming, AiSipRule, AiVCStreaming) were created
+    // with this role. CloudFormation needs these permissions to delete the orphaned resources
+    // during stack updates. Can be removed once the old resources are fully cleaned up.
+    seedClinicsRole.addToPolicy(new iam.PolicyStatement({
+      effect: iam.Effect.ALLOW,
+      actions: [
+        'chime:DeleteVoiceConnectorStreamingConfiguration',
+        'chime:GetVoiceConnectorStreamingConfiguration',
+        'chime:PutVoiceConnectorStreamingConfiguration',
+        'chime-sdk-voice:DeleteVoiceConnectorStreamingConfiguration',
+        'chime-sdk-voice:GetVoiceConnectorStreamingConfiguration',
+        'chime-sdk-voice:PutVoiceConnectorStreamingConfiguration',
+        // Also needed for cleanup of old SipRule/SipMediaApplication resources
+        'chime:DeleteSipRule',
+        'chime:GetSipRule',
+        'chime:DeleteSipMediaApplication',
+        'chime:GetSipMediaApplication',
+        'chime-sdk-voice:DeleteSipRule',
+        'chime-sdk-voice:GetSipRule',
+        'chime-sdk-voice:DeleteSipMediaApplication',
+        'chime-sdk-voice:GetSipMediaApplication',
+        // MediaInsights pipeline configuration cleanup
+        'chime:DeleteMediaInsightsPipelineConfiguration',
+        'chime:GetMediaInsightsPipelineConfiguration',
+        'chimesdkmediapipelines:DeleteMediaInsightsPipelineConfiguration',
+        'chimesdkmediapipelines:GetMediaInsightsPipelineConfiguration',
+      ],
+      resources: ['*'],
+    }));
+
     // Chunk the clinics into batches of 25 (DynamoDB BatchWriteItem limit)
     const chunkSize = 25;
     const clinicChunks: typeof clinicsToSeed[] = [];
