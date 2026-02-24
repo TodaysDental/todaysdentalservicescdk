@@ -632,12 +632,10 @@ async function updateAd(
       }
 
       // Step 1: Delete the old ad (set to REMOVED)
+      // google-ads-api library auto-computes field masks from provided fields
       const removeOperation = {
-        update: {
-          resource_name: adGroupAdResourceName,
-          status: 'REMOVED',
-        },
-        update_mask: { paths: ['status'] },
+        resource_name: adGroupAdResourceName,
+        status: 'REMOVED',
       };
 
       await (client as any).adGroupAds.update([removeOperation]);
@@ -679,12 +677,10 @@ async function updateAd(
 
     // Status-only update (in-place)
     if (status) {
-      const updateOperation: any = {
-        update: {
-          resource_name: adGroupAdResourceName,
-          status,
-        },
-        update_mask: { paths: ['status'] },
+      // google-ads-api library auto-computes field masks from provided fields
+      const updateOperation = {
+        resource_name: adGroupAdResourceName,
+        status,
       };
 
       await (client as any).adGroupAds.update([updateOperation]);
@@ -757,12 +753,10 @@ async function deleteAd(
     const adGroupAdResourceName = `customers/${customerId}/adGroupAds/${adGroupId}~${adId}`;
 
     // Remove = set status to REMOVED
+    // google-ads-api library auto-computes field masks from provided fields
     const removeOperation = {
-      update: {
-        resource_name: adGroupAdResourceName,
-        status: 'REMOVED',
-      },
-      update_mask: { paths: ['status'] },
+      resource_name: adGroupAdResourceName,
+      status: 'REMOVED',
     };
 
     await (client as any).adGroupAds.update([removeOperation]);
