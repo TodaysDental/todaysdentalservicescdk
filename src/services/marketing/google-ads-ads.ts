@@ -351,18 +351,16 @@ async function createAd(
     const client = await getGoogleAdsClient(customerId);
 
     const adGroupAdOperation = {
-      create: {
-        ad_group: adGroupResourceName,
-        status,
-        ad: {
-          responsive_search_ad: {
-            headlines: headlines.map(text => ({ text })),
-            descriptions: descriptions.map(text => ({ text })),
-            path1: path1 || undefined,
-            path2: path2 || undefined,
-          },
-          final_urls: [finalUrl],
+      ad_group: adGroupResourceName,
+      status,
+      ad: {
+        responsive_search_ad: {
+          headlines: headlines.map(text => ({ text })),
+          descriptions: descriptions.map(text => ({ text })),
+          path1: path1 || undefined,
+          path2: path2 || undefined,
         },
+        final_urls: [finalUrl],
       },
     };
 
@@ -647,18 +645,16 @@ async function updateAd(
 
       // Step 2: Create new ad with updated content
       const adGroupAdOperation = {
-        create: {
-          ad_group: currentAdGroupResourceName,
-          status: newStatus,
-          ad: {
-            responsive_search_ad: {
-              headlines: newHeadlines.map((text: string) => ({ text })),
-              descriptions: newDescriptions.map((text: string) => ({ text })),
-              path1: newPath1 || undefined,
-              path2: newPath2 || undefined,
-            },
-            final_urls: [newFinalUrl],
+        ad_group: currentAdGroupResourceName,
+        status: newStatus,
+        ad: {
+          responsive_search_ad: {
+            headlines: newHeadlines.map((text: string) => ({ text })),
+            descriptions: newDescriptions.map((text: string) => ({ text })),
+            path1: newPath1 || undefined,
+            path2: newPath2 || undefined,
           },
+          final_urls: [newFinalUrl],
         },
       };
 
