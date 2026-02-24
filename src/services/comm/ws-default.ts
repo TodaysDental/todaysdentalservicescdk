@@ -206,7 +206,7 @@ interface MessageData {
     senderID: string;
     content: string;
     timestamp: number;
-    type: 'text' | 'file' | 'system' | 'task';
+    type: 'text' | 'file' | 'system' | 'task' | 'poll';
     fileKey?: string;
     fileDetails?: FileDetails;
     // Task metadata (present when type === 'task')
@@ -216,6 +216,17 @@ interface MessageData {
     taskDeadline?: string;
     taskCategory?: string;
     taskRequestType?: string;
+    // Poll metadata (present when type === 'poll')
+    pollData?: {
+        pollID: string;
+        question: string;
+        options: { optionID: string; text: string }[];
+        isMultipleChoice: boolean;
+        votes: { userID: string; optionID: string; votedAt: number }[];
+        createdBy: string;
+        createdAt: number;
+        isClosed?: boolean;
+    };
 }
 
 // ========================================
@@ -573,6 +584,17 @@ export const handler = async (event: APIGatewayEvent): Promise<APIGatewayProxyRe
                 break;
             case 'getMessageInfo':
                 await handleGetMessageInfo(senderID, payload, connectionId, apiGwManagement);
+                break;
+
+            // ======= POLLS =======
+            case 'sendPoll':
+                await handleSendPoll(senderID, payload, apiGwManagement);
+                break;
+            case 'votePoll':
+                await handleVotePoll(senderID, payload, apiGwManagement);
+                break;
+            case 'closePoll':
+                await handleClosePoll(senderID, payload, apiGwManagement);
                 break;
 
             default:
@@ -1806,7 +1828,10 @@ async function startFavorRequest(
         if (deadline) { updateExprParts.push('deadline = :dl'); exprValues[':dl'] = String(deadline); }
         if (priority) { updateExprParts.push('priority = :pri'); exprValues[':pri'] = priority; }
         if (category) { updateExprParts.push('category = :cat'); exprValues[':cat'] = category; }
-        if (requestType) { updateExprParts.push('requestType = :rt'); exprValues[':rt'] = requestType; }
+        // Don't overwrite requestType on existing group conversations — 
+        // the per-message task metadata (type: 'task') already stores this info.
+        // Overwriting would cause the entire group to render with task card UI.
+        if (requestType && !isGroupRequest) { updateExprParts.push('requestType = :rt'); exprValues[':rt'] = requestType; }
 
         // Increment unread count
         updateExprParts.push('unreadCount = if_not_exists(unreadCount, :zero) + :incr');
@@ -1914,8 +1939,8 @@ async function startFavorRequest(
         unreadCount: recipients.length,
         initialMessage: initialMessage,
         ...(deadline && { deadline: String(deadline) }),
-        // Task badge: mark as task when created via task assignment
-        ...(requestType === 'Assign Task' && { isTask: true }),
+        // Task badge: mark as task when created via task assignment (any task type)
+        ...((requestType === 'Assign Task' || requestType === 'IT Ticket' || requestType === 'Ask a Favor') && { isTask: true }),
     };
 
     // 1. Create Favor Request Record
@@ -2545,7 +2570,9 @@ async function _saveAndBroadcastMessage(
     // 1b. Update FavorRequest with lastMessage preview for sidebar
     const lastMessagePreview = messageData.type === 'file'
         ? '📎 Attachment'
-        : messageData.content?.substring(0, 100) || '';
+        : messageData.type === 'poll'
+            ? '📊 Poll'
+            : messageData.content?.substring(0, 100) || '';
     try {
         await ddb.send(new UpdateCommand({
             TableName: FAVORS_TABLE,
@@ -4349,4 +4376,272 @@ async function deleteMeeting(
     }
 
     console.log(`Meeting ${meetingID} cancelled by ${senderID}`);
+}
+
+
+// ========================================
+// POLL HANDLERS
+// ========================================
+
+/**
+ * Handles creating a poll within a conversation.
+ * Creates a new message of type 'poll' with embedded pollData.
+ */
+async function handleSendPoll(
+    senderID: string,
+    payload: any,
+    apiGwManagement: ApiGatewayManagementApiClient
+): Promise<void> {
+    const { favorRequestID, question, options, isMultipleChoice } = payload;
+    const senderConnectionId = (await getSenderInfoByUserID(senderID))?.connectionId;
+
+    if (!favorRequestID || !question || !options || !Array.isArray(options) || options.length < 2) {
+        if (senderConnectionId) {
+            await sendToClient(apiGwManagement, senderConnectionId, {
+                type: 'error',
+                message: 'Missing favorRequestID, question, or options (min 2).',
+            });
+        }
+        return;
+    }
+
+    // Validate favor request and participation
+    const favorResult = await ddb.send(new GetCommand({
+        TableName: FAVORS_TABLE,
+        Key: { favorRequestID },
+    }));
+    const favor = favorResult.Item as FavorRequest;
+    if (!favor) {
+        if (senderConnectionId) {
+            await sendToClient(apiGwManagement, senderConnectionId, { type: 'error', message: 'Conversation not found.' });
+        }
+        return;
+    }
+
+    const isParticipant = await isUserParticipant(favor, senderID);
+    if (!isParticipant) {
+        if (senderConnectionId) {
+            await sendToClient(apiGwManagement, senderConnectionId, { type: 'error', message: 'Unauthorized.' });
+        }
+        return;
+    }
+
+    const recipientIDs = await getRecipientIDs(favor, senderID);
+    const timestamp = Date.now();
+    const pollID = uuidv4();
+
+    // Build poll options with unique IDs
+    const pollOptions = options.map((text: string, i: number) => ({
+        optionID: `${pollID}-opt-${i}`,
+        text: text.trim(),
+    }));
+
+    const messageData: MessageData = {
+        messageID: uuidv4(),
+        favorRequestID,
+        senderID,
+        content: `📊 ${question}`,
+        timestamp,
+        type: 'poll' as any,
+        pollData: {
+            pollID,
+            question,
+            options: pollOptions,
+            isMultipleChoice: !!isMultipleChoice,
+            votes: [],
+            createdBy: senderID,
+            createdAt: timestamp,
+            isClosed: false,
+        },
+    };
+
+    // Save and broadcast
+    await _saveAndBroadcastMessage(messageData, apiGwManagement, recipientIDs);
+    console.log(`Poll created: "${question}" by ${senderID} in ${favorRequestID}`);
+}
+
+/**
+ * Handles voting on a poll.
+ * Updates the poll's votes array in the stored message.
+ */
+async function handleVotePoll(
+    senderID: string,
+    payload: any,
+    apiGwManagement: ApiGatewayManagementApiClient
+): Promise<void> {
+    const { favorRequestID, messageTimestamp, pollID, optionIDs } = payload;
+    const senderConnectionId = (await getSenderInfoByUserID(senderID))?.connectionId;
+
+    if (!favorRequestID || !messageTimestamp || !pollID || !Array.isArray(optionIDs)) {
+        if (senderConnectionId) {
+            await sendToClient(apiGwManagement, senderConnectionId, {
+                type: 'error',
+                message: 'Missing required poll vote parameters.',
+            });
+        }
+        return;
+    }
+
+    // Fetch the message containing the poll
+    const msgResult = await ddb.send(new GetCommand({
+        TableName: MESSAGES_TABLE,
+        Key: { favorRequestID, timestamp: messageTimestamp },
+    }));
+    const message = msgResult.Item as any;
+
+    if (!message || !message.pollData) {
+        if (senderConnectionId) {
+            await sendToClient(apiGwManagement, senderConnectionId, { type: 'error', message: 'Poll message not found.' });
+        }
+        return;
+    }
+
+    if (message.pollData.isClosed) {
+        if (senderConnectionId) {
+            await sendToClient(apiGwManagement, senderConnectionId, { type: 'error', message: 'This poll is closed.' });
+        }
+        return;
+    }
+
+    // Validate option IDs exist in the poll
+    const validOptionIDs = message.pollData.options.map((opt: any) => opt.optionID);
+    const invalidOptions = optionIDs.filter((id: string) => !validOptionIDs.includes(id));
+    if (invalidOptions.length > 0) {
+        if (senderConnectionId) {
+            await sendToClient(apiGwManagement, senderConnectionId, { type: 'error', message: 'Invalid option IDs.' });
+        }
+        return;
+    }
+
+    // Single choice: only allow 1 option
+    if (!message.pollData.isMultipleChoice && optionIDs.length > 1) {
+        if (senderConnectionId) {
+            await sendToClient(apiGwManagement, senderConnectionId, { type: 'error', message: 'Only one option allowed for single-choice polls.' });
+        }
+        return;
+    }
+
+    // Remove previous votes by this user, then add the new ones
+    const existingVotes: any[] = message.pollData.votes || [];
+    const filteredVotes = existingVotes.filter((v: any) => v.userID !== senderID);
+    const now = Date.now();
+    const newVotes = optionIDs.map((optID: string) => ({
+        userID: senderID,
+        optionID: optID,
+        votedAt: now,
+    }));
+    const updatedVotes = [...filteredVotes, ...newVotes];
+
+    // Update the message in DynamoDB
+    await ddb.send(new UpdateCommand({
+        TableName: MESSAGES_TABLE,
+        Key: { favorRequestID, timestamp: messageTimestamp },
+        UpdateExpression: 'SET pollData.votes = :votes',
+        ExpressionAttributeValues: {
+            ':votes': updatedVotes,
+        },
+    }));
+
+    // Broadcast updated poll to all participants
+    const favorResult = await ddb.send(new GetCommand({
+        TableName: FAVORS_TABLE,
+        Key: { favorRequestID },
+    }));
+    const favor = favorResult.Item as FavorRequest;
+    if (favor) {
+        const allRecipients = await getRecipientIDs(favor, senderID);
+        const allParticipants = [senderID, ...allRecipients];
+
+        const broadcastPayload = {
+            type: 'pollVoteUpdate',
+            favorRequestID,
+            messageTimestamp,
+            pollID,
+            pollData: {
+                ...message.pollData,
+                votes: updatedVotes,
+            },
+        };
+
+        await sendToAll(apiGwManagement, allParticipants, broadcastPayload, { notifyOffline: false });
+    }
+
+    console.log(`Poll vote: ${senderID} voted on "${message.pollData.question}" in ${favorRequestID}`);
+}
+
+/**
+ * Handles closing a poll (only the creator can close).
+ */
+async function handleClosePoll(
+    senderID: string,
+    payload: any,
+    apiGwManagement: ApiGatewayManagementApiClient
+): Promise<void> {
+    const { favorRequestID, messageTimestamp, pollID } = payload;
+    const senderConnectionId = (await getSenderInfoByUserID(senderID))?.connectionId;
+
+    if (!favorRequestID || !messageTimestamp || !pollID) {
+        if (senderConnectionId) {
+            await sendToClient(apiGwManagement, senderConnectionId, {
+                type: 'error',
+                message: 'Missing required parameters to close poll.',
+            });
+        }
+        return;
+    }
+
+    // Fetch the message containing the poll
+    const msgResult = await ddb.send(new GetCommand({
+        TableName: MESSAGES_TABLE,
+        Key: { favorRequestID, timestamp: messageTimestamp },
+    }));
+    const message = msgResult.Item as any;
+
+    if (!message || !message.pollData) {
+        if (senderConnectionId) {
+            await sendToClient(apiGwManagement, senderConnectionId, { type: 'error', message: 'Poll message not found.' });
+        }
+        return;
+    }
+
+    // Only the poll creator can close it
+    if (message.pollData.createdBy !== senderID) {
+        if (senderConnectionId) {
+            await sendToClient(apiGwManagement, senderConnectionId, { type: 'error', message: 'Only the poll creator can close this poll.' });
+        }
+        return;
+    }
+
+    // Update poll to closed
+    await ddb.send(new UpdateCommand({
+        TableName: MESSAGES_TABLE,
+        Key: { favorRequestID, timestamp: messageTimestamp },
+        UpdateExpression: 'SET pollData.isClosed = :closed',
+        ExpressionAttributeValues: {
+            ':closed': true,
+        },
+    }));
+
+    // Broadcast closed status to all participants
+    const favorResult = await ddb.send(new GetCommand({
+        TableName: FAVORS_TABLE,
+        Key: { favorRequestID },
+    }));
+    const favor = favorResult.Item as FavorRequest;
+    if (favor) {
+        const allRecipients = await getRecipientIDs(favor, senderID);
+        const allParticipants = [senderID, ...allRecipients];
+
+        const broadcastPayload = {
+            type: 'pollClosed',
+            favorRequestID,
+            messageTimestamp,
+            pollID,
+            closedBy: senderID,
+        };
+
+        await sendToAll(apiGwManagement, allParticipants, broadcastPayload, { notifyOffline: false });
+    }
+
+    console.log(`Poll closed: "${message.pollData.question}" by ${senderID} in ${favorRequestID}`);
 }
