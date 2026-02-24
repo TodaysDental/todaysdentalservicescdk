@@ -167,7 +167,7 @@ export const handler = async (event: ContactFlowEvent): Promise<any> => {
 /**
  * Build the inbound contact flow content JSON with dynamic ARNs/IDs
  * 
- * Flow: welcome → setAttrs → lex-asr → typingOnce → invoke-ai → speak-ai → loop
+ * Flow: setAttrs → voiceConfig → callerLookup → welcome → lex-asr → typingOnce → invoke-ai → speak-ai → loop
  *
  * Architecture:
  * - Lex is used for ASR only (code hook stores transcript in Lex session attributes).
@@ -199,14 +199,19 @@ function buildContactFlowContent(params: {
         'set-contact-attrs': { position: { x: 360, y: 20 } },
         'invoke-voice-config': { position: { x: 560, y: 20 } },
         'set-tts-voice': { position: { x: 760, y: 20 } },
+        'set-default-tts-voice': { position: { x: 860, y: 80 } },
         'store-clinic-id': { position: { x: 960, y: 20 } },
-        'welcome-message': { position: { x: 1160, y: 20 } },
-        'set-disconnect-flow': { position: { x: 1360, y: 20 } },
-        'lex-asr': { position: { x: 1560, y: 20 } },
-        'typing-once': { position: { x: 1760, y: 20 } },
-        'invoke-ai': { position: { x: 1960, y: 20 } },
-        'speak-ai': { position: { x: 2160, y: 20 } },
-        'disconnect-action': { position: { x: 2360, y: 20 } },
+        'invoke-welcome-message': { position: { x: 1120, y: 20 } },
+        'store-welcome-attrs': { position: { x: 1280, y: 20 } },
+        'welcome-message': { position: { x: 1440, y: 20 } },
+        'welcome-message-static': { position: { x: 1440, y: 120 } },
+        'set-disconnect-flow': { position: { x: 1640, y: 20 } },
+        'lex-asr': { position: { x: 1840, y: 20 } },
+        'typing-once': { position: { x: 2040, y: 20 } },
+        'invoke-ai': { position: { x: 2240, y: 20 } },
+        'speak-ai': { position: { x: 2440, y: 20 } },
+          'speak-ai-text-fallback': { position: { x: 2160, y: 120 } },
+        'disconnect-action': { position: { x: 2640, y: 20 } },
       },
     },
     Actions: [
@@ -257,6 +262,8 @@ function buildContactFlowContent(params: {
         Parameters: {
           LambdaFunctionARN: lambdaFunctionArn,
           InvocationTimeLimitSeconds: '8',
+          InvocationType: 'SYNCHRONOUS',
+          ResponseValidation: { ResponseType: 'STRING_MAP' },
           LambdaInvocationAttributes: {
             requestType: 'voiceConfig',
             callerNumber: '$.Attributes.callerNumber',
@@ -269,7 +276,7 @@ function buildContactFlowContent(params: {
           // Fail open: if voice config fails, use Connect default voice (Joanna) and continue.
           NextAction: 'set-tts-voice',
           // Avoid overwriting default prosody attrs with empty $.External.* on Lambda failure.
-          Errors: [{ NextAction: 'welcome-message', ErrorType: 'NoMatchingError' }],
+          Errors: [{ NextAction: 'welcome-message-static', ErrorType: 'NoMatchingError' }],
         },
       },
 
@@ -282,7 +289,22 @@ function buildContactFlowContent(params: {
           TextToSpeechEngine: '$.External.TextToSpeechEngine',
         },
         Transitions: {
-          // Fail open: proceed even if voice/engine was invalid; Connect will fall back to default voice.
+          NextAction: 'store-clinic-id',
+          // If voice/engine are invalid, Connect can take the Error branch and TTS may stop working for the contact.
+          // Attempt to restore a known-good default voice so prompts/responses are still audible.
+          Errors: [{ NextAction: 'set-default-tts-voice', ErrorType: 'NoMatchingError' }],
+        },
+      },
+
+      // 4b) Fallback to a known-good voice if dynamic Set voice fails
+      {
+        Identifier: 'set-default-tts-voice',
+        Type: 'UpdateContactTextToSpeechVoice',
+        Parameters: {
+          TextToSpeechVoice: 'Joanna',
+          TextToSpeechEngine: 'neural',
+        },
+        Transitions: {
           NextAction: 'store-clinic-id',
           Errors: [{ NextAction: 'store-clinic-id', ErrorType: 'NoMatchingError' }],
         },
@@ -301,26 +323,81 @@ function buildContactFlowContent(params: {
           },
         },
         Transitions: {
-          NextAction: 'welcome-message',
-          Errors: [{ NextAction: 'welcome-message', ErrorType: 'NoMatchingError' }],
+          NextAction: 'invoke-welcome-message',
+          Errors: [{ NextAction: 'invoke-welcome-message', ErrorType: 'NoMatchingError' }],
         },
       },
 
-      // 6) Welcome message (now uses per-clinic Polly voice)
+      // 6) Resolve welcome message (existing patient -> "Hi [FName]...", otherwise AI-agents greeting)
+      {
+        Identifier: 'invoke-welcome-message',
+        Type: 'InvokeLambdaFunction',
+        Parameters: {
+          LambdaFunctionARN: lambdaFunctionArn,
+          InvocationTimeLimitSeconds: '8',
+          InvocationType: 'SYNCHRONOUS',
+          ResponseValidation: { ResponseType: 'STRING_MAP' },
+          LambdaInvocationAttributes: {
+            requestType: 'welcomeMessage',
+            callerNumber: '$.Attributes.callerNumber',
+            dialedNumber: '$.Attributes.dialedNumber',
+            clinicId: '$.Attributes.clinicId',
+          },
+        },
+        Transitions: {
+          NextAction: 'store-welcome-attrs',
+          // Fail open: fall back to a static greeting if lookup fails
+          Errors: [{ NextAction: 'welcome-message-static', ErrorType: 'NoMatchingError' }],
+        },
+      },
+
+      // 6b) Store welcome/patient attributes on the contact
+      {
+        Identifier: 'store-welcome-attrs',
+        Type: 'UpdateContactAttributes',
+        Parameters: {
+          Attributes: {
+            welcomeMessage: '$.External.welcomeMessage',
+            patientName: '$.External.patientName',
+            patientFirstName: '$.External.patientFirstName',
+            isNewPatient: '$.External.isNewPatient',
+            // OpenDental identity (used to avoid re-asking name/DOB in Bedrock Agent)
+            PatNum: '$.External.PatNum',
+            FName: '$.External.FName',
+            LName: '$.External.LName',
+            Birthdate: '$.External.Birthdate',
+            IsNewPatient: '$.External.IsNewPatient',
+          },
+        },
+        Transitions: {
+          NextAction: 'welcome-message',
+          Errors: [{ NextAction: 'welcome-message-static', ErrorType: 'NoMatchingError' }],
+        },
+      },
+
+      // 6c) Welcome message (dynamic text stored in contact attributes; SSML-safe)
       {
         Identifier: 'welcome-message',
         Type: 'MessageParticipant',
         Parameters: {
-          // IMPORTANT: Keep this greeting static and SSML-safe.
-          // Amazon Connect reliably supports dynamic JSONPath values when the *entire*
-          // parameter is a JSONPath (e.g. `$.Attributes.foo`), but does not reliably
-          // substitute JSONPath references embedded *inside* SSML tag attributes.
-          // A malformed SSML greeting can cause the contact to error out and disconnect.
-          Text: 'Hello! Thank you for calling. How can I help you today?',
+          Text: '$.Attributes.welcomeMessage',
         },
         Transitions: {
           NextAction: 'set-disconnect-flow',
           // Fail open: don't disconnect if greeting playback fails for any reason.
+          Errors: [{ NextAction: 'set-disconnect-flow', ErrorType: 'NoMatchingError' }],
+        },
+      },
+
+      // 6d) Fallback welcome message if lookup fails
+      {
+        Identifier: 'welcome-message-static',
+        Type: 'MessageParticipant',
+        Parameters: {
+          Text: "Hi! Thank you for calling Today's Dental. How may I help you today?",
+        },
+        Transitions: {
+          NextAction: 'set-disconnect-flow',
           Errors: [{ NextAction: 'set-disconnect-flow', ErrorType: 'NoMatchingError' }],
         },
       },
@@ -391,6 +468,8 @@ function buildContactFlowContent(params: {
         Parameters: {
           LambdaFunctionARN: lambdaFunctionArn,
           InvocationTimeLimitSeconds: '8',
+          InvocationType: 'SYNCHRONOUS',
+          ResponseValidation: { ResponseType: 'STRING_MAP' },
           LambdaInvocationAttributes: {
             inputTranscript: '$.Lex.SessionAttributes.lastUtterance',
             confidence: '$.Lex.SessionAttributes.lastUtteranceConfidence',
@@ -413,6 +492,20 @@ function buildContactFlowContent(params: {
         },
         Transitions: {
           NextAction: 'lex-asr', // loop for next user turn
+          // If SSML fails, fall back to plain text so the caller still hears a response.
+          Errors: [{ NextAction: 'speak-ai-text-fallback', ErrorType: 'NoMatchingError' }],
+        },
+      },
+
+      // 11b) Fallback: speak plain text if SSML fails
+      {
+        Identifier: 'speak-ai-text-fallback',
+        Type: 'MessageParticipant',
+        Parameters: {
+          Text: '$.External.aiResponse',
+        },
+        Transitions: {
+          NextAction: 'lex-asr',
           Errors: [{ NextAction: 'disconnect-action', ErrorType: 'NoMatchingError' }],
         },
       },

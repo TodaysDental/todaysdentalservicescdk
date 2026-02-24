@@ -30,8 +30,9 @@ import {
   OpenDentalPaymentRow,
   BankStatementRow,
 } from './types';
-import { getClinicConfig, getOdooConfig } from '../../shared/utils/secrets-helper';
+import { getClinicConfig, getOdooConfig, getCherryApiKey } from '../../shared/utils/secrets-helper';
 import { OdooClient } from '../../shared/utils/odoo-api';
+import { CherryClient, cherryTransactionsToBankRows } from '../../shared/utils/cherry-api';
 import {
   getUserPermissions,
   getAllowedClinicIds as getAllowedClinicIdsHelper,
@@ -191,7 +192,22 @@ export async function handler(event: any) {
     // BRS ROUTES
     // ========================================
 
-    // GET /brs/open-dental - Fetch OpenDental payment data
+    // GET /brs/payment-modes - Get list of all available payment modes
+    if (method === 'GET' && path.match(/^\/brs\/payment-modes\/?$/)) {
+      return httpOk({
+        paymentModes: [
+          { id: 'CREDIT_CARD', label: 'Credit Card', description: 'Visa, MasterCard, Amex, Discover card payments', icon: '💳' },
+          { id: 'ACH', label: 'ACH', description: 'ACH direct deposits, Zelle, and clearing house transfers', icon: '🏦' },
+          { id: 'EFT', label: 'EFT / Wire Transfer', description: 'Electronic fund transfers, NEFT, RTGS, IMPS, wire transfers', icon: '🔄' },
+          { id: 'CHEQUE', label: 'Cheque', description: 'Paper cheques and money orders', icon: '📝' },
+          { id: 'CHERRY', label: 'Cherry', description: 'Cherry patient financing payments', icon: '🍒' },
+          { id: 'SUNBIT', label: 'Sunbit', description: 'Sunbit patient financing payments', icon: '☀️' },
+          { id: 'CARE_CREDIT', label: 'CareCredit', description: 'CareCredit / Synchrony patient financing', icon: '💚' },
+          { id: 'PAYCONNECT', label: 'PayConnect', description: 'PayConnect payment gateway transactions', icon: '🔗' },
+          { id: 'AUTHORIZE_NET', label: 'Authorize.Net', description: 'Authorize.Net payment gateway transactions', icon: '🌐' },
+        ],
+      });
+    }
     if (method === 'GET' && path.match(/^\/brs\/open-dental\/?$/)) {
       const { clinicId, paymentMode, dateStart, dateEnd } = queryParams;
       if (!clinicId || !paymentMode || !dateStart || !dateEnd) {
@@ -203,16 +219,16 @@ export async function handler(event: any) {
       return await fetchOpenDentalPayments(clinicId, paymentMode as PaymentMode, dateStart, dateEnd);
     }
 
-    // GET /brs/odoo - Fetch Odoo bank transactions
+    // GET /brs/odoo - Fetch Odoo bank transactions (filtered by paymentMode if provided)
     if (method === 'GET' && path.match(/^\/brs\/odoo\/?$/)) {
-      const { clinicId, dateStart, dateEnd } = queryParams;
+      const { clinicId, dateStart, dateEnd, paymentMode } = queryParams;
       if (!clinicId || !dateStart || !dateEnd) {
         return httpErr(400, 'clinicId, dateStart, dateEnd are required');
       }
       if (!hasClinicAccess(allowedClinics, clinicId)) {
         return httpErr(403, 'Forbidden: no access to this clinic');
       }
-      return await fetchOdooBankTransactions(clinicId, dateStart, dateEnd);
+      return await fetchOdooBankTransactions(clinicId, dateStart, dateEnd, paymentMode as PaymentMode | undefined);
     }
 
     // POST /brs/bank-file/upload - Upload bank statement file
@@ -237,6 +253,18 @@ export async function handler(event: any) {
         return httpErr(403, 'Forbidden: no access to this clinic');
       }
       return await getBankStatements(clinicId, paymentMode as PaymentMode);
+    }
+
+    // GET /brs/cherry - Fetch Cherry transactions for a clinic
+    if (method === 'GET' && path.match(/^\/brs\/cherry\/?$/)) {
+      const { clinicId, dateStart, dateEnd } = queryParams;
+      if (!clinicId || !dateStart || !dateEnd) {
+        return httpErr(400, 'clinicId, dateStart, dateEnd are required');
+      }
+      if (!hasClinicAccess(allowedClinics, clinicId)) {
+        return httpErr(403, 'Forbidden: no access to this clinic');
+      }
+      return await fetchCherryTransactions(clinicId, dateStart, dateEnd);
     }
 
     // POST /brs/reconcile - Generate reconciliation
@@ -622,14 +650,66 @@ async function syncOdooInvoices(clinicId: string) {
  * We fetch definitions (Category=12 = PaymentTypes) and match by name keywords.
  */
 const PAYMENT_MODE_KEYWORDS: Record<PaymentMode, string[]> = {
-  EFT: ['eft', 'electronic', 'wire', 'ach', 'bank transfer', 'neft', 'rtgs', 'imps'],
-  CHEQUE: ['check', 'cheque', 'chq', 'chk'],
-  CREDIT_CARD: ['credit card', 'cc', 'visa', 'master', 'amex', 'discover'],
-  PAYCONNECT: ['payconnect', 'pay connect'],
-  SUNBIT: ['sunbit'],
-  AUTHORIZE_NET: ['authorize', 'auth.net', 'authorizenet'],
+  EFT: ['eft', 'electronic', 'wire', 'bank transfer', 'neft', 'rtgs', 'imps', 'e-transfer', 'etransfer'],
+  ACH: ['ach', 'direct deposit', 'zelle', 'clearing house', 'autopay', 'auto pay', 'dd'],
+  CHEQUE: ['check', 'cheque', 'chq', 'chk', 'money order', 'cashier'],
+  CREDIT_CARD: ['credit card', 'cc', 'visa', 'master', 'amex', 'discover', 'debit card', 'card'],
+  PAYCONNECT: ['payconnect', 'pay connect', 'pay-connect'],
+  SUNBIT: ['sunbit', 'sun bit', 'patient finance', 'patient financing'],
+  AUTHORIZE_NET: ['authorize', 'auth.net', 'authorizenet', 'authorize.net'],
+  CHERRY: ['cherry', 'cherry payment', 'cherry finance'],
+  CARE_CREDIT: ['care credit', 'carecredit', 'synchrony', 'care-credit'],
+};
+
+/**
+ * Keywords for filtering Odoo bank statement rows by payment mode.
+ * When fetching bank transactions, only rows whose payment_ref, ref, name,
+ * or narration contain one of these keywords will be returned for that mode.
+ * This prevents Cherry reconciliation from showing wire transfers, etc.
+ */
+const BANK_ROW_FILTER_KEYWORDS: Partial<Record<PaymentMode, string[]>> = {
+  EFT: ['wire', 'neft', 'rtgs', 'imps', 'transfer', 'eft', 'utr'],
+  ACH: ['ach', 'direct deposit', 'zelle', 'clearing house', 'autopay', 'nacha'],
+  CHEQUE: ['check', 'cheque', 'chq', 'chk', 'money order', 'cashier'],
+  // Credit card settlement deposits appear in banks as generic merchant deposits,
+  // not as "visa" or "mastercard". Banks use terms like:
+  //   "MERCHANT DEPOSIT", "POS SETTLEMENT", "BATCH SETTLEMENT", etc.
+  CREDIT_CARD: [
+    'visa', 'mastercard', 'amex', 'discover', 'card', 'credit card', 'debit card',
+    'merchant', 'merchant deposit', 'pos', 'settlement', 'batch',
+    'dda deposit', 'card services', 'worldpay', 'fiserv', 'elavon',
+    'first data', 'global payments', 'heartland', 'square', 'stripe', 'clover',
+  ],
+  PAYCONNECT: [
+    'payconnect', 'pay connect', 'dentalxchange',
+    'merchant', 'merchant deposit', 'settlement', 'batch',
+    'dda deposit', 'card services',
+  ],
+  AUTHORIZE_NET: [
+    'authorize', 'auth.net', 'authorizenet', 'authorize.net',
+    'merchant', 'merchant deposit', 'settlement', 'batch',
+    'dda deposit', 'card services',
+  ],
+  CHERRY: ['cherry', 'cherry payment', 'cherry financial'],
+  SUNBIT: ['sunbit', 'sunbit payment'],
+  CARE_CREDIT: ['carecredit', 'care credit', 'synchrony', 'synchrony bank'],
+};
+
+/**
+ * Keywords to search in OpenDental PayNote field when PayType matching fails.
+ * Staff typically writes the gateway/financing name in the PayNote.
+ * This is the fallback filter for non-card payment modes.
+ */
+const PAYNOTE_FILTER_KEYWORDS: Partial<Record<PaymentMode, string[]>> = {
   CHERRY: ['cherry'],
-  CARE_CREDIT: ['care credit', 'carecredit'],
+  SUNBIT: ['sunbit'],
+  CARE_CREDIT: ['carecredit', 'care credit', 'synchrony'],
+  PAYCONNECT: ['payconnect', 'pay connect'],
+  AUTHORIZE_NET: ['authorize', 'auth.net', 'authorizenet'],
+  EFT: ['eft', 'wire', 'transfer', 'neft', 'rtgs', 'utr'],
+  ACH: ['ach', 'direct deposit', 'zelle', 'clearing house'],
+  CHEQUE: [],  // Cheques use CheckNum field, not PayNote
+  CREDIT_CARD: [],  // Credit cards always have PayType match
 };
 
 async function getPayTypeIdsForMode(
@@ -637,7 +717,9 @@ async function getPayTypeIdsForMode(
   paymentMode: PaymentMode
 ): Promise<number[]> {
   try {
-    const definitions = await callOpenDentalApi('GET', '/definitions?Category=12', authHeader);
+    // Category=10 is PaymentType (patient payment types like Check, Cash, CC)
+    // Category=32 is InsPaymentType (insurance claim payment types)
+    const definitions = await callOpenDentalApi('GET', '/definitions?Category=10', authHeader);
     if (!Array.isArray(definitions)) return [];
 
     const keywords = PAYMENT_MODE_KEYWORDS[paymentMode] || [];
@@ -651,12 +733,72 @@ async function getPayTypeIdsForMode(
       }
     }
 
-    console.log(`[Accounting] PayType IDs for ${paymentMode}: [${matchingIds.join(', ')}] (from ${definitions.length} definitions)`);
+    console.log(`[Accounting] PayType IDs for ${paymentMode}: [${matchingIds.join(', ')}] (matched from ${definitions.length} definitions, keywords: [${keywords.join(', ')}])`);
     return matchingIds;
   } catch (err: any) {
     console.warn(`[Accounting] Failed to fetch PayType definitions: ${err.message}`);
     return [];
   }
+}
+
+/**
+ * Filter OpenDental payments for a specific payment mode.
+ * 
+ * Uses a 3-tier approach:
+ *   1. PayType ID matching (most accurate — clinic has named the PayType correctly)
+ *   2. PayNote keyword matching (fallback — staff wrote the gateway name in notes)
+ *   3. CheckNum-based (for cheques — if CheckNum is populated, it's likely a cheque)
+ * 
+ * This prevents the old problem where Cherry reconciliation would get ALL 500+ payments
+ * when no "Cherry" PayType existed, causing massive mismatch.
+ */
+async function filterPaymentsByMode(
+  payments: any[],
+  paymentMode: PaymentMode,
+  authHeader: string
+): Promise<any[]> {
+  // Step 1: Try PayType-based filtering
+  const payTypeIds = await getPayTypeIdsForMode(authHeader, paymentMode);
+
+  if (payTypeIds.length > 0) {
+    const byPayType = payments.filter((p: any) => {
+      const pt = Number(p.PayType || p.payType || 0);
+      return payTypeIds.includes(pt);
+    });
+    console.log(`[Accounting] ${paymentMode}: ${byPayType.length}/${payments.length} matched by PayType IDs [${payTypeIds.join(', ')}]`);
+
+    if (byPayType.length > 0) return byPayType;
+    // If PayType matched definitions but 0 payments, fall through to PayNote
+    console.warn(`[Accounting] ${paymentMode}: PayType IDs matched definitions but 0 payments found — trying PayNote fallback`);
+  }
+
+  // Step 2: PayNote keyword matching (fallback for Cherry, Sunbit, CareCredit, etc.)
+  const noteKeywords = PAYNOTE_FILTER_KEYWORDS[paymentMode] || [];
+  if (noteKeywords.length > 0) {
+    const byPayNote = payments.filter((p: any) => {
+      const payNote = (p.PayNote || p.payNote || '').toLowerCase();
+      return noteKeywords.some(kw => payNote.includes(kw));
+    });
+    console.log(`[Accounting] ${paymentMode}: ${byPayNote.length}/${payments.length} matched by PayNote keywords [${noteKeywords.join(', ')}]`);
+
+    if (byPayNote.length > 0) return byPayNote;
+    console.warn(`[Accounting] ${paymentMode}: No PayNote matches either`);
+  }
+
+  // Step 3: Special handling for CHEQUE — filter by CheckNum field
+  if (paymentMode === 'CHEQUE') {
+    const byCheckNum = payments.filter((p: any) => {
+      const checkNum = (p.CheckNum || p.checkNum || '').trim();
+      return checkNum.length > 0;
+    });
+    console.log(`[Accounting] CHEQUE: ${byCheckNum.length}/${payments.length} have CheckNum populated`);
+    if (byCheckNum.length > 0) return byCheckNum;
+  }
+
+  // Step 4: Final fallback — return all BUT log a strong warning
+  // This means we couldn't identify which payments belong to this mode
+  console.error(`[Accounting] ${paymentMode}: ⚠️  Could not filter payments by PayType or PayNote — returning ALL ${payments.length} payments. Reconciliation accuracy will be low!`);
+  return payments;
 }
 
 /**
@@ -669,7 +811,7 @@ async function fetchPatientNames(
   patNums: number[]
 ): Promise<Map<number, string>> {
   const nameMap = new Map<number, string>();
-  const uniquePatNums = [...new Set(patNums.filter(n => n > 0))];
+  const uniquePatNums = Array.from(new Set(patNums.filter(n => n > 0)));
 
   if (uniquePatNums.length === 0) return nameMap;
 
@@ -754,17 +896,8 @@ async function fetchOpenDentalPayments(
 
     console.log(`[Accounting] ${filteredPayments.length} payments within date range ${dateStart} to ${dateEnd}`);
 
-    // 3b. Filter by PayType for the selected payment mode
-    const payTypeIds = await getPayTypeIdsForMode(authHeader, paymentMode);
-    if (payTypeIds.length > 0) {
-      filteredPayments = filteredPayments.filter((p: any) => {
-        const pt = Number(p.PayType || p.payType || 0);
-        return payTypeIds.includes(pt);
-      });
-      console.log(`[Accounting] ${filteredPayments.length} payments after PayType filter (IDs: ${payTypeIds.join(', ')})`);
-    } else {
-      console.warn(`[Accounting] No PayType mapping found for mode ${paymentMode} — showing all payments`);
-    }
+    // 3b. Filter by payment mode (PayType → PayNote → CheckNum fallback)
+    filteredPayments = await filterPaymentsByMode(filteredPayments, paymentMode, authHeader);
 
     // 4. Batch-fetch patient names from OpenDental /patients endpoint
     const allPatNums = filteredPayments.map((p: any) => Number(p.PatNum || p.patNum || 0));
@@ -778,7 +911,15 @@ async function fetchOpenDentalPayments(
       const payNum = p.PayNum || p.payNum || 0;
       const payType = p.PayType || p.payType || 0;
       const payNote = p.PayNote || p.payNote || '';
+      const checkNum = p.CheckNum || p.checkNum || '';
       const patientName = patientNameMap.get(patNum) || `Patient #${patNum}`;
+
+      // Use mode-appropriate reference:
+      // CHEQUE -> CheckNum, others -> PayNote
+      let referenceId = payNote || `PAY-${payNum}`;
+      if (paymentMode === 'CHEQUE' && checkNum) {
+        referenceId = checkNum;
+      }
 
       return {
         rowId: `od-${payNum}`,
@@ -787,7 +928,8 @@ async function fetchOpenDentalPayments(
         paymentDate: payDate,
         expectedAmount: Number(payAmt),
         paymentMode,
-        referenceId: payNote || `PAY-${payNum}`,
+        referenceId,
+        checkNum: checkNum || undefined,
         sourceType: 'PATIENT' as const,
         payType,
       };
@@ -870,7 +1012,7 @@ async function callOpenDentalApi(
   });
 }
 
-async function fetchOdooBankTransactions(clinicId: string, dateStart: string, dateEnd: string) {
+async function fetchOdooBankTransactions(clinicId: string, dateStart: string, dateEnd: string, paymentMode?: PaymentMode) {
   // Get clinic config to find Odoo company ID
   const clinicConfig = await getClinicConfig(clinicId);
   if (!clinicConfig) {
@@ -893,7 +1035,7 @@ async function fetchOdooBankTransactions(clinicId: string, dateStart: string, da
 
     const odooClient = new OdooClient(odooConfig);
 
-    console.log(`[Accounting] Fetching Odoo bank transactions for clinic ${clinicId}, company ${odooCompanyId}, range ${dateStart} to ${dateEnd}`);
+    console.log(`[Accounting] Fetching Odoo bank transactions for clinic ${clinicId}, company ${odooCompanyId}, range ${dateStart} to ${dateEnd}, mode: ${paymentMode || 'ALL'}`);
 
     const transactions = await odooClient.getBankTransactions({
       companyId: Number(odooCompanyId),
@@ -901,18 +1043,80 @@ async function fetchOdooBankTransactions(clinicId: string, dateStart: string, da
       dateEnd,
     });
 
-    console.log(`[Accounting] Fetched ${transactions.length} transactions from Odoo`);
+    console.log(`[Accounting] Fetched ${transactions.length} total transactions from Odoo`);
+
+    // Filter by payment mode keywords if a specific mode is requested
+    let filteredTransactions = transactions;
+    if (paymentMode && BANK_ROW_FILTER_KEYWORDS[paymentMode]) {
+      const keywords = BANK_ROW_FILTER_KEYWORDS[paymentMode];
+      filteredTransactions = transactions.filter((txn: any) => {
+        const searchText = [
+          txn.payment_ref || '',
+          txn.ref || '',
+          txn.name || '',
+          txn.narration || '',
+        ].join(' ').toLowerCase();
+        return keywords.some(kw => searchText.includes(kw));
+      });
+
+      console.log(`[Accounting] After ${paymentMode} keyword filtering: ${filteredTransactions.length}/${transactions.length} transactions`);
+
+      // If no transactions match the keywords, return all as fallback
+      // (clinic may not have keyword-tagged bank entries)
+      if (filteredTransactions.length === 0) {
+        console.warn(`[Accounting] No transactions matched ${paymentMode} keywords — returning all ${transactions.length} as fallback`);
+        filteredTransactions = transactions;
+      }
+    }
 
     return httpOk({
       clinicId,
       odooCompanyId,
+      paymentMode: paymentMode || 'ALL',
       dateStart,
       dateEnd,
-      transactions,
+      totalTransactions: transactions.length,
+      filteredCount: filteredTransactions.length,
+      transactions: filteredTransactions,
     });
   } catch (error: any) {
     console.error('[Accounting] Error fetching Odoo bank transactions:', error);
     return httpErr(500, `Failed to fetch Odoo bank transactions: ${error.message}`);
+  }
+}
+
+/**
+ * Fetch Cherry financing transactions for a clinic.
+ * Uses the per-clinic Cherry API key from ClinicSecrets.
+ */
+async function fetchCherryTransactions(clinicId: string, dateStart: string, dateEnd: string) {
+  try {
+    const cherryApiKey = await getCherryApiKey(clinicId);
+    if (!cherryApiKey) {
+      return httpErr(400, `No Cherry API key configured for clinic ${clinicId}. Add cherryApiKey to ClinicSecrets.`);
+    }
+
+    const cherryClient = new CherryClient({ apiKey: cherryApiKey });
+
+    console.log(`[Accounting] Fetching Cherry transactions for clinic ${clinicId}, range ${dateStart} to ${dateEnd}`);
+
+    const transactions = await cherryClient.getTransactions({ dateStart, dateEnd });
+    const bankRows = cherryTransactionsToBankRows(transactions);
+
+    console.log(`[Accounting] Fetched ${transactions.length} Cherry transactions (${bankRows.length} fundable)`);
+
+    return httpOk({
+      clinicId,
+      dateStart,
+      dateEnd,
+      transactions,       // Raw Cherry transaction data
+      bankRows,            // Mapped to BankStatementRow format for reconciliation
+      totalTransactions: transactions.length,
+      fundedTransactions: bankRows.length,
+    });
+  } catch (error: any) {
+    console.error('[Accounting] Error fetching Cherry transactions:', error);
+    return httpErr(500, `Failed to fetch Cherry transactions: ${error.message}`);
   }
 }
 
@@ -970,6 +1174,225 @@ async function getBankStatements(clinicId: string, paymentMode: PaymentMode) {
   return httpOk({ bankStatements: Items || [] });
 }
 
+// ========================================
+// MODE-SPECIFIC BANK DATA PROVIDERS
+// ========================================
+
+/**
+ * Shared helper: fetch bank rows from Odoo and map to BankStatementRow format.
+ * Used as the default/fallback data source for most payment modes.
+ */
+async function fetchOdooBankRows(
+  clinicId: string,
+  dateStart: string,
+  dateEnd: string,
+  modeLabel: string
+): Promise<BankStatementRow[]> {
+  try {
+    const clinicConfig = await getClinicConfig(clinicId);
+    const odooCompanyId = clinicConfig?.odooCompanyId;
+    if (!odooCompanyId) {
+      console.warn(`[Reconciliation] No odooCompanyId configured for clinic ${clinicId}`);
+      return [];
+    }
+
+    const odooConfig = await getOdooConfig();
+    if (!odooConfig) {
+      console.warn('[Reconciliation] Odoo config not available');
+      return [];
+    }
+
+    const odooClient = new OdooClient(odooConfig);
+    const transactions = await odooClient.getBankTransactions({
+      companyId: Number(odooCompanyId),
+      dateStart,
+      dateEnd,
+    });
+
+    console.log(`[Reconciliation][${modeLabel}] Got ${transactions.length} Odoo bank transactions`);
+
+    // Filter by mode-specific keywords so each gateway only sees relevant bank rows.
+    // If no keywords are defined for this mode, return ALL transactions.
+    // If keywords are defined but none match, DO NOT FALL BACK to all —
+    //   returning all transactions pollutes the matching pool with irrelevant rows
+    //   and causes false "Amount-only" partial matches everywhere.
+    let filtered = transactions;
+    const keywords = BANK_ROW_FILTER_KEYWORDS[modeLabel as PaymentMode];
+    if (keywords && keywords.length > 0) {
+      filtered = transactions.filter((txn: any) => {
+        const searchText = [
+          txn.payment_ref || '',
+          txn.ref || '',
+          txn.name || '',
+          txn.narration || '',
+        ].join(' ').toLowerCase();
+        return keywords.some((kw: string) => searchText.includes(kw));
+      });
+      console.log(`[Reconciliation][${modeLabel}] After keyword filtering: ${filtered.length}/${transactions.length} transactions`);
+
+      // If keyword filtering eliminated everything, it means the bank doesn't tag
+      // transactions with recognizable keywords for this mode. For card modes,
+      // this likely means deposits are generic. Use ALL credit-side rows as fallback.
+      if (filtered.length === 0) {
+        const cardModes: PaymentMode[] = ['CREDIT_CARD', 'PAYCONNECT', 'AUTHORIZE_NET'];
+        if (cardModes.includes(modeLabel as PaymentMode)) {
+          // For card modes: use ALL credit (positive amount) transactions
+          // since card settlements always appear as credits/deposits
+          filtered = transactions.filter((txn: any) => (txn.amount || 0) > 0);
+          console.warn(`[Reconciliation][${modeLabel}] No keyword matches — using all ${filtered.length} CREDIT transactions as fallback`);
+        } else {
+          console.warn(`[Reconciliation][${modeLabel}] No keyword matches — returning 0 rows. Bank may not have ${modeLabel} deposits in this period.`);
+          // Return empty — better to show 0 bank rows than match against irrelevant data
+        }
+      }
+    } else {
+      console.log(`[Reconciliation][${modeLabel}] No keyword filter defined — using all ${transactions.length} transactions`);
+    }
+
+    return filtered.map((txn: any, idx: number) => {
+      // Odoo bank statement lines have multiple reference fields:
+      //   payment_ref: payment reference (often the primary ref)
+      //   ref: general reference
+      //   name: bank statement line label/narration
+      //   narration: additional notes/memo
+      // Different payment modes may store their reference in different fields.
+      // We pick the best one and combine all for description.
+      const paymentRef = (txn.payment_ref || '').trim();
+      const ref = (txn.ref || '').trim();
+      const name = (txn.name || '').trim();
+      const narration = (txn.narration || '').trim();
+
+      // Pick the best reference: prefer payment_ref, fall back to ref, then name
+      // For EFT/CHEQUE, the bank often puts the UTR/check number in `name` or `ref`
+      const reference = paymentRef || ref || name || '';
+
+      // Build a rich description combining all available fields
+      const descParts = [paymentRef, ref, name, narration].filter(Boolean);
+      const description = Array.from(new Set(descParts)).join(' | ') || '';
+
+      return {
+        rowId: `odoo-${txn.id || idx}`,
+        date: txn.date || '',
+        reference,
+        description,
+        amount: Math.abs(txn.amount || 0),
+        type: (txn.amount || 0) >= 0 ? 'CREDIT' as const : 'DEBIT' as const,
+      };
+    });
+  } catch (err: any) {
+    console.error(`[Reconciliation][${modeLabel}] Error fetching Odoo transactions:`, err.message);
+    return [];
+  }
+}
+
+/**
+ * Fetch bank-side rows using a mode-specific data provider.
+ * 
+ * Each payment mode can have its own data source:
+ *   - CHERRY: Cherry API → Odoo fallback
+ *   - SUNBIT: (future) Sunbit API → Odoo fallback
+ *   - CARE_CREDIT: (future) CareCredit API → Odoo fallback
+ *   - EFT: Odoo bank statement lines (wire transfers)
+ *   - CHEQUE: Odoo bank statement lines (cleared cheques)
+ *   - CREDIT_CARD: Odoo bank statement lines
+ *   - PAYCONNECT: Odoo bank statement lines
+ *   - AUTHORIZE_NET: Odoo bank statement lines
+ * 
+ * All modes gracefully fall back to Odoo when their primary API is unavailable.
+ */
+async function fetchBankRowsForMode(
+  paymentMode: PaymentMode,
+  clinicId: string,
+  dateStart: string,
+  dateEnd: string
+): Promise<BankStatementRow[]> {
+
+  switch (paymentMode) {
+
+    // ─── CHERRY: Fetch from Cherry API ───────────────────────────
+    case 'CHERRY': {
+      try {
+        const cherryApiKey = await getCherryApiKey(clinicId);
+        if (cherryApiKey) {
+          console.log(`[Reconciliation][CHERRY] Fetching from Cherry API for clinic ${clinicId}`);
+          const cherryClient = new CherryClient({ apiKey: cherryApiKey });
+          const cherryTxns = await cherryClient.getTransactions({ dateStart, dateEnd });
+          const rows = cherryTransactionsToBankRows(cherryTxns);
+          console.log(`[Reconciliation][CHERRY] Got ${rows.length} funded rows (from ${cherryTxns.length} total)`);
+          if (rows.length > 0) return rows;
+        } else {
+          console.warn(`[Reconciliation][CHERRY] No Cherry API key for clinic ${clinicId}`);
+        }
+      } catch (err: any) {
+        console.error(`[Reconciliation][CHERRY] Cherry API error: ${err.message}`);
+      }
+      // Fallback to Odoo
+      console.log('[Reconciliation][CHERRY] Falling back to Odoo bank data');
+      return fetchOdooBankRows(clinicId, dateStart, dateEnd, 'CHERRY');
+    }
+
+    // ─── SUNBIT: Future API integration, falls back to Odoo ─────
+    case 'SUNBIT': {
+      // TODO: Integrate Sunbit partner API when available
+      // Sunbit settlement data would provide transaction-level detail
+      // similar to Cherry, enabling accurate per-patient matching.
+      console.log('[Reconciliation][SUNBIT] Using Odoo bank data (Sunbit API not yet integrated)');
+      return fetchOdooBankRows(clinicId, dateStart, dateEnd, 'SUNBIT');
+    }
+
+    // ─── CARE_CREDIT: Future API integration, falls back to Odoo ─
+    case 'CARE_CREDIT': {
+      // TODO: Integrate CareCredit partner API when available
+      // CareCredit settlement reports would provide individual transaction references
+      // for matching against OpenDental CareCredit payments.
+      console.log('[Reconciliation][CARE_CREDIT] Using Odoo bank data (CareCredit API not yet integrated)');
+      return fetchOdooBankRows(clinicId, dateStart, dateEnd, 'CARE_CREDIT');
+    }
+
+    // ─── EFT: Odoo bank statement lines (wire transfers) ────────
+    case 'EFT': {
+      console.log('[Reconciliation][EFT] Fetching Odoo bank transactions');
+      return fetchOdooBankRows(clinicId, dateStart, dateEnd, 'EFT');
+    }
+
+    // ─── CHEQUE: Odoo bank statement lines (cleared cheques) ────
+    case 'CHEQUE': {
+      console.log('[Reconciliation][CHEQUE] Fetching Odoo bank transactions');
+      return fetchOdooBankRows(clinicId, dateStart, dateEnd, 'CHEQUE');
+    }
+
+    // ─── CREDIT_CARD: Odoo bank data ────────────────────────────
+    case 'CREDIT_CARD': {
+      console.log('[Reconciliation][CREDIT_CARD] Fetching Odoo bank transactions');
+      return fetchOdooBankRows(clinicId, dateStart, dateEnd, 'CREDIT_CARD');
+    }
+
+    // ─── PAYCONNECT: Odoo bank data ─────────────────────────────
+    case 'PAYCONNECT': {
+      console.log('[Reconciliation][PAYCONNECT] Fetching Odoo bank transactions');
+      return fetchOdooBankRows(clinicId, dateStart, dateEnd, 'PAYCONNECT');
+    }
+
+    // ─── AUTHORIZE_NET: Odoo bank data ──────────────────────────
+    case 'AUTHORIZE_NET': {
+      console.log('[Reconciliation][AUTHORIZE_NET] Fetching Odoo bank transactions');
+      return fetchOdooBankRows(clinicId, dateStart, dateEnd, 'AUTHORIZE_NET');
+    }
+
+    // ─── ACH: Odoo bank data (ACH/direct deposit transactions) ──
+    case 'ACH': {
+      console.log('[Reconciliation][ACH] Fetching Odoo bank transactions');
+      return fetchOdooBankRows(clinicId, dateStart, dateEnd, 'ACH');
+    }
+
+    // ─── Unknown mode: Odoo fallback ────────────────────────────
+    default: {
+      console.warn(`[Reconciliation] Unknown payment mode "${paymentMode}", using Odoo fallback`);
+      return fetchOdooBankRows(clinicId, dateStart, dateEnd, paymentMode);
+    }
+  }
+}
+
 async function generateReconciliation(
   clinicId: string,
   paymentMode: PaymentMode,
@@ -1006,17 +1429,8 @@ async function generateReconciliation(
           return payDate <= dateEnd;
         });
 
-        // Filter by PayType for the selected payment mode
-        const payTypeIds = await getPayTypeIdsForMode(authHeader, paymentMode);
-        if (payTypeIds.length > 0) {
-          filteredPayments = filteredPayments.filter((p: any) => {
-            const pt = Number(p.PayType || p.payType || 0);
-            return payTypeIds.includes(pt);
-          });
-          console.log(`[Reconciliation] ${filteredPayments.length} payments after PayType filter for ${paymentMode}`);
-        } else {
-          console.warn(`[Reconciliation] No PayType mapping found for ${paymentMode} — using all payments`);
-        }
+        // Filter by payment mode (PayType → PayNote → CheckNum fallback)
+        filteredPayments = await filterPaymentsByMode(filteredPayments, paymentMode, authHeader);
 
         // Batch-fetch patient names from OpenDental /patients endpoint
         const reconPatNums = filteredPayments.map((p: any) => Number(p.PatNum || p.patNum || 0));
@@ -1029,7 +1443,22 @@ async function generateReconciliation(
           const payDate = (p.PayDate || p.payDate || '').substring(0, 10);
           const payNum = p.PayNum || p.payNum || 0;
           const payNote = p.PayNote || p.payNote || '';
+          const checkNum = p.CheckNum || p.checkNum || '';
           const patientName = reconNameMap.get(patNum) || `Patient #${patNum}`;
+
+          // Use mode-appropriate reference:
+          // CHEQUE -> CheckNum as primary reference
+          // All other modes -> PayNote as primary reference
+          // Always include both for cross-referencing in matching strategies
+          let referenceId = payNote || `PAY-${payNum}`;
+          if (paymentMode === 'CHEQUE' && checkNum) {
+            referenceId = checkNum;
+          }
+          // For EFT, try to clean up the PayNote if it contains irrelevant text
+          if (paymentMode === 'EFT' && payNote) {
+            // Staff often paste extra text — keep only the UTR/reference part
+            referenceId = payNote;
+          }
 
           return {
             rowId: `od-${payNum}`,
@@ -1038,7 +1467,8 @@ async function generateReconciliation(
             paymentDate: payDate,
             expectedAmount: Number(payAmt),
             paymentMode,
-            referenceId: payNote || `PAY-${payNum}`,
+            referenceId,
+            checkNum: checkNum || undefined,
             sourceType: 'PATIENT' as const,
           };
         });
@@ -1052,11 +1482,18 @@ async function generateReconciliation(
     console.error('[Reconciliation] Error fetching OpenDental payments:', err.message);
   }
 
-  // 2. Fetch bank transactions from Odoo (or uploaded bank file)
+  // 2. Fetch bank-side transactions using mode-specific data source
+  //    Each payment mode can define its own bank-side data provider:
+  //      - CHERRY → Cherry API (per-clinic API key)
+  //      - SUNBIT → Sunbit API (future)
+  //      - CARE_CREDIT → CareCredit API (future)
+  //      - EFT / CHEQUE → Odoo bank statement lines
+  //      - CREDIT_CARD / PAYCONNECT / AUTHORIZE_NET → Odoo or uploaded file
+  //    All modes allow an uploaded bank file override via bankStatementId.
   let bankRows: BankStatementRow[] = [];
 
   if (bankStatementId) {
-    // Use uploaded bank file
+    // Override: Use uploaded bank file (any payment mode)
     try {
       const { Item } = await ddb.send(new GetCommand({
         TableName: BANK_STATEMENTS_TABLE,
@@ -1070,36 +1507,8 @@ async function generateReconciliation(
       console.error('[Reconciliation] Error loading bank file:', err.message);
     }
   } else {
-    // Fetch from Odoo
-    try {
-      const clinicConfig = await getClinicConfig(clinicId);
-      const odooCompanyId = clinicConfig?.odooCompanyId;
-      if (odooCompanyId) {
-        const odooConfig = await getOdooConfig();
-        if (odooConfig) {
-          const odooClient = new OdooClient(odooConfig);
-          const transactions = await odooClient.getBankTransactions({
-            companyId: Number(odooCompanyId),
-            dateStart,
-            dateEnd,
-          });
-
-          console.log(`[Reconciliation] Got ${transactions.length} Odoo bank transactions`);
-
-          // Map Odoo transactions to BankStatementRow format
-          bankRows = transactions.map((txn: any, idx: number) => ({
-            rowId: `odoo-${txn.id || idx}`,
-            date: txn.date || '',
-            reference: txn.payment_ref || txn.ref || '',
-            description: txn.payment_ref || txn.ref || '',
-            amount: Math.abs(txn.amount || 0),
-            type: (txn.amount || 0) >= 0 ? 'CREDIT' as const : 'DEBIT' as const,
-          }));
-        }
-      }
-    } catch (err: any) {
-      console.error('[Reconciliation] Error fetching Odoo transactions:', err.message);
-    }
+    // Mode-specific bank-side data fetching
+    bankRows = await fetchBankRowsForMode(paymentMode, clinicId, dateStart, dateEnd);
   }
 
   // 3. Run matching strategy

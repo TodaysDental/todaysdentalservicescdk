@@ -70,6 +70,7 @@ export interface ClinicSecrets {
   domainSmtpPassword: string;
   ayrshareProfileKey: string;
   ayrshareRefId: string;
+  cherryApiKey?: string;
   updatedAt?: string;
 }
 
@@ -617,4 +618,17 @@ export async function getFCMCredentials(): Promise<{
   }
 
   return { projectId, serviceAccountKey };
+}
+
+/**
+ * Get Cherry API key for a specific clinic
+ * Cherry API keys are per-clinic since each clinic has its own Cherry merchant account
+ */
+export async function getCherryApiKey(clinicId: string): Promise<string | null> {
+  const secrets = await getClinicSecrets(clinicId);
+  if (!secrets?.cherryApiKey) {
+    console.warn(`[SecretsHelper] No Cherry API key found for clinic: ${clinicId}`);
+    return null;
+  }
+  return secrets.cherryApiKey;
 }

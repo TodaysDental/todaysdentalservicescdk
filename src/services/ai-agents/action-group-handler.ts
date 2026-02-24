@@ -1223,6 +1223,149 @@ async function handleTool(
         return { statusCode: 200, body: { status: 'SUCCESS', data } };
       }
 
+      case 'searchPatientsByPhone': {
+        const isPublicRequest = sessionAttributes?.isPublicRequest === 'true';
+
+        const phoneFromParams =
+          (typeof params.WirelessPhone === 'string' && params.WirelessPhone.trim()) ||
+          (typeof params.Phone === 'string' && params.Phone.trim()) ||
+          (typeof params.phoneNumber === 'string' && params.phoneNumber.trim()) ||
+          (typeof params.phone === 'string' && params.phone.trim()) ||
+          '';
+
+        const phoneFromSession =
+          (typeof sessionAttributes?.callerPhone === 'string' && sessionAttributes.callerPhone.trim()) ||
+          (typeof sessionAttributes?.callerNumber === 'string' && sessionAttributes.callerNumber.trim()) ||
+          (typeof sessionAttributes?.PatientPhone === 'string' && sessionAttributes.PatientPhone.trim()) ||
+          '';
+
+        const rawPhone = (phoneFromParams || phoneFromSession).trim();
+
+        if (!rawPhone) {
+          return {
+            statusCode: 400,
+            body: {
+              status: 'FAILURE',
+              message: 'WirelessPhone (or callerNumber/callerPhone in session) is required to search by phone',
+              missingFields: ['WirelessPhone'],
+            },
+            updatedSessionAttributes,
+          };
+        }
+
+        const toSafePatient = (p: any) => ({
+          PatNum: p.PatNum,
+          LName: p.LName,
+          FName: p.FName,
+          Birthdate: p.Birthdate,
+          DateFirstVisit: p.DateFirstVisit,
+        });
+
+        // Clean phone number - remove all non-digit characters
+        const cleanPhone = rawPhone.replace(/\D/g, '');
+        const phoneFormatsRaw = [
+          cleanPhone,
+          cleanPhone.length >= 10 ? cleanPhone.slice(-10) : '',
+          cleanPhone.length >= 7 ? cleanPhone.slice(-7) : '',
+        ].filter(Boolean);
+        const phoneFormats = [...new Set(phoneFormatsRaw)].filter((p) => p.length >= 7);
+
+        // Check rate limit ONCE before trying multiple formats
+        const circuitCheck = await checkCircuitBreaker(odClient.getClinicId());
+        if (!circuitCheck.allowed) {
+          throw new Error(circuitCheck.reason || 'Request blocked by circuit breaker');
+        }
+
+        let patients: any[] = [];
+        let usedFormat = '';
+
+        try {
+          for (const phone of phoneFormats) {
+            console.log(`[searchPatientsByPhone] Attempt with phone: ${phone}`);
+            const resp = await odClient.request('GET', 'patients', {
+              params: { Phone: phone },
+              skipRateLimit: true,
+            });
+            const items = Array.isArray(resp) ? resp : resp?.items ?? [];
+            if (items.length > 0) {
+              patients = items;
+              usedFormat = phone;
+              break;
+            }
+          }
+        } catch (searchError: any) {
+          console.error(`[searchPatientsByPhone] OpenDental API failed:`, searchError);
+
+          const clinicId = sessionAttributes.clinicId || odClient.getClinicId();
+
+          await savePatientSearchFailureAsCallback({
+            clinicId,
+            searchPhone: rawPhone,
+            searchCriteria: { WirelessPhone: rawPhone },
+            failureReason: `OpenDental API error: ${searchError?.message || 'Unknown error'}`,
+            source: 'ai-agent',
+          });
+
+          return {
+            statusCode: searchError?.response?.status || 500,
+            body: {
+              status: 'FAILURE',
+              message: 'Unable to search patients by phone - please try again or call the office',
+              callbackCreated: true,
+            },
+            updatedSessionAttributes,
+          };
+        }
+
+        if (patients.length === 0) {
+          return {
+            statusCode: 404,
+            body: {
+              status: 'FAILURE',
+              data: { items: [] },
+              message: 'No matching patient found for phone number',
+              usedFormat,
+            },
+            updatedSessionAttributes,
+          };
+        }
+
+        if (patients.length > 1) {
+          // Avoid wrong-patient selection; force confirmation with name + DOB.
+          return {
+            statusCode: 404,
+            body: {
+              status: 'FAILURE',
+              data: { items: isPublicRequest ? [] : patients.slice(0, 5).map(toSafePatient) },
+              message: `Multiple matches found (${patients.length}). Ask the caller for their first name, last name, and date of birth to confirm.`,
+              usedFormat,
+            },
+            updatedSessionAttributes,
+          };
+        }
+
+        const patient = patients[0];
+        updatedSessionAttributes.PatNum = patient.PatNum.toString();
+        updatedSessionAttributes.FName = patient.FName;
+        updatedSessionAttributes.LName = patient.LName;
+        updatedSessionAttributes.Birthdate = patient.Birthdate;
+        updatedSessionAttributes.IsNewPatient = (patient.DateFirstVisit === '0001-01-01').toString();
+        // Persist caller phone for downstream tools/callbacks
+        updatedSessionAttributes.PatientPhone = rawPhone;
+        updatedSessionAttributes.callerPhone = rawPhone;
+
+        return {
+          statusCode: 200,
+          body: {
+            status: 'SUCCESS',
+            data: { items: [toSafePatient(patient)] },
+            message: 'Found 1 patient(s) by phone',
+            usedFormat,
+          },
+          updatedSessionAttributes,
+        };
+      }
+
       case 'searchPatients': {
         const isPublicRequest = sessionAttributes?.isPublicRequest === 'true';
 
@@ -1280,14 +1423,191 @@ async function handleTool(
         });
 
         // Normalize birthdate to YYYY-MM-DD format (OpenDental API requirement)
-        let normalizedBirthdate = params.Birthdate;
+        let normalizedBirthdate = params.Birthdate || sessionAttributes?.Birthdate;
         if (normalizedBirthdate) {
           normalizedBirthdate = normalizeDateFormat(normalizedBirthdate);
-          console.log(`[searchPatients] Normalized birthdate: ${params.Birthdate} → ${normalizedBirthdate}`);
+          console.log(`[searchPatients] Normalized birthdate: ${params.Birthdate || sessionAttributes?.Birthdate} → ${normalizedBirthdate}`);
         }
 
-        const providedFName = cleanName(params.FName);
-        const providedLName = cleanName(params.LName);
+        const providedFName = cleanName(params.FName || sessionAttributes?.FName);
+        const providedLName = cleanName(params.LName || sessionAttributes?.LName);
+
+        // If we already have a PatNum (from caller-ID lookup earlier in the call),
+        // short-circuit to avoid re-asking for DOB/name.
+        const patNumFromSession =
+          (typeof params.PatNum === 'string' && params.PatNum.trim()) ||
+          (typeof sessionAttributes?.PatNum === 'string' && sessionAttributes.PatNum.trim()) ||
+          '';
+        if (patNumFromSession) {
+          try {
+            const patient = await odClient.request('GET', `patients/${patNumFromSession}`);
+            const safe = toSafePatient(patient);
+
+            updatedSessionAttributes.PatNum = String(patient?.PatNum ?? patNumFromSession);
+            if (patient?.FName) updatedSessionAttributes.FName = String(patient.FName);
+            if (patient?.LName) updatedSessionAttributes.LName = String(patient.LName);
+            if (patient?.Birthdate) updatedSessionAttributes.Birthdate = String(patient.Birthdate);
+            if (typeof patient?.DateFirstVisit === 'string') {
+              updatedSessionAttributes.IsNewPatient = (patient.DateFirstVisit === '0001-01-01').toString();
+            }
+
+            return {
+              statusCode: 200,
+              body: {
+                status: 'SUCCESS',
+                data: { items: [safe] },
+                message: 'Resolved patient by PatNum',
+              },
+              updatedSessionAttributes,
+            };
+          } catch (error: any) {
+            console.warn('[searchPatients] Failed to resolve patient by PatNum, falling back', {
+              patNum: patNumFromSession,
+              error: error?.message || String(error),
+            });
+          }
+        }
+
+        // SAFETY: Require DOB for name-based patient lookup to avoid wrong-patient matches.
+        // Caller-ID matching is handled by searchPatientsByPhone.
+        const isIsoBirthdate = typeof normalizedBirthdate === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(normalizedBirthdate);
+        if (!isIsoBirthdate) {
+          // If the agent didn't provide name or DOB, fall back to caller-id phone matching
+          // to avoid getting stuck asking for DOB when we can identify via phone.
+          const hasAnyName = !!providedFName || !!providedLName;
+
+          const phoneFromParams =
+            (typeof params.WirelessPhone === 'string' && params.WirelessPhone.trim()) ||
+            (typeof params.Phone === 'string' && params.Phone.trim()) ||
+            (typeof params.phoneNumber === 'string' && params.phoneNumber.trim()) ||
+            (typeof params.phone === 'string' && params.phone.trim()) ||
+            '';
+
+          const phoneFromSession =
+            (typeof sessionAttributes?.callerPhone === 'string' && sessionAttributes.callerPhone.trim()) ||
+            (typeof sessionAttributes?.callerNumber === 'string' && sessionAttributes.callerNumber.trim()) ||
+            (typeof sessionAttributes?.PatientPhone === 'string' && sessionAttributes.PatientPhone.trim()) ||
+            '';
+
+          const rawPhone = String(phoneFromParams || phoneFromSession).trim();
+
+          if (!hasAnyName && rawPhone) {
+            // Clean phone number - remove all non-digit characters
+            const cleanPhone = rawPhone.replace(/\D/g, '');
+            const phoneFormatsRaw = [
+              cleanPhone,
+              cleanPhone.length >= 10 ? cleanPhone.slice(-10) : '',
+              cleanPhone.length >= 7 ? cleanPhone.slice(-7) : '',
+            ].filter(Boolean);
+            const phoneFormats = [...new Set(phoneFormatsRaw)].filter((p) => p.length >= 7);
+
+            // Check rate limit ONCE before trying multiple formats
+            const circuitCheck = await checkCircuitBreaker(odClient.getClinicId());
+            if (!circuitCheck.allowed) {
+              throw new Error(circuitCheck.reason || 'Request blocked by circuit breaker');
+            }
+
+            let patients: any[] = [];
+            let usedFormat = '';
+
+            try {
+              for (const phone of phoneFormats) {
+                console.log(`[searchPatients] No DOB/name provided. Falling back to phone lookup: ${phone}`);
+                const resp = await odClient.request('GET', 'patients', {
+                  params: { Phone: phone },
+                  skipRateLimit: true,
+                });
+                const items = Array.isArray(resp) ? resp : resp?.items ?? [];
+                if (items.length > 0) {
+                  patients = items;
+                  usedFormat = phone;
+                  break;
+                }
+              }
+            } catch (searchError: any) {
+              console.error(`[searchPatients] Phone fallback OpenDental API failed:`, searchError);
+
+              const clinicId = sessionAttributes.clinicId || odClient.getClinicId();
+
+              await savePatientSearchFailureAsCallback({
+                clinicId,
+                searchPhone: rawPhone,
+                searchCriteria: { WirelessPhone: rawPhone },
+                failureReason: `OpenDental API error: ${searchError?.message || 'Unknown error'}`,
+                source: 'ai-agent',
+              });
+
+              return {
+                statusCode: searchError?.response?.status || 500,
+                body: {
+                  status: 'FAILURE',
+                  message: 'Unable to search patients by phone - please try again or call the office',
+                  callbackCreated: true,
+                },
+                updatedSessionAttributes,
+              };
+            }
+
+            if (patients.length === 0) {
+              return {
+                statusCode: 404,
+                body: {
+                  status: 'FAILURE',
+                  data: { items: [] },
+                  message: 'No matching patient found for phone number',
+                  usedFormat,
+                },
+                updatedSessionAttributes,
+              };
+            }
+
+            if (patients.length > 1) {
+              // Avoid wrong-patient selection; force confirmation with name + DOB.
+              return {
+                statusCode: 404,
+                body: {
+                  status: 'FAILURE',
+                  data: { items: isPublicRequest ? [] : patients.slice(0, 5).map(toSafePatient) },
+                  message: `Multiple matches found (${patients.length}). Ask the caller for their first name, last name, and date of birth to confirm.`,
+                  usedFormat,
+                },
+                updatedSessionAttributes,
+              };
+            }
+
+            const patient = patients[0];
+            updatedSessionAttributes.PatNum = patient.PatNum.toString();
+            updatedSessionAttributes.FName = patient.FName;
+            updatedSessionAttributes.LName = patient.LName;
+            updatedSessionAttributes.Birthdate = patient.Birthdate;
+            updatedSessionAttributes.IsNewPatient = (patient.DateFirstVisit === '0001-01-01').toString();
+            // Persist caller phone for downstream tools/callbacks
+            updatedSessionAttributes.PatientPhone = rawPhone;
+            updatedSessionAttributes.callerPhone = rawPhone;
+
+            return {
+              statusCode: 200,
+              body: {
+                status: 'SUCCESS',
+                data: { items: [toSafePatient(patient)] },
+                message: 'Found 1 patient(s) by phone',
+                usedFormat,
+              },
+              updatedSessionAttributes,
+            };
+          }
+
+          return {
+            statusCode: 400,
+            body: {
+              status: 'FAILURE',
+              message:
+                'Birthdate is required to look up a patient by name. Ask for the caller’s date of birth, then call searchPatients again.',
+              missingFields: ['Birthdate'],
+            },
+            updatedSessionAttributes,
+          };
+        }
 
         const buildSearchParams = (p: { LName?: string; FName?: string; Birthdate?: string }) => {
           const out: any = {};
@@ -1452,22 +1772,67 @@ async function handleTool(
       }
 
       case 'createPatient': {
-        let phoneNumber = params.WirelessPhone;
+        const cleanName = (value: any): string => {
+          if (!value || typeof value !== 'string') return '';
+          return value
+            .trim()
+            .replace(/\s+/g, ' ')
+            // keep common name punctuation
+            .replace(/[^a-zA-Z\s'\-]/g, '')
+            .trim();
+        };
+
+        const rawFName = cleanName(params.FName);
+        const rawLName = cleanName(params.LName);
+
+        let phoneNumber =
+          params.WirelessPhone ||
+          params.Phone ||
+          params.phoneNumber ||
+          params.phone ||
+          sessionAttributes?.callerPhone ||
+          sessionAttributes?.callerNumber ||
+          sessionAttributes?.PatientPhone;
+
         if (phoneNumber) {
-          const parsedPhone = parsePhoneNumberFromString(phoneNumber, 'US');
+          const rawPhone = String(phoneNumber).trim();
+          const parsedPhone = parsePhoneNumberFromString(rawPhone, 'US');
           if (parsedPhone?.isValid()) {
             phoneNumber = parsedPhone.formatNational();
+          } else {
+            phoneNumber = rawPhone;
           }
         }
 
         // Normalize birthdate to YYYY-MM-DD format
-        const normalizedBirthdate = params.Birthdate ? normalizeDateFormat(params.Birthdate) : undefined;
+        const normalizedBirthdateRaw = params.Birthdate ? normalizeDateFormat(params.Birthdate) : '';
+        const normalizedBirthdate = typeof normalizedBirthdateRaw === 'string' ? normalizedBirthdateRaw.trim() : '';
+        const isIsoBirthdate = /^\d{4}-\d{2}-\d{2}$/.test(normalizedBirthdate);
+
+        const missing: string[] = [];
+        if (!rawFName) missing.push('FName');
+        if (!rawLName) missing.push('LName');
+        if (!isIsoBirthdate) missing.push('Birthdate');
+
+        if (missing.length > 0) {
+          return {
+            statusCode: 400,
+            body: {
+              status: 'FAILURE',
+              message:
+                `Missing required patient details (${missing.join(', ')}). ` +
+                `Ask the caller for their first name, last name, and date of birth, then call createPatient again.`,
+              missingFields: missing,
+            },
+            updatedSessionAttributes,
+          };
+        }
 
         // NOTE: OpenDental returns 400 if TxtMsgOk='Yes' but WirelessPhone is empty.
         // Only set TxtMsgOk when we have a valid wireless phone number.
         const createData: any = {
-          LName: params.LName,
-          FName: params.FName,
+          LName: rawLName,
+          FName: rawFName,
           Birthdate: normalizedBirthdate,
         };
         if (phoneNumber) {
@@ -1480,6 +1845,10 @@ async function handleTool(
         updatedSessionAttributes.FName = newPatient.FName;
         updatedSessionAttributes.LName = newPatient.LName;
         updatedSessionAttributes.IsNewPatient = 'true';
+        if (phoneNumber) {
+          updatedSessionAttributes.PatientPhone = String(phoneNumber);
+          updatedSessionAttributes.callerPhone = updatedSessionAttributes.callerPhone || String(phoneNumber);
+        }
 
         return {
           statusCode: 201,
@@ -3997,11 +4366,38 @@ async function handleTool(
           console.log(`[scheduleAppointment] No Op resolved, using default: ${opNum}`);
         }
 
+        const patNumRaw = params.PatNum;
+        const patNum = (() => {
+          const n = typeof patNumRaw === 'number' ? patNumRaw : parseInt(String(patNumRaw || ''), 10);
+          return Number.isFinite(n) && n > 0 ? n : NaN;
+        })();
+
+        const aptDateTime = typeof params.Date === 'string' ? params.Date.trim() : String(params.Date || '').trim();
+        const isValidAptDateTime = /^\d{4}-\d{2}-\d{2}\s+\d{2}:\d{2}:\d{2}$/.test(aptDateTime);
+
+        if (!Number.isFinite(patNum) || !isValidAptDateTime) {
+          const missingBits: string[] = [];
+          if (!Number.isFinite(patNum)) missingBits.push('PatNum');
+          if (!isValidAptDateTime) missingBits.push('Date (YYYY-MM-DD HH:mm:ss)');
+
+          return {
+            statusCode: 400,
+            body: {
+              status: 'FAILURE',
+              message:
+                `Missing or invalid scheduling details (${missingBits.join(', ')}). ` +
+                `Search/select the patient first (PatNum), then pick an available slot and pass the exact DateTime.`,
+              missingFields: missingBits,
+            },
+            updatedSessionAttributes,
+          };
+        }
+
         // Build appointment data using values provided by the AI agent
         const appointmentData: Record<string, any> = {
-          PatNum: parseInt(params.PatNum.toString()),
+          PatNum: patNum,
           Op: opNum,
-          AptDateTime: params.Date,
+          AptDateTime: aptDateTime,
           ProcDescript: reason,
           Note: params.Note || `${reason} - Created by AI Agent`,
           ClinicNum: 0,

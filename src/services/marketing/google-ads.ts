@@ -480,6 +480,11 @@ async function createCampaign(
   let client: any;
 
   try {
+    // Early clinic lookup — needed for Display/DemandGen fallbacks (businessName, imageUrl)
+    // and later for clinicId in DynamoDB. Reuse to avoid duplicate API calls.
+    const clinics = await getAllClinicsWithGoogleAdsStatus();
+    const clinic = clinics.find(c => c.customerId === customerId);
+
     // VALIDATION: Check for duplicate campaign name before creation
     client = await getGoogleAdsClient(customerId);
     // FIX: Use sanitizeGaqlValue() for proper GAQL injection prevention
@@ -660,30 +665,30 @@ async function createCampaign(
         }
 
       } else if (ad && type === 'DISPLAY') {
-        // DISPLAY → Responsive Display Ad (requires images)
+        // DISPLAY → Responsive Display Ad
+        // Apply clinic-based fallbacks for optional fields
+        const displayBusinessName = ad.businessName || clinic?.clinicName || name;
+        const displayImageUrl = ad.imageUrl || clinic?.logoUrl;
+        const displayFinalUrl = ad.finalUrl || clinic?.websiteLink;
+        const displayLongHeadline = ad.longHeadline || ad.headlines?.[0] || displayBusinessName;
+
         if (!ad.headlines || ad.headlines.length < 1) {
           adSkipped = true;
           adSkipReason = 'At least 1 headline required for Display ad';
         } else if (!ad.descriptions || ad.descriptions.length < 1) {
           adSkipped = true;
           adSkipReason = 'At least 1 description required for Display ad';
-        } else if (!ad.longHeadline) {
+        } else if (!displayImageUrl) {
           adSkipped = true;
-          adSkipReason = 'longHeadline is required for Display ad (90 chars max)';
-        } else if (!ad.businessName) {
+          adSkipReason = 'imageUrl is required for Display ad (no clinic logo available as fallback)';
+        } else if (!displayFinalUrl) {
           adSkipped = true;
-          adSkipReason = 'businessName is required for Display ad';
-        } else if (!ad.imageUrl) {
-          adSkipped = true;
-          adSkipReason = 'imageUrl is required for Display ad (marketing image)';
-        } else if (!ad.finalUrl) {
-          adSkipped = true;
-          adSkipReason = 'finalUrl is required for Display ad';
+          adSkipReason = 'finalUrl is required for Display ad (no clinic website available as fallback)';
         } else {
           try {
             // Upload marketing image as asset
             const imageAssetName = `${name} - Marketing Image - ${Date.now()}`;
-            const imageAssetResourceName = await uploadImageAssetViaUrl(client, ad.imageUrl, imageAssetName);
+            const imageAssetResourceName = await uploadImageAssetViaUrl(client, displayImageUrl!, imageAssetName);
             console.log(`[GoogleAds] Uploaded marketing image asset: ${imageAssetResourceName}`);
 
             // Upload logo as asset if provided
@@ -697,9 +702,9 @@ async function createCampaign(
             // Build Responsive Display Ad
             const displayAdData: any = {
               headlines: ad.headlines.slice(0, 5).map(text => ({ text: text.slice(0, 30) })),
-              long_headline: { text: ad.longHeadline.slice(0, 90) },
+              long_headline: { text: displayLongHeadline.slice(0, 90) },
               descriptions: ad.descriptions.slice(0, 5).map(text => ({ text: text.slice(0, 90) })),
-              business_name: ad.businessName,
+              business_name: displayBusinessName,
               marketing_images: [{ asset: imageAssetResourceName }],
             };
 
@@ -712,7 +717,7 @@ async function createCampaign(
               status: 'ENABLED',
               ad: {
                 responsive_display_ad: displayAdData,
-                final_urls: [ad.finalUrl],
+                final_urls: [displayFinalUrl],
               },
             };
 
@@ -727,31 +732,33 @@ async function createCampaign(
         }
 
       } else if (ad && type === 'DEMAND_GEN') {
-        // DEMAND_GEN → Demand Gen Multi-Asset Ad (requires images + logo)
+        // DEMAND_GEN → Demand Gen Multi-Asset Ad
+        // Apply clinic-based fallbacks for optional fields
+        const dgBusinessName = ad.businessName || clinic?.clinicName || name;
+        const dgImageUrl = ad.imageUrl || clinic?.logoUrl;
+        const dgFinalUrl = ad.finalUrl || clinic?.websiteLink;
+
         if (!ad.headlines || ad.headlines.length < 1) {
           adSkipped = true;
           adSkipReason = 'At least 1 headline required for Demand Gen ad';
         } else if (!ad.descriptions || ad.descriptions.length < 1) {
           adSkipped = true;
           adSkipReason = 'At least 1 description required for Demand Gen ad';
-        } else if (!ad.businessName) {
+        } else if (!dgImageUrl) {
           adSkipped = true;
-          adSkipReason = 'businessName is required for Demand Gen ad';
-        } else if (!ad.imageUrl) {
+          adSkipReason = 'imageUrl is required for Demand Gen ad (no clinic logo available as fallback)';
+        } else if (!dgFinalUrl) {
           adSkipped = true;
-          adSkipReason = 'imageUrl is required for Demand Gen ad (marketing image)';
-        } else if (!ad.finalUrl) {
-          adSkipped = true;
-          adSkipReason = 'finalUrl is required for Demand Gen ad';
+          adSkipReason = 'finalUrl is required for Demand Gen ad (no clinic website available as fallback)';
         } else {
           try {
             // Upload marketing image
             const imageAssetName = `${name} - Marketing Image - ${Date.now()}`;
-            const imageAssetResourceName = await uploadImageAssetViaUrl(client, ad.imageUrl, imageAssetName);
+            const imageAssetResourceName = await uploadImageAssetViaUrl(client, dgImageUrl!, imageAssetName);
             console.log(`[GoogleAds] Uploaded marketing image for DemandGen: ${imageAssetResourceName}`);
 
             // Upload logo (use imageUrl if logoUrl not provided)
-            const logoUrl = ad.logoUrl || ad.imageUrl;
+            const logoUrl = ad.logoUrl || dgImageUrl!;
             const logoAssetName = `${name} - Logo - ${Date.now()}`;
             const logoAssetResourceName = await uploadImageAssetViaUrl(client, logoUrl, logoAssetName);
             console.log(`[GoogleAds] Uploaded logo for DemandGen: ${logoAssetResourceName}`);
@@ -765,9 +772,9 @@ async function createCampaign(
                   description_text_list: ad.descriptions.slice(0, 5).map(text => text.slice(0, 90)),
                   marketing_images: [{ asset: imageAssetResourceName }],
                   logo_images: [{ asset: logoAssetResourceName }],
-                  business_name: ad.businessName,
+                  business_name: dgBusinessName,
                 },
-                final_urls: [ad.finalUrl],
+                final_urls: [dgFinalUrl],
               },
             };
 
@@ -789,9 +796,7 @@ async function createCampaign(
       }
     }
 
-    // VALIDATION: Look up clinicId from customerId - fail if clinic not found
-    const clinics = await getAllClinicsWithGoogleAdsStatus();
-    const clinic = clinics.find(c => c.customerId === customerId);
+    // VALIDATION: clinicId from earlier clinic lookup (already resolved before ad creation)
     if (!clinic) {
       // Previously this would silently proceed with empty clinicId, creating orphaned records
       // Now we fail explicitly to prevent data integrity issues

@@ -23,11 +23,15 @@ import {
   BedrockAgentRuntimeClient,
   InvokeAgentCommand,
 } from '@aws-sdk/client-bedrock-agent-runtime';
+import axios from 'axios';
+import https from 'https';
 import { v4 as uuidv4 } from 'uuid';
 import {
   TranscriptBufferManager,
   TranscriptSegment,
 } from '../shared/utils/transcript-buffer-manager';
+import { getDateContext } from '../../shared/prompts/ai-prompts';
+import { getClinicConfig, getClinicSecrets } from '../../shared/utils/secrets-helper';
 
 // ========================================================================
 // CONFIGURATION
@@ -91,6 +95,246 @@ const CONNECT_BEDROCK_TIMEOUT_MS = (() => {
 // This is a last-resort guard in case the abort signal doesn't terminate the stream promptly.
 // Leave 500ms for Lambda response serialization and network overhead.
 const CONNECT_SAFE_MAX_STREAMING_LOOP_MS = CONNECT_LAMBDA_HARD_LIMIT_MS - 500;
+
+// OpenDental API base URL (used for fast caller lookup at call start)
+const OPENDENTAL_API_BASE_URL = process.env.OPENDENTAL_API_BASE_URL || 'https://api.opendental.com/api/v1';
+
+// Keep-alive agent for OpenDental HTTP calls (reduces TLS handshake overhead on warm invocations)
+const openDentalHttpsAgent = new https.Agent({
+  keepAlive: true,
+  maxSockets: 50,
+});
+
+const openDentalHttp = axios.create({
+  baseURL: OPENDENTAL_API_BASE_URL,
+  httpsAgent: openDentalHttpsAgent,
+});
+
+// Budget for OpenDental caller lookup during the initial welcome message.
+// Keep this short to avoid dead air at call start and to stay well within Connect's 8s Lambda limit.
+const WELCOME_PATIENT_LOOKUP_BUDGET_MS = (() => {
+  const raw = Number(process.env.WELCOME_PATIENT_LOOKUP_BUDGET_MS || '2500');
+  const n = Number.isFinite(raw) ? raw : 2500;
+  // Cap to avoid long dead-air at call start while staying well under Connect's 8s Lambda limit.
+  return Math.max(200, Math.min(n, 4000));
+})();
+
+// AI Agents (voice) default inbound greeting template (matches ai-agents `voice-agent-config.ts`)
+const DEFAULT_AI_AGENTS_INBOUND_GREETING =
+  "Thank you for calling {clinicName}. Our office is currently closed, but I'm ToothFairy, your AI dental assistant. I can help you schedule appointments, answer questions, or take a message. How can I help you today?";
+
+function renderGreetingTemplate(
+  template: string,
+  context: {
+    clinicName?: string;
+    patientName?: string;
+    appointmentDate?: string;
+    customMessage?: string;
+  }
+): string {
+  const safeTemplate = String(template || '').trim() || DEFAULT_AI_AGENTS_INBOUND_GREETING;
+  const clinicName = (context.clinicName || '').trim() || "Today's Dental";
+  const patientName = (context.patientName || '').trim() || 'there';
+  const appointmentDate = (context.appointmentDate || '').trim() || 'your scheduled date';
+  const customMessage = (context.customMessage || '').trim();
+
+  return safeTemplate
+    .replace(/{clinicName}/g, clinicName)
+    .replace(/{patientName}/g, patientName)
+    .replace(/{appointmentDate}/g, appointmentDate)
+    .replace(/{customMessage}/g, customMessage);
+}
+
+async function getAiAgentsInboundGreetingTemplate(clinicId: string): Promise<string> {
+  const effectiveClinicId = clinicId || DEFAULT_CLINIC_ID;
+  if (!VOICE_CONFIG_TABLE) return DEFAULT_AI_AGENTS_INBOUND_GREETING;
+
+  try {
+    const resp = await docClient.send(new GetCommand({
+      TableName: VOICE_CONFIG_TABLE,
+      Key: { clinicId: effectiveClinicId },
+      ProjectionExpression: 'afterHoursGreeting',
+    }));
+    const template = (resp.Item as any)?.afterHoursGreeting;
+    const normalized = typeof template === 'string' ? template.trim() : '';
+    return normalized || DEFAULT_AI_AGENTS_INBOUND_GREETING;
+  } catch (error: any) {
+    console.warn('[LexBedrockHook] Failed to load afterHoursGreeting, using default', {
+      clinicId: effectiveClinicId,
+      error: error?.message || String(error),
+    });
+    return DEFAULT_AI_AGENTS_INBOUND_GREETING;
+  }
+}
+
+async function getClinicDisplayNameFromConfig(clinicId: string): Promise<string> {
+  const effectiveClinicId = String(clinicId || '').trim();
+  if (!effectiveClinicId) return "Today's Dental";
+
+  try {
+    const cfg = await getClinicConfig(effectiveClinicId);
+    const name = String((cfg as any)?.clinicName || '').trim();
+    return name || "Today's Dental";
+  } catch (error: any) {
+    console.warn('[LexBedrockHook] Failed to load clinic config for greeting', {
+      clinicId: effectiveClinicId,
+      error: error?.message || String(error),
+    });
+    return "Today's Dental";
+  }
+}
+
+async function getOpenDentalAuthHeader(clinicId: string): Promise<string | null> {
+  const effectiveClinicId = String(clinicId || '').trim();
+  if (!effectiveClinicId) return null;
+
+  try {
+    const secrets = await getClinicSecrets(effectiveClinicId);
+    const developerKey = String((secrets as any)?.openDentalDeveloperKey || '').trim();
+    const customerKey = String((secrets as any)?.openDentalCustomerKey || '').trim();
+    if (!developerKey || !customerKey) return null;
+    return `ODFHIR ${developerKey}/${customerKey}`;
+  } catch (error: any) {
+    console.warn('[LexBedrockHook] Failed to load OpenDental secrets', {
+      clinicId: effectiveClinicId,
+      error: error?.message || String(error),
+    });
+    return null;
+  }
+}
+
+type PatientPhoneLookupResult = {
+  patient: any | null;
+  matchCount: number;
+  usedFormat: string;
+};
+
+const PATIENT_PHONE_LOOKUP_CACHE_TTL_MS = 15 * 60 * 1000;
+const patientPhoneLookupCache = new Map<string, { cachedAt: number; result: PatientPhoneLookupResult }>();
+function getPatientPhoneLookupCacheKey(clinicId: string, phone: string): string {
+  return `${clinicId}|${phone}`;
+}
+function getCachedPatientPhoneLookup(key: string): PatientPhoneLookupResult | null {
+  const cached = patientPhoneLookupCache.get(key);
+  if (!cached) return null;
+  if (Date.now() - cached.cachedAt > PATIENT_PHONE_LOOKUP_CACHE_TTL_MS) {
+    patientPhoneLookupCache.delete(key);
+    return null;
+  }
+  return cached.result;
+}
+
+async function searchPatientByPhoneFast(params: {
+  phoneNumber: string;
+  clinicId: string;
+  budgetMs: number;
+}): Promise<PatientPhoneLookupResult> {
+  const phoneNumber = String(params.phoneNumber || '').trim();
+  const clinicId = String(params.clinicId || '').trim();
+  const budgetMsRaw = Number(params.budgetMs);
+  const budgetMs = Number.isFinite(budgetMsRaw) ? Math.max(200, Math.min(budgetMsRaw, 6000)) : 2500;
+
+  if (!phoneNumber || !clinicId) {
+    return { patient: null, matchCount: 0, usedFormat: '' };
+  }
+
+  const authHeader = await getOpenDentalAuthHeader(clinicId);
+  if (!authHeader) {
+    return { patient: null, matchCount: 0, usedFormat: '' };
+  }
+
+  const cleanPhone = phoneNumber.replace(/\D/g, '');
+  // Prefer the most likely format first (last 10 digits), then fall back.
+  const phoneFormatsRaw = [
+    cleanPhone.length >= 10 ? cleanPhone.slice(-10) : cleanPhone,
+    cleanPhone,
+    cleanPhone.length >= 7 ? cleanPhone.slice(-7) : '',
+  ].filter(Boolean);
+  const phoneFormats = [...new Set(phoneFormatsRaw)].filter((p) => p.length >= 7);
+
+  const startMs = Date.now();
+
+  for (const phone of phoneFormats) {
+    if (!phone || phone.length < 7) continue;
+
+    // Cache check (warm optimization)
+    const cacheKey = getPatientPhoneLookupCacheKey(clinicId, phone);
+    const cached = getCachedPatientPhoneLookup(cacheKey);
+    if (cached) {
+      return cached;
+    }
+
+    const elapsedMs = Date.now() - startMs;
+    const remainingMs = budgetMs - elapsedMs;
+    if (remainingMs <= 150) break;
+
+    try {
+      const resp = await openDentalHttp.get('/patients', {
+        params: { Phone: phone },
+        headers: {
+          Authorization: authHeader,
+          Accept: 'application/json',
+        },
+        timeout: Math.max(200, Math.floor(remainingMs)),
+        validateStatus: () => true,
+      });
+
+      if (resp.status === 200) {
+        const items = Array.isArray(resp.data)
+          ? resp.data
+          : Array.isArray((resp.data as any)?.items)
+            ? (resp.data as any).items
+            : [];
+
+        if (items.length > 0) {
+          const result: PatientPhoneLookupResult = {
+            patient: items[0],
+            matchCount: items.length,
+            usedFormat: phone,
+          };
+          patientPhoneLookupCache.set(cacheKey, { cachedAt: Date.now(), result });
+          return result;
+        }
+      }
+
+      // 404 = no match for this phone format; keep trying
+      if (resp.status === 404) {
+        continue;
+      }
+
+      // Any auth failure: stop trying other formats (won't help)
+      if (resp.status === 401 || resp.status === 403) {
+        console.warn('[LexBedrockHook] OpenDental auth failed during patient lookup', {
+          clinicId,
+          status: resp.status,
+        });
+        break;
+      }
+
+      // For other non-200 statuses, fail open and stop (avoid extra latency at call start)
+      if (resp.status !== 200) {
+        console.warn('[LexBedrockHook] OpenDental patient lookup returned non-200', {
+          clinicId,
+          status: resp.status,
+        });
+        break;
+      }
+    } catch (error: any) {
+      const isTimeout = error?.code === 'ECONNABORTED' || String(error?.message || '').toLowerCase().includes('timeout');
+      if (isTimeout) {
+        console.warn('[LexBedrockHook] OpenDental patient lookup timed out', { clinicId, budgetMs, attemptedFormat: phone });
+        break;
+      }
+      console.warn('[LexBedrockHook] OpenDental patient lookup error', {
+        clinicId,
+        error: error?.message || String(error),
+      });
+      break;
+    }
+  }
+
+  return { patient: null, matchCount: 0, usedFormat: '' };
+}
 
 // AI phone numbers mapping: aiPhoneNumber -> clinicId
 const AI_PHONE_NUMBERS_JSON = process.env.AI_PHONE_NUMBERS_JSON || '{}';
@@ -451,18 +695,59 @@ async function getVoiceSettingsForClinic(clinicId: string): Promise<ClinicVoiceS
     const resp = await docClient.send(new GetCommand({
       TableName: VOICE_CONFIG_TABLE,
       Key: { clinicId: effectiveClinicId },
-      ProjectionExpression: 'voiceSettings',
     }));
 
-    const voiceSettings = (resp.Item as any)?.voiceSettings || {};
-    const rawVoiceId = typeof voiceSettings.voiceId === 'string' ? voiceSettings.voiceId.trim() : '';
+    const item = (resp.Item as any) || {};
+    const voiceSettings = item.voiceSettings || {};
+
+    // Backwards-compatible reads:
+    // Some environments may have older items that stored voice fields at the top-level.
+    const rawVoiceId =
+      (typeof voiceSettings.voiceId === 'string' && voiceSettings.voiceId.trim())
+      || (typeof voiceSettings.VoiceId === 'string' && voiceSettings.VoiceId.trim())
+      || (typeof voiceSettings.TextToSpeechVoice === 'string' && voiceSettings.TextToSpeechVoice.trim())
+      || (typeof item.voiceId === 'string' && item.voiceId.trim())
+      || (typeof item.VoiceId === 'string' && item.VoiceId.trim())
+      || (typeof item.voice_voiceId === 'string' && item.voice_voiceId.trim())
+      || (typeof item.TextToSpeechVoice === 'string' && item.TextToSpeechVoice.trim())
+      || '';
+    const rawEngine =
+      (typeof voiceSettings.engine === 'string' && voiceSettings.engine.trim())
+      || (typeof voiceSettings.Engine === 'string' && voiceSettings.Engine.trim())
+      || (typeof voiceSettings.TextToSpeechEngine === 'string' && voiceSettings.TextToSpeechEngine.trim())
+      || (typeof item.engine === 'string' && item.engine.trim())
+      || (typeof item.Engine === 'string' && item.Engine.trim())
+      || (typeof item.voice_engine === 'string' && item.voice_engine.trim())
+      || (typeof item.TextToSpeechEngine === 'string' && item.TextToSpeechEngine.trim())
+      || '';
+    const rawSpeakingRate =
+      (typeof voiceSettings.speakingRate === 'string' && voiceSettings.speakingRate.trim())
+      || (typeof voiceSettings.SpeakingRate === 'string' && voiceSettings.SpeakingRate.trim())
+      || (typeof item.speakingRate === 'string' && item.speakingRate.trim())
+      || (typeof item.ttsSpeakingRate === 'string' && item.ttsSpeakingRate.trim())
+      || (typeof item.voice_speakingRate === 'string' && item.voice_speakingRate.trim())
+      || '';
+    const rawPitch =
+      (typeof voiceSettings.pitch === 'string' && voiceSettings.pitch.trim())
+      || (typeof voiceSettings.Pitch === 'string' && voiceSettings.Pitch.trim())
+      || (typeof item.pitch === 'string' && item.pitch.trim())
+      || (typeof item.ttsPitch === 'string' && item.ttsPitch.trim())
+      || (typeof item.voice_pitch === 'string' && item.voice_pitch.trim())
+      || '';
+    const rawVolume =
+      (typeof voiceSettings.volume === 'string' && voiceSettings.volume.trim())
+      || (typeof voiceSettings.Volume === 'string' && voiceSettings.Volume.trim())
+      || (typeof item.volume === 'string' && item.volume.trim())
+      || (typeof item.ttsVolume === 'string' && item.ttsVolume.trim())
+      || (typeof item.voice_volume === 'string' && item.voice_volume.trim())
+      || '';
 
     const voice: ClinicVoiceSettings = {
       voiceId: rawVoiceId || DEFAULT_TTS_VOICE.voiceId,
-      engine: normalizeEngine(voiceSettings.engine),
-      speakingRate: normalizeProsody(voiceSettings.speakingRate, ALLOWED_SPEAKING_RATES, DEFAULT_TTS_VOICE.speakingRate),
-      pitch: normalizeProsody(voiceSettings.pitch, ALLOWED_PITCH, DEFAULT_TTS_VOICE.pitch),
-      volume: normalizeProsody(voiceSettings.volume, ALLOWED_VOLUME, DEFAULT_TTS_VOICE.volume),
+      engine: normalizeEngine(rawEngine),
+      speakingRate: normalizeProsody(rawSpeakingRate, ALLOWED_SPEAKING_RATES, DEFAULT_TTS_VOICE.speakingRate),
+      pitch: normalizeProsody(rawPitch, ALLOWED_PITCH, DEFAULT_TTS_VOICE.pitch),
+      volume: normalizeProsody(rawVolume, ALLOWED_VOLUME, DEFAULT_TTS_VOICE.volume),
     };
     return voice;
   } catch (error: any) {
@@ -855,6 +1140,8 @@ async function invokeBedrock(params: {
   clinicId: string;
   inputMode?: 'Text' | 'Speech' | 'DTMF';
   channel?: 'voice' | 'chat';
+  sessionAttributes?: Record<string, string>;
+  promptSessionAttributes?: Record<string, string>;
   timeoutMs?: number;
 }): Promise<{ response: string; toolsUsed: string[] }> {
   const { agentId, aliasId, sessionId, inputText, clinicId, inputMode, channel, timeoutMs } = params;
@@ -874,18 +1161,55 @@ async function invokeBedrock(params: {
     : effectiveTimeoutMs + 2000;
 
   try {
+    const mergedSessionAttributes: Record<string, string> = {
+      ...(params.sessionAttributes || {}),
+      clinicId,
+      // Pass input mode so agent knows to use voice-optimized responses
+      inputMode: inputMode || 'Text',
+      channel: channel || (inputMode === 'Speech' ? 'voice' : 'chat'),
+    };
+
+    // Bedrock Agents do not always reliably surface session attributes to the LLM.
+    // To prevent the agent from re-asking for name/DOB when we already identified the caller,
+    // include a compact, non-spoken context prefix in the input text.
+    const inputTextForAgent = (() => {
+      const raw = String(inputText || '').trim();
+      if (!isVoiceCall) return raw;
+      const patNum = String(mergedSessionAttributes.PatNum || '').trim();
+      if (!patNum) return raw;
+      const patientName =
+        String(mergedSessionAttributes.patientName || '').trim() ||
+        [String(mergedSessionAttributes.FName || mergedSessionAttributes.patientFirstName || '').trim(), String(mergedSessionAttributes.LName || '').trim()]
+          .filter(Boolean)
+          .join(' ')
+          .trim() ||
+        'the caller';
+      const isNewPatient = String(
+        mergedSessionAttributes.IsNewPatient ||
+          mergedSessionAttributes.isNewPatient ||
+          ''
+      ).trim();
+      const newFlag = isNewPatient === 'true' || isNewPatient === 'false' ? isNewPatient : 'unknown';
+      const context = [
+        'SYSTEM CONTEXT (do not read aloud):',
+        `Caller is already identified in OpenDental: ${patientName} (PatNum ${patNum}).`,
+        `IsNewPatient=${newFlag}.`,
+        'Do NOT ask for first name, last name, or date of birth.',
+        'If they want to book/schedule an appointment, ask: "Perfect. May I know the reason for the appointment?" then ask when they want to come in.',
+      ].join(' ');
+      return `${context}\n\nCaller: ${raw}`;
+    })();
+
     const command = new InvokeAgentCommand({
       agentId,
       agentAliasId: aliasId,
       sessionId,
-      inputText,
+      inputText: inputTextForAgent,
       sessionState: {
-        sessionAttributes: {
-          clinicId,
-          // Pass input mode so agent knows to use voice-optimized responses
-          inputMode: inputMode || 'Text',
-          channel: channel || (inputMode === 'Speech' ? 'voice' : 'chat'),
-        },
+        sessionAttributes: mergedSessionAttributes,
+        ...(params.promptSessionAttributes && Object.keys(params.promptSessionAttributes).length > 0
+          ? { promptSessionAttributes: params.promptSessionAttributes }
+          : {}),
       },
     });
 
@@ -1004,6 +1328,17 @@ interface ConnectLambdaResponse {
   ssmlResponse?: string;
   clinicId?: string;
   turnCount?: string;
+  // Welcome/patient attributes returned to Connect at call start
+  welcomeMessage?: string;
+  patientFirstName?: string;
+  patientName?: string;
+  isNewPatient?: string;
+  // OpenDental patient identity (set only when exactly 1 match is found)
+  PatNum?: string;
+  FName?: string;
+  LName?: string;
+  Birthdate?: string;
+  IsNewPatient?: string;
   // Used by Connect UpdateContactTextToSpeechVoice (Set voice block)
   TextToSpeechVoice?: string;
   TextToSpeechEngine?: string;
@@ -1101,6 +1436,86 @@ async function handleConnectDirectEvent(event: ConnectLambdaEvent): Promise<Conn
     };
   }
 
+  // =====================================================================
+  // Welcome message request (personalized greeting at call start)
+  // =====================================================================
+  if (requestType === 'welcomeMessage') {
+    // Determine clinic from explicit attribute first, then dialed number mapping.
+    let welcomeClinicId = String(contactAttributes['clinicId'] || params['clinicId'] || '').trim();
+
+    if (!welcomeClinicId && dialedNumber) {
+      const normalizedDialed = dialedNumber.replace(/\D/g, '');
+      for (const [phone, clinic] of Object.entries(aiPhoneNumberMap)) {
+        if (phone.replace(/\D/g, '') === normalizedDialed) {
+          welcomeClinicId = clinic;
+          break;
+        }
+      }
+    }
+
+    if (!welcomeClinicId) {
+      welcomeClinicId = DEFAULT_CLINIC_ID;
+    }
+
+    // Do caller lookup + config reads in parallel to minimize dead air at call start
+    const patientLookupPromise = callerNumber
+      ? searchPatientByPhoneFast({
+          phoneNumber: callerNumber,
+          clinicId: welcomeClinicId,
+          budgetMs: WELCOME_PATIENT_LOOKUP_BUDGET_MS,
+        })
+      : Promise.resolve({ patient: null, matchCount: 0, usedFormat: '' });
+
+    const [patientLookup, greetingTemplate, clinicDisplayName] = await Promise.all([
+      patientLookupPromise,
+      getAiAgentsInboundGreetingTemplate(welcomeClinicId),
+      getClinicDisplayNameFromConfig(welcomeClinicId),
+    ]);
+
+    // Only greet with name when there is exactly 1 match (avoid wrong-patient greeting).
+    const matchedPatient = patientLookup.matchCount === 1 ? patientLookup.patient : null;
+    const patNum = String((matchedPatient as any)?.PatNum || '').trim();
+    const patientFirstName = String((matchedPatient as any)?.FName || '').trim();
+    const patientLastName = String((matchedPatient as any)?.LName || '').trim();
+    const birthdate = String((matchedPatient as any)?.Birthdate || '').trim();
+    const dateFirstVisit = String((matchedPatient as any)?.DateFirstVisit || '').trim();
+    const patientName = [patientFirstName, patientLastName].filter(Boolean).join(' ').trim();
+
+    // OpenDental marks "new patient" as DateFirstVisit = 0001-01-01
+    // If we can't uniquely identify the caller, treat as new/unknown to force ID flow.
+    const isNewPatient =
+      matchedPatient
+        ? (dateFirstVisit === '0001-01-01' ? 'true' : 'false')
+        : 'true';
+
+    console.log('[LexBedrockHook] Welcome lookup completed', {
+      clinicId: welcomeClinicId,
+      matchCount: patientLookup.matchCount,
+      usedFormat: patientLookup.usedFormat,
+      hasFirstName: !!patientFirstName,
+    });
+
+    const welcomeMessage = patientLookup.matchCount === 1 && patientFirstName
+      ? `Hi ${patientFirstName}, How may I help you today?`
+      : renderGreetingTemplate(greetingTemplate, { clinicName: clinicDisplayName });
+
+    return {
+      aiResponse: '',
+      clinicId: welcomeClinicId,
+      welcomeMessage,
+      patientFirstName: patientFirstName || '',
+      patientName: patientName || '',
+      isNewPatient,
+      // Also return OpenDental-style keys so Connect can store them as contact attributes.
+      // These are used downstream to avoid re-asking for name/DOB when booking.
+      PatNum: patNum || '',
+      FName: patientFirstName || '',
+      LName: patientLastName || '',
+      Birthdate: birthdate || '',
+      IsNewPatient: isNewPatient,
+    };
+  }
+
   // Determine clinic from dialed number
   let clinicId = contactAttributes['clinicId'] || '';
   if (!clinicId && dialedNumber) {
@@ -1118,11 +1533,14 @@ async function handleConnectDirectEvent(event: ConnectLambdaEvent): Promise<Conn
   }
 
   const prosody = getProsodyFromContactAttributes(contactAttributes);
-  const buildResponse = (text: string): ConnectLambdaResponse => ({
-    aiResponse: text,
-    ssmlResponse: buildProsodySsml(text, prosody),
-    clinicId,
-  });
+  const buildResponse = (text: string): ConnectLambdaResponse => {
+    const safeText = sanitizeVoiceTtsText(text);
+    return {
+      aiResponse: safeText,
+      ssmlResponse: buildProsodySsml(safeText, prosody),
+      clinicId,
+    };
+  };
 
   // Determine call direction + outbound context from attributes/params
   const callDirectionRaw = String(params['callDirection'] || contactAttributes['callDirection'] || '').trim().toLowerCase();
@@ -1201,6 +1619,61 @@ async function handleConnectDirectEvent(event: ConnectLambdaEvent): Promise<Conn
     return buildResponse("I'm sorry, I didn't catch that clearly. Could you please repeat what you said?");
   }
 
+  // Add lightweight date context so the agent can resolve "tomorrow", weekdays, etc.
+  // Prefer a timezone passed from Connect if present; otherwise default to UTC.
+  const timezone = String(contactAttributes['timezone'] || 'UTC').trim() || 'UTC';
+  const d = getDateContext(timezone);
+  const [year, month, day] = d.today.split('-');
+  const todayFormatted = `${month}/${day}/${year}`;
+
+  // Patient identity passed from the contact flow (populated by the welcomeMessage lookup)
+  const patNum = String(contactAttributes['PatNum'] || '').trim();
+  const fName = String(contactAttributes['FName'] || contactAttributes['patientFirstName'] || '').trim();
+  const lName = String(contactAttributes['LName'] || '').trim();
+  const birthdate = String(contactAttributes['Birthdate'] || '').trim();
+  const isNewPatientFlag = String(contactAttributes['IsNewPatient'] || contactAttributes['isNewPatient'] || '').trim();
+  const resolvedPatientNameFromAttrs =
+    String(contactAttributes['patientName'] || '').trim() ||
+    [fName, lName].filter(Boolean).join(' ').trim();
+
+  const bedrockSessionAttributes: Record<string, string> = {
+    callerNumber,
+    dialedNumber,
+    // Common aliases used by action-group tools/callbacks
+    callerPhone: callerNumber,
+    PatientPhone: callerNumber,
+    callDirection,
+    contactId,
+    ...(scheduledCallId ? { scheduledCallId } : {}),
+    ...(purpose ? { purpose } : {}),
+    ...(resolvedPatientNameFromAttrs ? { patientName: resolvedPatientNameFromAttrs } : {}),
+    ...(patNum ? { PatNum: patNum } : {}),
+    ...(fName ? { FName: fName } : {}),
+    ...(lName ? { LName: lName } : {}),
+    ...(birthdate ? { Birthdate: birthdate } : {}),
+    ...((isNewPatientFlag === 'true' || isNewPatientFlag === 'false') ? { IsNewPatient: isNewPatientFlag } : {}),
+    initialGreetingAlreadyPlayed: 'true',
+    // Date context for relative scheduling
+    todayDate: d.today,
+    todayFormatted,
+    dayName: d.dayName,
+    tomorrowDate: d.tomorrowDate,
+    currentTime: d.currentTime,
+    nextWeekDates: JSON.stringify(d.nextWeekDates),
+    timezone: d.timezone,
+  };
+
+  const bedrockPromptSessionAttributes: Record<string, string> = {
+    callerNumber,
+    currentDate: `Today is ${d.dayName}, ${todayFormatted} (${d.today}). Current time: ${d.currentTime} (${d.timezone})`,
+    dateContext: `When scheduling appointments, use ${d.today} as today's date. Tomorrow is ${d.tomorrowDate}. Next week dates: ${JSON.stringify(d.nextWeekDates)}`,
+    ...(patNum
+      ? {
+          patientContext: `Caller already identified in OpenDental: ${resolvedPatientNameFromAttrs || 'Patient'} (PatNum ${patNum}). Do NOT ask for name or date of birth. If they want to schedule, ask: "Perfect. May I know the reason for the appointment?" then ask when they'd like to come in.`,
+        }
+      : {}),
+  };
+
   // Invoke Bedrock
   const { response: aiResponse, toolsUsed } = await invokeBedrock({
     agentId: bedrockAgentId,
@@ -1210,6 +1683,8 @@ async function handleConnectDirectEvent(event: ConnectLambdaEvent): Promise<Conn
     clinicId,
     inputMode: 'Speech',
     channel: 'voice',
+    sessionAttributes: bedrockSessionAttributes,
+    promptSessionAttributes: bedrockPromptSessionAttributes,
     timeoutMs: CONNECT_BEDROCK_TIMEOUT_MS,
   });
 
@@ -1380,6 +1855,34 @@ async function handleLexEvent(event: LexV2Event): Promise<LexV2Response> {
   }
 
   // Invoke Bedrock - pass inputMode so agent uses voice-optimized responses
+  // Add lightweight date context so the agent can resolve "tomorrow", weekdays, etc.
+  const timezone = String(sessionAttributes['timezone'] || 'UTC').trim() || 'UTC';
+  const d = getDateContext(timezone);
+  const [year, month, day] = d.today.split('-');
+  const todayFormatted = `${month}/${day}/${year}`;
+
+  const bedrockSessionAttributes: Record<string, string> = {
+    callerNumber,
+    dialedNumber,
+    callerPhone: callerNumber,
+    PatientPhone: callerNumber,
+    callDirection,
+    contactId: lexSessionId,
+    todayDate: d.today,
+    todayFormatted,
+    dayName: d.dayName,
+    tomorrowDate: d.tomorrowDate,
+    currentTime: d.currentTime,
+    nextWeekDates: JSON.stringify(d.nextWeekDates),
+    timezone: d.timezone,
+  };
+
+  const bedrockPromptSessionAttributes: Record<string, string> = {
+    callerNumber,
+    currentDate: `Today is ${d.dayName}, ${todayFormatted} (${d.today}). Current time: ${d.currentTime} (${d.timezone})`,
+    dateContext: `When scheduling appointments, use ${d.today} as today's date. Tomorrow is ${d.tomorrowDate}. Next week dates: ${JSON.stringify(d.nextWeekDates)}`,
+  };
+
   const { response: aiResponse, toolsUsed } = await invokeBedrock({
     agentId: bedrockAgentId,
     aliasId: bedrockAgentAliasId,
@@ -1388,6 +1891,8 @@ async function handleLexEvent(event: LexV2Event): Promise<LexV2Response> {
     clinicId,
     inputMode: event.inputMode, // 'Speech' for voice calls, 'Text' for chat
     channel: event.inputMode === 'Speech' ? 'voice' : 'chat',
+    sessionAttributes: bedrockSessionAttributes,
+    promptSessionAttributes: bedrockPromptSessionAttributes,
     timeoutMs: event.inputMode === 'Speech' ? CONNECT_BEDROCK_TIMEOUT_MS : CONFIG.BEDROCK_TIMEOUT_MS,
   });
 
@@ -1468,6 +1973,35 @@ function escapeSSML(text: string): string {
     .replace(/'/g, '&apos;');
 }
 
+/**
+ * Sanitize text for voice TTS.
+ *
+ * Some LLM outputs include isolated punctuation tokens like:
+ *   "S / U / N / I / L ?"
+ * which Polly/Connect will literally speak as "slash" and "question mark".
+ *
+ * We normalize common spelling separators into spaces and remove spacing that
+ * turns punctuation into standalone speakable tokens.
+ */
+function sanitizeVoiceTtsText(text: string): string {
+  let out = String(text || '');
+
+  // Remove spaces BEFORE common punctuation so they aren't spoken as tokens (" ?")
+  out = out.replace(/\s+([?.!,;:])/g, '$1');
+
+  // Convert spelling separators between single letters into spaces:
+  // "S/U/N/I/L" or "S / U / N / I / L" -> "S U N I L"
+  out = out.replace(/(?<=\b[A-Za-z])\s*[\/\\]\s*(?=[A-Za-z]\b)/g, ' ');
+  out = out.replace(/(?<=\b[A-Za-z])\s*-\s*(?=[A-Za-z]\b)/g, ' ');
+  out = out.replace(/(?<=\b[A-Za-z])\s*_\s*(?=[A-Za-z]\b)/g, ' ');
+  out = out.replace(/(?<=\b[A-Za-z])\s*\.\s*(?=[A-Za-z]\b)/g, ' ');
+
+  // Collapse repeated whitespace
+  out = out.replace(/\s{2,}/g, ' ').trim();
+
+  return out;
+}
+
 function getProsodyFromContactAttributes(
   attrs: Record<string, string>
 ): Pick<ClinicVoiceSettings, 'speakingRate' | 'pitch' | 'volume'> {
@@ -1482,7 +2016,7 @@ function buildProsodySsml(
   text: string,
   prosody: Pick<ClinicVoiceSettings, 'speakingRate' | 'pitch' | 'volume'>
 ): string {
-  const escaped = escapeSSML(text || '');
+  const escaped = escapeSSML(sanitizeVoiceTtsText(text || ''));
   return `<speak><prosody rate="${prosody.speakingRate}" pitch="${prosody.pitch}" volume="${prosody.volume}">${escaped}</prosody></speak>`;
 }
 

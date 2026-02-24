@@ -158,6 +158,20 @@ export interface ConnectLexAiStackProps extends StackProps {
    * Each loop plays ~2 seconds of keyboard sounds.
    */
   asyncMaxPollLoops?: number;
+
+  /**
+   * SecretsStack tables used for OpenDental caller lookup (ClinicSecrets) and clinic display name (ClinicConfig).
+   * These are managed by SecretsStack as stable table names.
+   */
+  clinicSecretsTableName?: string;
+  clinicConfigTableName?: string;
+  globalSecretsTableName?: string;
+
+  /**
+   * KMS Key ARN used to encrypt secrets tables (ClinicSecrets/GlobalSecrets/ClinicConfig).
+   * Required for Lambdas that read from KMS-encrypted secrets tables (e.g. caller lookup at welcome).
+   */
+  secretsEncryptionKeyArn?: string;
 }
 
 // ========================================================================
@@ -237,7 +251,7 @@ export class ConnectLexAiStack extends Stack {
       handler: 'handler',
       runtime: lambda.Runtime.NODEJS_20_X,
       timeout: Duration.seconds(30),
-      memorySize: 1024, // Increased from 512 for faster AI response times
+      memorySize: 10240, // Maximum Lambda memory for AI workloads
       environment: {
         AGENTS_TABLE: props.agentsTableName,
         SESSIONS_TABLE: props.sessionsTableName,
@@ -246,6 +260,12 @@ export class ConnectLexAiStack extends Stack {
         TRANSCRIPT_BUFFER_TABLE_NAME: props.transcriptBufferTableName,
         AI_PHONE_NUMBERS_JSON: props.aiPhoneNumbersJson || '{}',
         DEFAULT_CLINIC_ID: props.defaultClinicId || 'dentistingreenville',
+        // SecretsStack tables for OpenDental caller lookup + clinic display name
+        CLINIC_SECRETS_TABLE: props.clinicSecretsTableName || 'TodaysDentalInsights-ClinicSecrets',
+        CLINIC_CONFIG_TABLE: props.clinicConfigTableName || 'TodaysDentalInsights-ClinicConfig',
+        GLOBAL_SECRETS_TABLE: props.globalSecretsTableName || 'TodaysDentalInsights-GlobalSecrets',
+        // Caller lookup budget (ms) for personalized welcome greeting
+        WELCOME_PATIENT_LOOKUP_BUDGET_MS: '2500',
         // Keep Bedrock comfortably under Connect's ~8s InvokeLambdaFunction hard limit
         CONNECT_BEDROCK_TIMEOUT_MS: '6500',
         // Thinking audio configuration - plays keyboard sounds during AI processing
@@ -285,6 +305,27 @@ export class ConnectLexAiStack extends Stack {
       actions: ['dynamodb:GetItem'],
       resources: [props.voiceConfigTableArn],
     }));
+
+    // SecretsStack tables (ClinicSecrets + ClinicConfig) for OpenDental caller lookup at welcome
+    const clinicSecretsTableName = props.clinicSecretsTableName || 'TodaysDentalInsights-ClinicSecrets';
+    const clinicConfigTableName = props.clinicConfigTableName || 'TodaysDentalInsights-ClinicConfig';
+    const clinicSecretsTableArn = `arn:aws:dynamodb:${this.region}:${this.account}:table/${clinicSecretsTableName}`;
+    const clinicConfigTableArn = `arn:aws:dynamodb:${this.region}:${this.account}:table/${clinicConfigTableName}`;
+
+    this.lexBedrockHookFn.addToRolePolicy(new iam.PolicyStatement({
+      effect: iam.Effect.ALLOW,
+      actions: ['dynamodb:GetItem'],
+      resources: [clinicSecretsTableArn, clinicConfigTableArn],
+    }));
+
+    // Grant KMS decryption for the SecretsStack encryption key (required for KMS-encrypted DynamoDB tables)
+    if (props.secretsEncryptionKeyArn) {
+      this.lexBedrockHookFn.addToRolePolicy(new iam.PolicyStatement({
+        effect: iam.Effect.ALLOW,
+        actions: ['kms:Decrypt', 'kms:DescribeKey'],
+        resources: [props.secretsEncryptionKeyArn],
+      }));
+    }
 
     this.lexBedrockHookFn.addToRolePolicy(new iam.PolicyStatement({
       effect: iam.Effect.ALLOW,
@@ -355,11 +396,12 @@ export class ConnectLexAiStack extends Stack {
         handler: 'handler',
         runtime: lambda.Runtime.NODEJS_20_X,
         timeout: Duration.seconds(60), // Full 60 seconds for async processing
-        memorySize: 1024,
+        memorySize: 10240,
         environment: {
           ASYNC_RESULTS_TABLE: asyncResultsTable.tableName,
           AGENTS_TABLE: props.agentsTableName,
           SESSIONS_TABLE: props.sessionsTableName,
+          VOICE_CONFIG_TABLE: props.voiceConfigTableName,
           AI_PHONE_NUMBERS_JSON: props.aiPhoneNumbersJson || '{}',
           DEFAULT_CLINIC_ID: props.defaultClinicId || 'dentistingreenville',
         },
@@ -384,6 +426,13 @@ export class ConnectLexAiStack extends Stack {
         effect: iam.Effect.ALLOW,
         actions: ['dynamodb:GetItem', 'dynamodb:PutItem', 'dynamodb:UpdateItem'],
         resources: [props.sessionsTableArn],
+      }));
+
+      // Voice config table read: select configured inbound voice agent (if set)
+      asyncBedrockLambda.addToRolePolicy(new iam.PolicyStatement({
+        effect: iam.Effect.ALLOW,
+        actions: ['dynamodb:GetItem'],
+        resources: [props.voiceConfigTableArn],
       }));
 
       // Grant Bedrock Agent invocation permissions
@@ -432,7 +481,7 @@ export class ConnectLexAiStack extends Stack {
       handler: 'handler',
       runtime: lambda.Runtime.NODEJS_20_X,
       timeout: Duration.seconds(10),
-      memorySize: 256,
+      memorySize: 10240,
       logRetention: logs.RetentionDays.ONE_WEEK,
     });
     applyTags(this.lexTranscriptCaptureFn, { Function: 'lex-transcript-capture' });
@@ -446,7 +495,7 @@ export class ConnectLexAiStack extends Stack {
       handler: 'handler',
       runtime: lambda.Runtime.NODEJS_20_X,
       timeout: Duration.seconds(10),
-      memorySize: 256,
+      memorySize: 10240,
       environment: {
         SESSIONS_TABLE: props.sessionsTableName,
         CALL_ANALYTICS_TABLE: props.callAnalyticsTableName,
@@ -898,7 +947,7 @@ export class ConnectLexAiStack extends Stack {
       handler: 'handler',
       runtime: lambda.Runtime.NODEJS_20_X,
       timeout: Duration.seconds(30),
-      memorySize: 256,
+      memorySize: 10240,
       logRetention: logs.RetentionDays.ONE_WEEK,
     });
     applyTags(createKeyboardPromptFn, { Function: 'create-keyboard-prompt' });
@@ -1021,7 +1070,7 @@ export class ConnectLexAiStack extends Stack {
       handler: 'handler',
       runtime: lambda.Runtime.NODEJS_20_X,
       timeout: Duration.seconds(30),
-      memorySize: 256,
+      memorySize: 10240,
       logRetention: logs.RetentionDays.ONE_WEEK,
     });
     applyTags(createContactFlowFn, { Function: 'create-contact-flow' });
@@ -1063,7 +1112,7 @@ export class ConnectLexAiStack extends Stack {
         DisconnectFlowArn: disconnectFlow.attrContactFlowArn,
         // Force update ONLY when dependencies actually change
         // Bump version when contact flow logic changes (forces custom resource update)
-        UpdateTrigger: `${lexBotAliasArn}|${this.lexBedrockHookFn.functionArn}|${keyboardPromptId}|${disconnectFlow.attrContactFlowArn}|v11`,
+        UpdateTrigger: `${lexBotAliasArn}|${this.lexBedrockHookFn.functionArn}|${keyboardPromptId}|${disconnectFlow.attrContactFlowArn}|v16`,
       },
     });
     inboundFlow.node.addDependency(disconnectFlow);
@@ -1090,7 +1139,7 @@ export class ConnectLexAiStack extends Stack {
         handler: 'handler',
         runtime: lambda.Runtime.NODEJS_20_X,
         timeout: Duration.seconds(30),
-        memorySize: 256,
+        memorySize: 10240,
         logRetention: logs.RetentionDays.ONE_WEEK,
       });
       applyTags(createAsyncContactFlowFn, { Function: 'create-async-contact-flow' });
@@ -1127,7 +1176,7 @@ export class ConnectLexAiStack extends Stack {
           DisconnectFlowArn: disconnectFlow.attrContactFlowArn,
           MaxPollLoops: String(props.asyncMaxPollLoops || 20),
           // Bump version when contact flow logic changes (forces custom resource update)
-          UpdateTrigger: `${lexBotAliasArn}|${this.lexBedrockHookFn.functionArn}|${asyncBedrockLambda.functionArn}|${keyboardPromptId}|${disconnectFlow.attrContactFlowArn}|${props.asyncMaxPollLoops || 20}|v7`,
+          UpdateTrigger: `${lexBotAliasArn}|${this.lexBedrockHookFn.functionArn}|${asyncBedrockLambda.functionArn}|${keyboardPromptId}|${disconnectFlow.attrContactFlowArn}|${props.asyncMaxPollLoops || 20}|v12`,
         },
       });
       asyncInboundFlow.node.addDependency(disconnectFlow);
@@ -1153,7 +1202,7 @@ export class ConnectLexAiStack extends Stack {
       functionName: `${this.stackName}-PhoneAssociation`,
       runtime: lambda.Runtime.NODEJS_20_X,
       timeout: Duration.seconds(30),
-      memorySize: 256,
+      memorySize: 10240,
       handler: 'handler',
       entry: path.join(__dirname, '..', '..', 'services', 'connect', 'phone-association-handler.ts'),
       logRetention: logs.RetentionDays.ONE_WEEK,
@@ -1201,7 +1250,7 @@ export class ConnectLexAiStack extends Stack {
       handler: 'handler',
       runtime: lambda.Runtime.NODEJS_20_X,
       timeout: Duration.seconds(30),
-      memorySize: 256,
+      memorySize: 10240,
       logRetention: logs.RetentionDays.ONE_WEEK,
     });
     applyTags(createOutboundContactFlowFn, { Function: 'create-outbound-contact-flow' });
@@ -1234,7 +1283,7 @@ export class ConnectLexAiStack extends Stack {
         LambdaFunctionArn: this.lexBedrockHookFn.functionArn,
         KeyboardPromptId: keyboardPromptId,
         DisconnectFlowArn: disconnectFlow.attrContactFlowArn,
-        UpdateTrigger: `${lexBotAliasArn}|${this.lexBedrockHookFn.functionArn}|${keyboardPromptId}|${disconnectFlow.attrContactFlowArn}|v4`,
+        UpdateTrigger: `${lexBotAliasArn}|${this.lexBedrockHookFn.functionArn}|${keyboardPromptId}|${disconnectFlow.attrContactFlowArn}|v7`,
       },
     });
     outboundFlow.node.addDependency(disconnectFlow);

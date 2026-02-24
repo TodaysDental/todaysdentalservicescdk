@@ -34,6 +34,7 @@ export interface Invoice {
 
 export type PaymentMode =
   | 'EFT'
+  | 'ACH'
   | 'CHEQUE'
   | 'CREDIT_CARD'
   | 'PAYCONNECT'
@@ -84,7 +85,8 @@ export interface OpenDentalPaymentRow {
   paymentDate: string;
   expectedAmount: number;
   paymentMode: PaymentMode;
-  referenceId: string;
+  referenceId: string;       // PayNote or extracted reference
+  checkNum?: string;         // CheckNum from OD (for cheques)
   sourceType: 'PATIENT' | 'INSURANCE';
   payType?: number;
 }
@@ -135,6 +137,8 @@ export interface ReconciliationRow {
   openDentalRowId?: string;
   bankRowId?: string;
   patientName?: string;
+  paymentDate?: string;
+  matchPass?: string;
 }
 
 // ========================================
