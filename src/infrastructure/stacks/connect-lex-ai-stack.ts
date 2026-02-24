@@ -265,7 +265,7 @@ export class ConnectLexAiStack extends Stack {
         CLINIC_CONFIG_TABLE: props.clinicConfigTableName || 'TodaysDentalInsights-ClinicConfig',
         GLOBAL_SECRETS_TABLE: props.globalSecretsTableName || 'TodaysDentalInsights-GlobalSecrets',
         // Caller lookup budget (ms) for personalized welcome greeting
-        WELCOME_PATIENT_LOOKUP_BUDGET_MS: '2500',
+        WELCOME_PATIENT_LOOKUP_BUDGET_MS: '4000',
         // Keep Bedrock comfortably under Connect's ~8s InvokeLambdaFunction hard limit
         CONNECT_BEDROCK_TIMEOUT_MS: '6500',
         // Thinking audio configuration - plays keyboard sounds during AI processing
@@ -1112,7 +1112,7 @@ export class ConnectLexAiStack extends Stack {
         DisconnectFlowArn: disconnectFlow.attrContactFlowArn,
         // Force update ONLY when dependencies actually change
         // Bump version when contact flow logic changes (forces custom resource update)
-        UpdateTrigger: `${lexBotAliasArn}|${this.lexBedrockHookFn.functionArn}|${keyboardPromptId}|${disconnectFlow.attrContactFlowArn}|v16`,
+        UpdateTrigger: `${lexBotAliasArn}|${this.lexBedrockHookFn.functionArn}|${keyboardPromptId}|${disconnectFlow.attrContactFlowArn}|v17`,
       },
     });
     inboundFlow.node.addDependency(disconnectFlow);
@@ -1176,7 +1176,7 @@ export class ConnectLexAiStack extends Stack {
           DisconnectFlowArn: disconnectFlow.attrContactFlowArn,
           MaxPollLoops: String(props.asyncMaxPollLoops || 20),
           // Bump version when contact flow logic changes (forces custom resource update)
-          UpdateTrigger: `${lexBotAliasArn}|${this.lexBedrockHookFn.functionArn}|${asyncBedrockLambda.functionArn}|${keyboardPromptId}|${disconnectFlow.attrContactFlowArn}|${props.asyncMaxPollLoops || 20}|v12`,
+          UpdateTrigger: `${lexBotAliasArn}|${this.lexBedrockHookFn.functionArn}|${asyncBedrockLambda.functionArn}|${keyboardPromptId}|${disconnectFlow.attrContactFlowArn}|${props.asyncMaxPollLoops || 20}|v13`,
         },
       });
       asyncInboundFlow.node.addDependency(disconnectFlow);

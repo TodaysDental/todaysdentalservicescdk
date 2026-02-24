@@ -361,6 +361,7 @@ function buildContactFlowContent(params: {
             patientName: '$.External.patientName',
             patientFirstName: '$.External.patientFirstName',
             isNewPatient: '$.External.isNewPatient',
+            timezone: '$.External.timezone',
             // OpenDental identity (used to avoid re-asking name/DOB in Bedrock Agent)
             PatNum: '$.External.PatNum',
             FName: '$.External.FName',

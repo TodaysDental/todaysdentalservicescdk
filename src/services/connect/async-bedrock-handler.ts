@@ -571,8 +571,11 @@ async function processBedrockInvocation(params: {
         'SYSTEM CONTEXT (do not read aloud):',
         `Caller is already identified in OpenDental: ${name} (PatNum ${patNum}).`,
         `IsNewPatient=${newFlag}.`,
-        'Do NOT ask for first name, last name, or date of birth.',
-        'If they want to book/schedule an appointment, ask: "Perfect. May I know the reason for the appointment?" then ask when they want to come in.',
+        'Do NOT ask for first name, last name, date of birth, or phone number again.',
+        'Use the inbound caller ID as the phone number unless the caller says it is different or blocked.',
+        'If they want to book/schedule an appointment and have NOT given a reason yet: ask "Perfect. May I know the reason for the appointment?" and STOP. Wait for their answer before calling any scheduling tools.',
+        'After you have the reason, ask: "When would you like to schedule?"',
+        'When booking, choose an appointment type that matches BOTH the reason and patient status (IsNewPatient=false → "existing patient" types; IsNewPatient=true → "new patient" types).',
       ].join(' ');
       return `${context}\n\nCaller: ${raw}`;
     })();
@@ -619,7 +622,7 @@ async function processBedrockInvocation(params: {
           dateContext: `When scheduling appointments, use ${d.today} as today's date. Tomorrow is ${d.tomorrowDate}. Next week dates: ${JSON.stringify(d.nextWeekDates)}`,
           ...(patNum
             ? {
-                patientContext: `Caller already identified in OpenDental: ${resolvedPatientName || 'Patient'} (PatNum ${patNum}). Do NOT ask for name or date of birth. If they want to schedule, ask: "Perfect. May I know the reason for the appointment?" then ask when they'd like to come in.`,
+                patientContext: `Caller already identified in OpenDental: ${resolvedPatientName || 'Patient'} (PatNum ${patNum}). IsNewPatient=${(isNewPatient === 'true' || isNewPatient === 'false') ? isNewPatient : 'unknown'}. Do NOT ask for first name, last name, date of birth, or phone number again. Use the inbound caller ID as the phone number unless the caller says it is different or blocked. If they want to book/schedule an appointment and have NOT given a reason yet: ask "Perfect. May I know the reason for the appointment?" and STOP. Wait for their answer before calling any scheduling tools. After you have the reason, ask: "When would you like to schedule?" When booking, choose an appointment type that matches BOTH the reason and patient status (IsNewPatient=false → "existing patient" types; IsNewPatient=true → "new patient" types).`,
               }
             : {}),
         },
@@ -1042,6 +1045,15 @@ export const handler = async (event: any): Promise<any> => {
       const ttsSpeakingRate = params.ttsSpeakingRate;
       const ttsPitch = params.ttsPitch;
       const ttsVolume = params.ttsVolume;
+      // Patient identity from welcome lookup (if present)
+      const patNum = String(params.PatNum || '').trim();
+      const fName = String(params.FName || '').trim();
+      const lName = String(params.LName || '').trim();
+      const birthdate = String(params.Birthdate || '').trim();
+      const isNewPatient = String(params.IsNewPatient || '').trim();
+      const patientName = String(params.patientName || '').trim();
+      const patientFirstName = String(params.patientFirstName || '').trim();
+      const initialGreetingAlreadyPlayed = String(params.initialGreetingAlreadyPlayed || '').trim();
 
       if (!requestId) {
         console.error('[AsyncBedrock] process called without requestId');
@@ -1059,6 +1071,14 @@ export const handler = async (event: any): Promise<any> => {
         ttsSpeakingRate,
         ttsPitch,
         ttsVolume,
+        ...(patNum ? { PatNum: patNum } : {}),
+        ...(fName ? { FName: fName } : {}),
+        ...(lName ? { LName: lName } : {}),
+        ...(birthdate ? { Birthdate: birthdate } : {}),
+        ...((isNewPatient === 'true' || isNewPatient === 'false') ? { IsNewPatient: isNewPatient } : {}),
+        ...(patientName ? { patientName } : {}),
+        ...(patientFirstName ? { patientFirstName } : {}),
+        ...(initialGreetingAlreadyPlayed ? { initialGreetingAlreadyPlayed } : {}),
       });
       return { status: 'processing_complete' };
     }

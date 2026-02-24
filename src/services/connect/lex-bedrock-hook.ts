@@ -113,10 +113,10 @@ const openDentalHttp = axios.create({
 // Budget for OpenDental caller lookup during the initial welcome message.
 // Keep this short to avoid dead air at call start and to stay well within Connect's 8s Lambda limit.
 const WELCOME_PATIENT_LOOKUP_BUDGET_MS = (() => {
-  const raw = Number(process.env.WELCOME_PATIENT_LOOKUP_BUDGET_MS || '2500');
-  const n = Number.isFinite(raw) ? raw : 2500;
+  const raw = Number(process.env.WELCOME_PATIENT_LOOKUP_BUDGET_MS || '4000');
+  const n = Number.isFinite(raw) ? raw : 4000;
   // Cap to avoid long dead-air at call start while staying well under Connect's 8s Lambda limit.
-  return Math.max(200, Math.min(n, 4000));
+  return Math.max(200, Math.min(n, 6000));
 })();
 
 // AI Agents (voice) default inbound greeting template (matches ai-agents `voice-agent-config.ts`)
@@ -167,20 +167,21 @@ async function getAiAgentsInboundGreetingTemplate(clinicId: string): Promise<str
   }
 }
 
-async function getClinicDisplayNameFromConfig(clinicId: string): Promise<string> {
+async function getClinicDisplayInfoFromConfig(clinicId: string): Promise<{ clinicName: string; timezone: string }> {
   const effectiveClinicId = String(clinicId || '').trim();
-  if (!effectiveClinicId) return "Today's Dental";
+  if (!effectiveClinicId) return { clinicName: "Today's Dental", timezone: 'UTC' };
 
   try {
     const cfg = await getClinicConfig(effectiveClinicId);
-    const name = String((cfg as any)?.clinicName || '').trim();
-    return name || "Today's Dental";
+    const clinicName = String((cfg as any)?.clinicName || '').trim() || "Today's Dental";
+    const timezone = String((cfg as any)?.timezone || '').trim() || 'UTC';
+    return { clinicName, timezone };
   } catch (error: any) {
-    console.warn('[LexBedrockHook] Failed to load clinic config for greeting', {
+    console.warn('[LexBedrockHook] Failed to load clinic config for greeting/timezone', {
       clinicId: effectiveClinicId,
       error: error?.message || String(error),
     });
-    return "Today's Dental";
+    return { clinicName: "Today's Dental", timezone: 'UTC' };
   }
 }
 
@@ -1186,16 +1187,19 @@ async function invokeBedrock(params: {
         'the caller';
       const isNewPatient = String(
         mergedSessionAttributes.IsNewPatient ||
-          mergedSessionAttributes.isNewPatient ||
-          ''
+        mergedSessionAttributes.isNewPatient ||
+        ''
       ).trim();
       const newFlag = isNewPatient === 'true' || isNewPatient === 'false' ? isNewPatient : 'unknown';
       const context = [
         'SYSTEM CONTEXT (do not read aloud):',
         `Caller is already identified in OpenDental: ${patientName} (PatNum ${patNum}).`,
         `IsNewPatient=${newFlag}.`,
-        'Do NOT ask for first name, last name, or date of birth.',
-        'If they want to book/schedule an appointment, ask: "Perfect. May I know the reason for the appointment?" then ask when they want to come in.',
+        'Do NOT ask for first name, last name, date of birth, or phone number again.',
+        'Use the inbound caller ID as the phone number unless the caller says it is different or blocked.',
+        'If they want to book/schedule an appointment and have NOT given a reason yet: ask "Perfect. May I know the reason for the appointment?" and STOP. Wait for their answer before calling any scheduling tools.',
+        'After you have the reason, ask: "When would you like to schedule?"',
+        'When booking, choose an appointment type that matches BOTH the reason and patient status (IsNewPatient=false → "existing patient" types; IsNewPatient=true → "new patient" types).',
       ].join(' ');
       return `${context}\n\nCaller: ${raw}`;
     })();
@@ -1328,6 +1332,7 @@ interface ConnectLambdaResponse {
   ssmlResponse?: string;
   clinicId?: string;
   turnCount?: string;
+  timezone?: string;
   // Welcome/patient attributes returned to Connect at call start
   welcomeMessage?: string;
   patientFirstName?: string;
@@ -1460,17 +1465,19 @@ async function handleConnectDirectEvent(event: ConnectLambdaEvent): Promise<Conn
     // Do caller lookup + config reads in parallel to minimize dead air at call start
     const patientLookupPromise = callerNumber
       ? searchPatientByPhoneFast({
-          phoneNumber: callerNumber,
-          clinicId: welcomeClinicId,
-          budgetMs: WELCOME_PATIENT_LOOKUP_BUDGET_MS,
-        })
+        phoneNumber: callerNumber,
+        clinicId: welcomeClinicId,
+        budgetMs: WELCOME_PATIENT_LOOKUP_BUDGET_MS,
+      })
       : Promise.resolve({ patient: null, matchCount: 0, usedFormat: '' });
 
-    const [patientLookup, greetingTemplate, clinicDisplayName] = await Promise.all([
+    const [patientLookup, greetingTemplate, clinicInfo] = await Promise.all([
       patientLookupPromise,
       getAiAgentsInboundGreetingTemplate(welcomeClinicId),
-      getClinicDisplayNameFromConfig(welcomeClinicId),
+      getClinicDisplayInfoFromConfig(welcomeClinicId),
     ]);
+    const clinicDisplayName = clinicInfo.clinicName;
+    const clinicTimezone = clinicInfo.timezone;
 
     // Only greet with name when there is exactly 1 match (avoid wrong-patient greeting).
     const matchedPatient = patientLookup.matchCount === 1 ? patientLookup.patient : null;
@@ -1496,12 +1503,13 @@ async function handleConnectDirectEvent(event: ConnectLambdaEvent): Promise<Conn
     });
 
     const welcomeMessage = patientLookup.matchCount === 1 && patientFirstName
-      ? `Hi ${patientFirstName}, How may I help you today?`
+      ? `Hi ${patientFirstName}, how may I help you today?`
       : renderGreetingTemplate(greetingTemplate, { clinicName: clinicDisplayName });
 
     return {
       aiResponse: '',
       clinicId: welcomeClinicId,
+      timezone: clinicTimezone,
       welcomeMessage,
       patientFirstName: patientFirstName || '',
       patientName: patientName || '',
@@ -1669,8 +1677,8 @@ async function handleConnectDirectEvent(event: ConnectLambdaEvent): Promise<Conn
     dateContext: `When scheduling appointments, use ${d.today} as today's date. Tomorrow is ${d.tomorrowDate}. Next week dates: ${JSON.stringify(d.nextWeekDates)}`,
     ...(patNum
       ? {
-          patientContext: `Caller already identified in OpenDental: ${resolvedPatientNameFromAttrs || 'Patient'} (PatNum ${patNum}). Do NOT ask for name or date of birth. If they want to schedule, ask: "Perfect. May I know the reason for the appointment?" then ask when they'd like to come in.`,
-        }
+        patientContext: `Caller already identified in OpenDental: ${resolvedPatientNameFromAttrs || 'Patient'} (PatNum ${patNum}). IsNewPatient=${(isNewPatientFlag === 'true' || isNewPatientFlag === 'false') ? isNewPatientFlag : 'unknown'}. Do NOT ask for first name, last name, date of birth, or phone number again. Use the inbound caller ID as the phone number unless the caller says it is different or blocked. If they want to book/schedule an appointment and have NOT given a reason yet: ask "Perfect. May I know the reason for the appointment?" and STOP. Wait for their answer before calling any scheduling tools. After you have the reason, ask: "When would you like to schedule?" When booking, choose an appointment type that matches BOTH the reason and patient status (IsNewPatient=false → "existing patient" types; IsNewPatient=true → "new patient" types).`,
+      }
       : {}),
   };
 
@@ -1861,6 +1869,17 @@ async function handleLexEvent(event: LexV2Event): Promise<LexV2Response> {
   const [year, month, day] = d.today.split('-');
   const todayFormatted = `${month}/${day}/${year}`;
 
+  // Patient identity from Lex session attributes (populated by the welcomeMessage step
+  // and stored in Connect contact attributes → Lex session attributes)
+  const patNum = String(sessionAttributes['PatNum'] || '').trim();
+  const fName = String(sessionAttributes['FName'] || sessionAttributes['patientFirstName'] || '').trim();
+  const lName = String(sessionAttributes['LName'] || '').trim();
+  const birthdate = String(sessionAttributes['Birthdate'] || '').trim();
+  const isNewPatientFlag = String(sessionAttributes['IsNewPatient'] || sessionAttributes['isNewPatient'] || '').trim();
+  const resolvedPatientNameFromAttrs =
+    String(sessionAttributes['patientName'] || '').trim() ||
+    [fName, lName].filter(Boolean).join(' ').trim();
+
   const bedrockSessionAttributes: Record<string, string> = {
     callerNumber,
     dialedNumber,
@@ -1868,6 +1887,12 @@ async function handleLexEvent(event: LexV2Event): Promise<LexV2Response> {
     PatientPhone: callerNumber,
     callDirection,
     contactId: lexSessionId,
+    ...(resolvedPatientNameFromAttrs ? { patientName: resolvedPatientNameFromAttrs } : {}),
+    ...(patNum ? { PatNum: patNum } : {}),
+    ...(fName ? { FName: fName } : {}),
+    ...(lName ? { LName: lName } : {}),
+    ...(birthdate ? { Birthdate: birthdate } : {}),
+    ...((isNewPatientFlag === 'true' || isNewPatientFlag === 'false') ? { IsNewPatient: isNewPatientFlag } : {}),
     todayDate: d.today,
     todayFormatted,
     dayName: d.dayName,
@@ -1881,6 +1906,11 @@ async function handleLexEvent(event: LexV2Event): Promise<LexV2Response> {
     callerNumber,
     currentDate: `Today is ${d.dayName}, ${todayFormatted} (${d.today}). Current time: ${d.currentTime} (${d.timezone})`,
     dateContext: `When scheduling appointments, use ${d.today} as today's date. Tomorrow is ${d.tomorrowDate}. Next week dates: ${JSON.stringify(d.nextWeekDates)}`,
+    ...(patNum
+      ? {
+        patientContext: `Caller already identified in OpenDental: ${resolvedPatientNameFromAttrs || 'Patient'} (PatNum ${patNum}). IsNewPatient=${(isNewPatientFlag === 'true' || isNewPatientFlag === 'false') ? isNewPatientFlag : 'unknown'}. Do NOT ask for first name, last name, date of birth, or phone number again. Use the inbound caller ID as the phone number unless the caller says it is different or blocked. If they want to book/schedule an appointment and have NOT given a reason yet: ask "Perfect. May I know the reason for the appointment?" and STOP. Wait for their answer before calling any scheduling tools. After you have the reason, ask: "When would you like to schedule?" When booking, choose an appointment type that matches BOTH the reason and patient status (IsNewPatient=false → "existing patient" types; IsNewPatient=true → "new patient" types).`,
+      }
+      : {}),
   };
 
   const { response: aiResponse, toolsUsed } = await invokeBedrock({
