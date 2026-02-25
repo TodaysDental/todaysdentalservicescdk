@@ -999,13 +999,146 @@ function escapeSSML(text: string): string {
 }
 
 function sanitizeVoiceTtsText(text: string): string {
-  let out = String(text || '');
+  if (!text) return '';
+
+  let out = String(text);
+
+  const ordinalSuffix = (dayNum: number) => {
+    if (!Number.isFinite(dayNum)) return '';
+    const mod100 = dayNum % 100;
+    if (mod100 >= 11 && mod100 <= 13) return 'th';
+    const mod10 = dayNum % 10;
+    if (mod10 === 1) return 'st';
+    if (mod10 === 2) return 'nd';
+    if (mod10 === 3) return 'rd';
+    return 'th';
+  };
+
+  const monthNames = [
+    'January', 'February', 'March', 'April', 'May', 'June',
+    'July', 'August', 'September', 'October', 'November', 'December'
+  ];
+  const weekdayNames = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
+
+  const formatDateTime = (year: string, month: string, day: string, hour: string, minute: string) => {
+    const y = parseInt(year, 10);
+    const mo = parseInt(month, 10);
+    const d = parseInt(day, 10);
+    const h = parseInt(hour, 10);
+    const m = parseInt(minute, 10);
+    if (!Number.isFinite(y) || !Number.isFinite(mo) || !Number.isFinite(d) || !Number.isFinite(h) || !Number.isFinite(m)) return '';
+    if (mo < 1 || mo > 12 || d < 1 || d > 31 || h < 0 || h > 23 || m < 0 || m > 59) return '';
+
+    const weekday = weekdayNames[new Date(Date.UTC(y, mo - 1, d, 12, 0, 0)).getUTCDay()] || '';
+    const monthName = monthNames[mo - 1] || month;
+    const ampm = h < 12 ? 'AM' : 'PM';
+    const h12 = h % 12 === 0 ? 12 : h % 12;
+    const timePart = m === 0 ? `${h12} ${ampm}` : `${h12}:${String(m).padStart(2, '0')} ${ampm}`;
+    const suffix = ordinalSuffix(d);
+    return `${weekday}, ${monthName} ${d}${suffix} at ${timePart}`;
+  };
+
+  const formatDateOnly = (year: string, month: string, day: string) => {
+    const y = parseInt(year, 10);
+    const mo = parseInt(month, 10);
+    const d = parseInt(day, 10);
+    if (!Number.isFinite(y) || !Number.isFinite(mo) || !Number.isFinite(d)) return '';
+    if (mo < 1 || mo > 12 || d < 1 || d > 31) return '';
+
+    const weekday = weekdayNames[new Date(Date.UTC(y, mo - 1, d, 12, 0, 0)).getUTCDay()] || '';
+    const monthName = monthNames[mo - 1] || month;
+    const suffix = ordinalSuffix(d);
+    return `${weekday}, ${monthName} ${d}${suffix}`;
+  };
+
+  // --- 1) Convert common datetime formats into natural spoken form ---
+  out = out.replace(
+    /\b(\d{4})-(\d{2})-(\d{2})[T ](\d{2}):(\d{2})(?::\d{2})?(?:\.\d{1,3})?(?:Z)?\b/g,
+    (match, year, month, day, hour, minute) => formatDateTime(year, month, day, hour, minute) || match
+  );
+
+  out = out.replace(
+    /\b(0?[1-9]|1[0-2])\/(0?[1-9]|[12]\d|3[01])\/(\d{4})\b/g,
+    (match, month, day, year) => formatDateOnly(year, String(month).padStart(2, '0'), String(day).padStart(2, '0')) || match
+  );
+
+  out = out.replace(
+    /\b(\d{4})-(0[1-9]|1[0-2])-(0[1-9]|[12]\d|3[01])\b/g,
+    (match, year, month, day) => formatDateOnly(year, month, day) || match
+  );
+
+  // --- 2) Strip tags / markup ---
+  out = out.replace(/<<[^>]*>>/g, ' ');
+  out = out.replace(/<[^>]+>/g, ' ');
+
+  // --- 3) Strip markdown formatting ---
+  out = out.replace(/^#{1,6}\s+/gm, '');
+  out = out.replace(/(\*{1,3}|_{1,3})([^*_]+?)\1/g, '$2');
+  out = out.replace(/`([^`]+)`/g, '$1');
+  // Code blocks: keep inner content but remove fences/language tags
+  out = out.replace(/```[a-zA-Z0-9_-]*\s*\n([\s\S]*?)```/g, '$1');
+  out = out.replace(/```/g, ' ');
+  out = out.replace(/^[-*_]{3,}\s*$/gm, ' ');
+  out = out.replace(/^\s*([•\-\*]|\d+[.)]?)\s+/gm, '');
+  out = out.replace(/^>\s*/gm, '');
+  out = out.replace(/\[([^\]]+)\]\([^)]+\)/g, '$1');
+  out = out.replace(/\\([\*_`#~|>])/g, '$1');
+  out = out.replace(/[\*_]{2,}/g, '');
+  out = out.replace(/\|[-:| ]+\|/g, ' ');
+  out = out.replace(/\|/g, ' ');
+
+  // --- 4) Remove URLs ---
+  out = out.replace(/\bhttps?:\/\/\S+/gi, ' ');
+  out = out.replace(/\bwww\.\S+/gi, ' ');
+
+  // --- 5) Normalize punctuation spacing (" ?") ---
   out = out.replace(/\s+([?.!,;:])/g, '$1');
+
+  // --- 6) Normalize spelled-out names: S / U / N / I / L -> S U N I L ---
   out = out.replace(/(?<=\b[A-Za-z])\s*[\/\\]\s*(?=[A-Za-z]\b)/g, ' ');
   out = out.replace(/(?<=\b[A-Za-z])\s*-\s*(?=[A-Za-z]\b)/g, ' ');
   out = out.replace(/(?<=\b[A-Za-z])\s*_\s*(?=[A-Za-z]\b)/g, ' ');
   out = out.replace(/(?<=\b[A-Za-z])\s*\.\s*(?=[A-Za-z]\b)/g, ' ');
-  out = out.replace(/\s{2,}/g, ' ').trim();
+
+  // --- 7) Defensive cleanup of remaining angle brackets/slashes when spaced out ---
+  out = out.replace(/[<>]/g, ' ');
+  out = out.replace(/\s*[\/\\]\s*/g, ' ');
+
+  // --- 8) Collapse whitespace ---
+  out = out.replace(/[ \t]{2,}/g, ' ');
+  out = out.replace(/\n{3,}/g, '\n\n');
+  out = out.replace(/^\s+|\s+$/gm, '');
+  out = out.trim();
+
+  // --- 9) If it still looks like a tool/JSON dump, strip noisy punctuation and cap length ---
+  const looksLikeJsonish = /"[^"]+"\s*:/.test(out) || (out.includes('{') && out.includes('}'));
+  if (looksLikeJsonish) {
+    // If the model accidentally dumped a tool payload, prefer extracting the (already normalized)
+    // appointment date/times and speaking only a few options instead of reading keys/values.
+    const slotRegex = /\b(?:Sunday|Monday|Tuesday|Wednesday|Thursday|Friday|Saturday),\s+(?:January|February|March|April|May|June|July|August|September|October|November|December)\s+\d{1,2}(?:st|nd|rd|th)(?:\s+at\s+\d{1,2}(?::\d{2})?\s+(?:AM|PM))?\b/g;
+    const rawSlots = out.match(slotRegex) || [];
+    const uniqueSlots: string[] = [];
+    for (const s of rawSlots) {
+      if (!uniqueSlots.includes(s)) uniqueSlots.push(s);
+      if (uniqueSlots.length >= 5) break;
+    }
+    if (uniqueSlots.length > 0) {
+      const opts = uniqueSlots.slice(0, 3);
+      if (opts.length === 1) return `I have ${opts[0]}. Does that work for you?`;
+      if (opts.length === 2) return `I have ${opts[0]} or ${opts[1]}. Which works best for you?`;
+      return `I have ${opts[0]}, ${opts[1]}, or ${opts[2]}. Which works best for you?`;
+    }
+
+    out = out.replace(/[{}\[\]"]/g, ' ');
+    out = out.replace(/[ \t]{2,}/g, ' ').trim();
+  }
+
+  const MAX_LEN = 650;
+  if (out.length > MAX_LEN) {
+    const cut = Math.max(out.lastIndexOf('.', MAX_LEN), out.lastIndexOf('?', MAX_LEN), out.lastIndexOf('!', MAX_LEN));
+    out = (cut > 200 ? out.slice(0, cut + 1) : out.slice(0, MAX_LEN)).trim();
+  }
+
   return out;
 }
 

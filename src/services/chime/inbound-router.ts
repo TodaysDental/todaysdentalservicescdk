@@ -1117,16 +1117,25 @@ export const handler = async (event: any): Promise<any> => {
                                     aiPhoneNumber,
                                 });
 
+                                // Preserve the original caller ID (when available) so downstream systems
+                                // (e.g., Connect/Lex/OpenDental patient lookup) can identify the caller.
+                                // If caller ID is blocked/unknown, fall back to the clinic DID.
+                                const aiForwardCallerId = fromPhoneNumber !== 'Unknown' ? fromPhoneNumber : toPhoneNumber;
+
                                 // Forward call to the AI phone number via PSTN CallAndBridge
                                 return buildActions([
                                     buildSpeakAction('Please hold while we connect you to our after-hours assistant.'),
                                     buildCallAndBridgeAction(
-                                        toPhoneNumber, // Caller ID shows the clinic's main number
+                                        aiForwardCallerId,
                                         aiPhoneNumber, // Forward to the AI phone number
                                         {
                                             'X-Clinic-Id': clinicId,
                                             'X-Forward-Reason': 'after-hours',
                                             'X-Original-Caller': fromPhoneNumber,
+                                            // Preserve the forwarding DID so we can retry with a safe caller ID if needed.
+                                            'X-Forwarded-From': toPhoneNumber,
+                                            // Used to prevent infinite retry loops on ACTION_FAILED.
+                                            'X-Forward-Attempt': '0',
                                         }
                                     ),
                                 ]);
@@ -3450,6 +3459,46 @@ export const handler = async (event: any): Promise<any> => {
 
                     // If this was an after-hours forward that failed, play closed message and end the call.
                     if (forwardReason === 'after-hours' && clinicIdFromHeader) {
+                        const attemptRaw = sipHeaders['X-Forward-Attempt'];
+                        const attempt = Number.parseInt(String(attemptRaw ?? '0'), 10);
+                        const safeAttempt = Number.isFinite(attempt) ? attempt : 0;
+                        const forwardedFrom = String(sipHeaders['X-Forwarded-From'] || '').trim();
+                        const targetPhoneNumber = String(event?.ActionData?.Parameters?.Endpoints?.[0]?.Uri || '').trim();
+
+                        // Some carriers/providers may reject dynamic caller IDs on outbound PSTN legs.
+                        // If that happens, retry ONCE using the clinic DID as caller ID so the call still completes.
+                        const errorText = `${errorType || ''} ${errorMessage || ''}`.toLowerCase();
+                        const looksLikeCallerIdIssue =
+                            errorText.includes('callerid') ||
+                            errorText.includes('caller id') ||
+                            errorText.includes('caller-id') ||
+                            errorText.includes('caller_id') ||
+                            errorText.includes('invalid caller') ||
+                            errorText.includes('from number') ||
+                            errorText.includes('not authorized') ||
+                            errorText.includes('not authorized to use') ||
+                            errorText.includes('not permitted');
+
+                        if (safeAttempt === 0 && forwardedFrom && targetPhoneNumber && looksLikeCallerIdIssue) {
+                            console.warn('[ACTION_FAILED] After-hours forward likely failed due to caller ID policy; retrying with clinic DID', {
+                                callId,
+                                clinicId: clinicIdFromHeader,
+                                originalCaller,
+                                forwardedFrom,
+                                targetPhoneNumber,
+                                errorType,
+                                errorMessage,
+                            });
+
+                            return buildActions([
+                                buildCallAndBridgeAction(
+                                    forwardedFrom,
+                                    targetPhoneNumber,
+                                    { ...sipHeaders, 'X-Forward-Attempt': '1' }
+                                ),
+                            ]);
+                        }
+
                         console.log(`[ACTION_FAILED] After-hours forward failed for clinic ${clinicIdFromHeader}; ending call`, {
                             callId,
                             clinicId: clinicIdFromHeader,
