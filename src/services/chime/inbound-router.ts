@@ -1031,6 +1031,18 @@ export const handler = async (event: any): Promise<any> => {
                     return buildActions([buildHangupAction('There was an error connecting your call.')]);
                 }
 
+                // Guardrail: avoid call-forwarding loops where our outbound clinic ring (or after-hours forward)
+                // gets forwarded back into this same DID, creating repeated NEW_INBOUND_CALL invocations.
+                // Common symptom: To and From are identical (e.g., +1720... calling +1720...).
+                if (fromPhoneNumber === toPhoneNumber && fromPhoneNumber !== 'Unknown') {
+                    console.warn('[NEW_INBOUND_CALL] Possible call-forwarding loop detected (from == to). Rejecting to avoid recursion.', {
+                        callId,
+                        toPhoneNumber,
+                        fromPhoneNumber,
+                    });
+                    return buildActions([{ Type: 'Hangup', Parameters: { SipResponseCode: '486' } }]);
+                }
+
                 // ========== REGULAR CALL ROUTING ==========
                 // 1. Find which clinic was called
                 // (Assuming you have a GSI named 'phoneNumber-index' on your ClinicsTable)
@@ -1048,6 +1060,14 @@ export const handler = async (event: any): Promise<any> => {
                 const clinic = clinics[0];
                 const clinicId = clinic.clinicId;
                 const aiPhoneNumber = typeof clinic.aiPhoneNumber === 'string' ? clinic.aiPhoneNumber.trim() : '';
+                const pbxSimultaneousRingEnabled = (clinic as any)?.pbxSimultaneousRingEnabled === true;
+                const deferAnswerUntilAgentAccept =
+                    pbxSimultaneousRingEnabled || CHIME_CONFIG.INBOUND.DEFER_ANSWER_UNTIL_AGENT_ACCEPT === true;
+                const deferAnswerPauseMsRaw = CHIME_CONFIG.INBOUND.DEFER_ANSWER_PAUSE_MS;
+                const deferAnswerPauseMs =
+                    Number.isFinite(deferAnswerPauseMsRaw) && deferAnswerPauseMsRaw > 0
+                        ? deferAnswerPauseMsRaw
+                        : 1000;
                 console.log(`[NEW_INBOUND_CALL] Call is for clinic ${clinicId}`);
 
                 // ========== AFTER-HOURS ROUTING CHECK ==========
@@ -1097,16 +1117,25 @@ export const handler = async (event: any): Promise<any> => {
                                     aiPhoneNumber,
                                 });
 
+                                // Preserve the original caller ID (when available) so downstream systems
+                                // (e.g., Connect/Lex/OpenDental patient lookup) can identify the caller.
+                                // If caller ID is blocked/unknown, fall back to the clinic DID.
+                                const aiForwardCallerId = fromPhoneNumber !== 'Unknown' ? fromPhoneNumber : toPhoneNumber;
+
                                 // Forward call to the AI phone number via PSTN CallAndBridge
                                 return buildActions([
                                     buildSpeakAction('Please hold while we connect you to our after-hours assistant.'),
                                     buildCallAndBridgeAction(
-                                        toPhoneNumber, // Caller ID shows the clinic's main number
+                                        aiForwardCallerId,
                                         aiPhoneNumber, // Forward to the AI phone number
                                         {
                                             'X-Clinic-Id': clinicId,
                                             'X-Forward-Reason': 'after-hours',
                                             'X-Original-Caller': fromPhoneNumber,
+                                            // Preserve the forwarding DID so we can retry with a safe caller ID if needed.
+                                            'X-Forwarded-From': toPhoneNumber,
+                                            // Used to prevent infinite retry loops on ACTION_FAILED.
+                                            'X-Forward-Attempt': '0',
                                         }
                                     ),
                                 ]);
@@ -1322,7 +1351,9 @@ export const handler = async (event: any): Promise<any> => {
                         return normalized;
                     })();
                     const shouldRingClinicPhone =
-                        CHIME_CONFIG.INBOUND.ENABLE_CLINIC_PHONE_RING === true && !!clinicPhoneE164;
+                        !deferAnswerUntilAgentAccept &&
+                        CHIME_CONFIG.INBOUND.ENABLE_CLINIC_PHONE_RING === true &&
+                        !!clinicPhoneE164;
 
                     try {
                         const assignments: string[] = [
@@ -1340,6 +1371,11 @@ export const handler = async (event: any): Promise<any> => {
                             ':ts': ringAttemptTimestamp,
                             ':now': Date.now(),
                         };
+
+                        if (deferAnswerUntilAgentAccept) {
+                            assignments.push('deferAnswerUntilAgentAccept = :deferAnswer');
+                            exprValues[':deferAnswer'] = true;
+                        }
 
                         if (shouldRingClinicPhone) {
                             assignments.push(
@@ -1389,6 +1425,16 @@ export const handler = async (event: any): Promise<any> => {
                         agentsNotified: uniqueAgentIds.length,
                         ringingStarted,
                     });
+
+                    if (deferAnswerUntilAgentAccept) {
+                        console.log('[NEW_INBOUND_CALL] Deferred answer enabled; keeping call ringing with Pause', {
+                            callId,
+                            clinicId,
+                            pauseMs: deferAnswerPauseMs,
+                            pbxSimultaneousRingEnabled,
+                        });
+                        return buildActions([buildPauseAction(deferAnswerPauseMs)]);
+                    }
 
                     // Start call recording if enabled
                     const enableRecording = process.env.ENABLE_CALL_RECORDING === 'true';
@@ -1490,7 +1536,9 @@ export const handler = async (event: any): Promise<any> => {
                                     return normalized;
                                 })();
                                 const shouldRingClinicPhone =
-                                    CHIME_CONFIG.INBOUND.ENABLE_CLINIC_PHONE_RING === true && !!clinicPhoneE164;
+                                    !deferAnswerUntilAgentAccept &&
+                                    CHIME_CONFIG.INBOUND.ENABLE_CLINIC_PHONE_RING === true &&
+                                    !!clinicPhoneE164;
 
                                 const assignments: string[] = [
                                     '#status = :ringing',
@@ -1509,6 +1557,11 @@ export const handler = async (event: any): Promise<any> => {
                                     ':now': Date.now(),
                                     ':true': true,
                                 };
+
+                                if (deferAnswerUntilAgentAccept) {
+                                    assignments.push('deferAnswerUntilAgentAccept = :deferAnswer');
+                                    exprValues[':deferAnswer'] = true;
+                                }
 
                                 if (shouldRingClinicPhone) {
                                     assignments.push(
@@ -1537,6 +1590,15 @@ export const handler = async (event: any): Promise<any> => {
                                         callerPhoneNumber: fromPhoneNumber,
                                         timestamp: ringTs,
                                     }).catch(pushErr => console.warn('[NEW_INBOUND_CALL] Overflow push failed (non-fatal):', pushErr));
+                                }
+
+                                if (deferAnswerUntilAgentAccept) {
+                                    console.log('[NEW_INBOUND_CALL/Overflow] Deferred answer enabled; keeping call ringing with Pause', {
+                                        callId,
+                                        clinicId,
+                                        pauseMs: deferAnswerPauseMs,
+                                    });
+                                    return buildActions([buildPauseAction(deferAnswerPauseMs)]);
                                 }
 
                                 if (shouldRingClinicPhone) {
@@ -3101,6 +3163,35 @@ export const handler = async (event: any): Promise<any> => {
                     }
                 }
 
+                // If we are deferring answer (e.g., clinic PBX simultaneous ring),
+                // keep the call in ringback by chaining short Pause actions until:
+                // - an agent accepts (call record transitions away from 'ringing'), or
+                // - the other fork cancels (HANGUP), or
+                // - the caller hangs up.
+                if (eventType === 'ACTION_SUCCESSFUL' && actionType === 'Pause') {
+                    try {
+                        const { Items: callRecords } = await ddb.send(new QueryCommand({
+                            TableName: CALL_QUEUE_TABLE_NAME,
+                            IndexName: 'callId-index',
+                            KeyConditionExpression: 'callId = :id',
+                            ExpressionAttributeValues: { ':id': callId },
+                            Limit: 1,
+                        }));
+
+                        const callRecord: any = callRecords?.[0];
+                        const status = String(callRecord?.status || '');
+                        const deferAnswer = callRecord?.deferAnswerUntilAgentAccept === true;
+
+                        if (deferAnswer && status === 'ringing') {
+                            return buildActions([buildPauseAction(CHIME_CONFIG.INBOUND.DEFER_ANSWER_PAUSE_MS)]);
+                        }
+                    } catch (err) {
+                        console.warn('[ACTION_SUCCESSFUL/defer-answer] Failed to chain Pause (non-fatal):', err);
+                    }
+
+                    return buildActions([]);
+                }
+
                 if ((actionType === 'PlayAudioAndGetDigits' || actionType === 'SpeakAndGetDigits') && receivedDigits) {
                     console.log(`[DIGITS_RECEIVED] Customer entered digits: ${receivedDigits} for call ${callId}`, { actionType });
                 }
@@ -3368,6 +3459,46 @@ export const handler = async (event: any): Promise<any> => {
 
                     // If this was an after-hours forward that failed, play closed message and end the call.
                     if (forwardReason === 'after-hours' && clinicIdFromHeader) {
+                        const attemptRaw = sipHeaders['X-Forward-Attempt'];
+                        const attempt = Number.parseInt(String(attemptRaw ?? '0'), 10);
+                        const safeAttempt = Number.isFinite(attempt) ? attempt : 0;
+                        const forwardedFrom = String(sipHeaders['X-Forwarded-From'] || '').trim();
+                        const targetPhoneNumber = String(event?.ActionData?.Parameters?.Endpoints?.[0]?.Uri || '').trim();
+
+                        // Some carriers/providers may reject dynamic caller IDs on outbound PSTN legs.
+                        // If that happens, retry ONCE using the clinic DID as caller ID so the call still completes.
+                        const errorText = `${errorType || ''} ${errorMessage || ''}`.toLowerCase();
+                        const looksLikeCallerIdIssue =
+                            errorText.includes('callerid') ||
+                            errorText.includes('caller id') ||
+                            errorText.includes('caller-id') ||
+                            errorText.includes('caller_id') ||
+                            errorText.includes('invalid caller') ||
+                            errorText.includes('from number') ||
+                            errorText.includes('not authorized') ||
+                            errorText.includes('not authorized to use') ||
+                            errorText.includes('not permitted');
+
+                        if (safeAttempt === 0 && forwardedFrom && targetPhoneNumber && looksLikeCallerIdIssue) {
+                            console.warn('[ACTION_FAILED] After-hours forward likely failed due to caller ID policy; retrying with clinic DID', {
+                                callId,
+                                clinicId: clinicIdFromHeader,
+                                originalCaller,
+                                forwardedFrom,
+                                targetPhoneNumber,
+                                errorType,
+                                errorMessage,
+                            });
+
+                            return buildActions([
+                                buildCallAndBridgeAction(
+                                    forwardedFrom,
+                                    targetPhoneNumber,
+                                    { ...sipHeaders, 'X-Forward-Attempt': '1' }
+                                ),
+                            ]);
+                        }
+
                         console.log(`[ACTION_FAILED] After-hours forward failed for clinic ${clinicIdFromHeader}; ending call`, {
                             callId,
                             clinicId: clinicIdFromHeader,

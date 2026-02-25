@@ -66,26 +66,26 @@ const CONFIG = {
   DEFAULT_VOICE_ENGINE: Engine.NEURAL,
   SAMPLE_RATE: '8000', // Telephony standard
   OUTPUT_FORMAT: OutputFormat.PCM,
-  
+
   // Goodbye message
   GOODBYE_MESSAGE: "Thank you for calling. Have a great day!",
-  
+
   // Error message
   ERROR_MESSAGE: "I apologize, but I'm having trouble processing your request. Please try calling back during office hours or leave a message.",
-  
+
   // Analytics retention (90 days TTL)
   ANALYTICS_TTL_DAYS: 90,
-  
+
   // FIX: Cache configuration to prevent memory leaks
   MAX_CACHE_SIZE: 100, // Maximum number of clinic configs to cache
-  
+
   // FIX: Streaming timeout - reduced to allow fallback within Lambda timeout
   STREAMING_TIMEOUT_MS: 18000, // 18 seconds (leaves 12s for fallback + cleanup)
-  
+
   // FIX: Chunk retry configuration
   CHUNK_MAX_RETRIES: 2,
   CHUNK_RETRY_DELAY_MS: 100,
-  
+
   // FIX: Analytics DLQ retry configuration
   ANALYTICS_MAX_RETRIES: 2,
   ANALYTICS_RETRY_DELAY_MS: 50,
@@ -206,35 +206,35 @@ interface CallAnalytics {
   // Primary Key (shared table schema)
   callId: string;             // PK - unique call identifier
   timestamp: number;          // SK - call timestamp in milliseconds
-  
+
   // Core fields (aligned with AnalyticsStack)
   clinicId: string;
   callStatus: 'active' | 'completed' | 'error';  // For GSI queries
   callCategory: 'ai_voice' | 'ai_outbound';      // Distinguishes AI calls
-  
+
   // Call details
   callType: 'inbound' | 'outbound';
   purpose?: string;           // For outbound: appointment_reminder, follow_up, etc.
   duration: number;           // seconds
   outcome: 'answered' | 'voicemail' | 'no_answer' | 'completed' | 'transferred' | 'error';
-  
+
   // Agent info
   aiAgentId: string;          // Maps to agentId GSI
   aiAgentName?: string;
-  
+
   // Caller info
   callerNumber?: string;
   patientName?: string;
-  
+
   // Analytics fields
   transcriptSummary?: string;
   toolsUsed?: string[];       // Which OpenDental tools were called
   appointmentBooked?: boolean;
   overallSentiment?: 'POSITIVE' | 'NEUTRAL' | 'NEGATIVE' | 'MIXED';  // Aligned with Comprehend
-  
+
   // Source identifier
   analyticsSource: 'voice_ai';  // Identifies these records came from Voice AI
-  
+
   // TTL
   ttl: number;
 }
@@ -253,17 +253,17 @@ const CACHE_TTL_MS = 5 * 60 * 1000; // 5 minutes
  */
 function evictCacheIfNeeded(): void {
   if (voiceConfigCache.size <= CONFIG.MAX_CACHE_SIZE) return;
-  
+
   // Find and remove the least recently accessed entries
   const entriesToRemove = voiceConfigCache.size - CONFIG.MAX_CACHE_SIZE + 10; // Remove 10 extra to avoid frequent evictions
   const entries = Array.from(voiceConfigCache.entries())
     .sort((a, b) => a[1].lastAccess - b[1].lastAccess)
     .slice(0, entriesToRemove);
-  
+
   for (const [key] of entries) {
     voiceConfigCache.delete(key);
   }
-  
+
   console.log(`[voiceConfigCache] Evicted ${entries.length} entries, cache size now: ${voiceConfigCache.size}`);
 }
 
@@ -289,7 +289,7 @@ async function isClinicOpen(clinicId: string): Promise<boolean> {
 
     const now = new Date();
     const timezone = clinicHours.timezone || 'America/New_York';
-    
+
     // Get current time in clinic's timezone
     const options: Intl.DateTimeFormatOptions = {
       timeZone: timezone,
@@ -298,10 +298,10 @@ async function isClinicOpen(clinicId: string): Promise<boolean> {
       minute: '2-digit',
       hour12: false,
     };
-    
+
     const formatter = new Intl.DateTimeFormat('en-US', options);
     const parts = formatter.formatToParts(now);
-    
+
     const dayOfWeek = parts.find(p => p.type === 'weekday')?.value?.toLowerCase() || '';
     const hour = parseInt(parts.find(p => p.type === 'hour')?.value || '0');
     const minute = parseInt(parts.find(p => p.type === 'minute')?.value || '0');
@@ -332,18 +332,18 @@ async function isClinicOpen(clinicId: string): Promise<boolean> {
 async function getCachedVoiceConfig(clinicId: string): Promise<VoiceAgentConfig | null> {
   const now = Date.now();
   const cached = voiceConfigCache.get(clinicId);
-  
+
   if (cached && now - cached.timestamp < CACHE_TTL_MS) {
     // FIX: Update last access time for LRU tracking
     cached.lastAccess = now;
     return cached.config;
   }
-  
+
   const config = await getFullVoiceConfig(clinicId);
-  
+
   // FIX: Evict old entries before adding new one
   evictCacheIfNeeded();
-  
+
   voiceConfigCache.set(clinicId, { config, timestamp: now, lastAccess: now });
   return config;
 }
@@ -353,10 +353,10 @@ async function getCachedVoiceConfig(clinicId: string): Promise<VoiceAgentConfig 
  */
 async function getThinkingPhrase(clinicId: string): Promise<string> {
   const config = await getCachedVoiceConfig(clinicId);
-  const phrases = config?.customFillerPhrases?.length 
-    ? config.customFillerPhrases 
+  const phrases = config?.customFillerPhrases?.length
+    ? config.customFillerPhrases
     : DEFAULT_FILLER_PHRASES;
-  
+
   const index = Math.floor(Math.random() * phrases.length);
   return phrases[index];
 }
@@ -365,25 +365,25 @@ async function getThinkingPhrase(clinicId: string): Promise<string> {
  * Get greeting for the call based on type and purpose
  */
 async function getGreeting(
-  clinicId: string, 
-  isOutbound: boolean, 
+  clinicId: string,
+  isOutbound: boolean,
   purpose?: string,
   context?: { patientName?: string; clinicName?: string; appointmentDate?: string; customMessage?: string }
 ): Promise<string> {
   const config = await getCachedVoiceConfig(clinicId);
   let greeting: string;
-  
+
   if (isOutbound && purpose) {
     // Use outbound greeting based on purpose
     const customGreetings = config?.outboundGreetings;
-    greeting = customGreetings?.[purpose as keyof typeof customGreetings] 
-      || DEFAULT_OUTBOUND_GREETINGS[purpose] 
+    greeting = customGreetings?.[purpose as keyof typeof customGreetings]
+      || DEFAULT_OUTBOUND_GREETINGS[purpose]
       || DEFAULT_OUTBOUND_GREETINGS['custom'];
   } else {
     // Use after-hours inbound greeting
     greeting = config?.afterHoursGreeting || DEFAULT_AFTER_HOURS_GREETING;
   }
-  
+
   // Replace placeholders with context
   if (context) {
     greeting = greeting
@@ -392,7 +392,7 @@ async function getGreeting(
       .replace(/{appointmentDate}/g, context.appointmentDate || 'your scheduled date')
       .replace(/{customMessage}/g, context.customMessage || '');
   }
-  
+
   return greeting;
 }
 
@@ -409,7 +409,7 @@ async function getVoiceSettings(clinicId: string): Promise<VoiceSettings> {
  */
 async function textToSpeech(text: string, clinicId?: string): Promise<Buffer> {
   const voiceSettings = clinicId ? await getVoiceSettings(clinicId) : DEFAULT_VOICE_SETTINGS;
-  
+
   const command = new SynthesizeSpeechCommand({
     Text: text,
     OutputFormat: CONFIG.OUTPUT_FORMAT,
@@ -421,7 +421,7 @@ async function textToSpeech(text: string, clinicId?: string): Promise<Buffer> {
   });
 
   const response = await pollyClient.send(command);
-  
+
   if (response.AudioStream) {
     const chunks: Uint8Array[] = [];
     for await (const chunk of response.AudioStream as AsyncIterable<Uint8Array>) {
@@ -429,7 +429,7 @@ async function textToSpeech(text: string, clinicId?: string): Promise<Buffer> {
     }
     return Buffer.concat(chunks);
   }
-  
+
   throw new Error('No audio stream returned from Polly');
 }
 
@@ -465,59 +465,59 @@ async function recordCallAnalytics(params: {
 
   const now = Date.now();
   const ttl = Math.floor(now / 1000) + (CONFIG.ANALYTICS_TTL_DAYS * 24 * 60 * 60);
-  
+
   // Map sentiment to Comprehend format
-  const overallSentiment = params.sentiment 
+  const overallSentiment = params.sentiment
     ? params.sentiment.toUpperCase() as 'POSITIVE' | 'NEUTRAL' | 'NEGATIVE'
     : undefined;
-  
+
   const analytics: CallAnalytics = {
     // Primary Key (shared table schema)
     callId: params.callId,
     timestamp: now,
-    
+
     // Core fields
     clinicId: params.clinicId,
     callStatus: params.outcome === 'error' ? 'error' : 'completed',
     callCategory: params.callType === 'outbound' ? 'ai_outbound' : 'ai_voice',
-    
+
     // Call details
     callType: params.callType,
     purpose: params.purpose,
     duration: params.duration,
     outcome: params.outcome,
-    
+
     // Agent info
     aiAgentId: params.aiAgentId,
     aiAgentName: params.aiAgentName,
-    
+
     // Caller info
     callerNumber: params.callerNumber,
     patientName: params.patientName,
-    
+
     // Analytics fields
     transcriptSummary: params.transcriptSummary,
     toolsUsed: params.toolsUsed,
     appointmentBooked: params.appointmentBooked,
     overallSentiment,
-    
+
     // Source identifier
     analyticsSource: 'voice_ai',
-    
+
     // TTL
     ttl,
   };
-  
+
   // FIX: Retry logic for transient DynamoDB errors
   let lastError: Error | null = null;
-  
+
   for (let attempt = 1; attempt <= CONFIG.ANALYTICS_MAX_RETRIES + 1; attempt++) {
     try {
       await docClient.send(new PutCommand({
         TableName: CALL_ANALYTICS_TABLE,
         Item: analytics,
       }));
-      
+
       console.log('[recordCallAnalytics] Analytics recorded to shared table:', {
         callId: analytics.callId,
         clinicId: analytics.clinicId,
@@ -528,27 +528,27 @@ async function recordCallAnalytics(params: {
         attempt,
       });
       return; // Success - exit
-      
+
     } catch (error: any) {
       lastError = error;
-      
+
       // FIX: Only retry on transient errors
       const isRetryable = error.name === 'ProvisionedThroughputExceededException' ||
-                          error.name === 'ServiceUnavailable' ||
-                          error.name === 'InternalServerError' ||
-                          error.message?.includes('ECONNRESET');
-      
+        error.name === 'ServiceUnavailable' ||
+        error.name === 'InternalServerError' ||
+        error.message?.includes('ECONNRESET');
+
       if (isRetryable && attempt <= CONFIG.ANALYTICS_MAX_RETRIES) {
         console.warn(`[recordCallAnalytics] Transient error, retrying (attempt ${attempt}):`, error.message);
         await new Promise(resolve => setTimeout(resolve, CONFIG.ANALYTICS_RETRY_DELAY_MS * attempt));
         continue;
       }
-      
+
       // Non-retryable error or max retries exceeded
       break;
     }
   }
-  
+
   // FIX: Log detailed error for monitoring/alerting, but don't throw
   console.error('[recordCallAnalytics] Failed to record analytics after retries:', {
     callId: params.callId,
@@ -577,11 +577,11 @@ async function getOrCreateSession(
 ): Promise<VoiceSession> {
   const MAX_RETRIES = 5;
   const BASE_DELAY_MS = 75;
-  
+
   // FIX: Use deterministic sessionId based on callId to prevent duplicate sessions
   // This ensures all Lambda instances generate the same sessionId for the same call
   const sessionId = `voice-${callId}`;
-  
+
   for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
     // First, try to get existing session by deterministic sessionId (direct table read)
     try {
@@ -590,7 +590,7 @@ async function getOrCreateSession(
         Key: { sessionId },
         ConsistentRead: true, // FIX: Use consistent read on main table
       }));
-      
+
       if (directRead.Item) {
         console.log(`[getOrCreateSession] Found existing session via direct read for callId ${callId}`);
         return directRead.Item as VoiceSession;
@@ -598,7 +598,7 @@ async function getOrCreateSession(
     } catch (readError) {
       console.warn(`[getOrCreateSession] Direct read failed, falling back to GSI:`, readError);
     }
-    
+
     // Fallback: Check GSI (eventually consistent, but covers edge cases)
     const existingResponse = await docClient.send(new QueryCommand({
       TableName: VOICE_SESSIONS_TABLE,
@@ -615,7 +615,7 @@ async function getOrCreateSession(
     // No existing session found - create new one
     const bedrockSessionId = uuidv4();
     const now = new Date().toISOString();
-    
+
     const session: VoiceSession = {
       sessionId,
       callId,
@@ -641,23 +641,23 @@ async function getOrCreateSession(
 
       console.log(`[getOrCreateSession] Created new session for callId ${callId}`, { sessionId, attempt });
       return session;
-      
+
     } catch (error: any) {
       if (error.name === 'ConditionalCheckFailedException') {
         // Session was created by another Lambda instance - retrieve it
         console.log(`[getOrCreateSession] Session already exists (created by parallel request), retrieving...`);
-        
+
         // FIX: Use consistent read to get the session that was just created
         const existingSession = await docClient.send(new GetCommand({
           TableName: VOICE_SESSIONS_TABLE,
           Key: { sessionId },
           ConsistentRead: true,
         }));
-        
+
         if (existingSession.Item) {
           return existingSession.Item as VoiceSession;
         }
-        
+
         // If still not found, wait with jitter and retry
         if (attempt < MAX_RETRIES) {
           // FIX: Exponential backoff with jitter to prevent thundering herd
@@ -667,12 +667,12 @@ async function getOrCreateSession(
           continue;
         }
       }
-      
+
       // Re-throw if it's a different error
       throw error;
     }
   }
-  
+
   // FIX: Final fallback with consistent read
   const finalCheck = await docClient.send(new GetCommand({
     TableName: VOICE_SESSIONS_TABLE,
@@ -684,7 +684,7 @@ async function getOrCreateSession(
     console.log(`[getOrCreateSession] Found session in final check for callId ${callId}`);
     return finalCheck.Item as VoiceSession;
   }
-  
+
   throw new Error(`[getOrCreateSession] Failed to create or find session for callId ${callId} after ${MAX_RETRIES} attempts`);
 }
 
@@ -702,7 +702,7 @@ async function updateSessionTranscript(
   const now = new Date().toISOString();
   // TTL FIX: Refresh TTL to 24 hours from now on every activity
   const newTtl = Math.floor(Date.now() / 1000) + (24 * 60 * 60);
-  
+
   let updateExpression = 'SET transcripts = list_append(if_not_exists(transcripts, :empty), :transcript), lastActivityTime = :now, #ttl = :newTtl';
   const expressionAttributeValues: Record<string, any> = {
     ':empty': [],
@@ -711,14 +711,14 @@ async function updateSessionTranscript(
     ':newTtl': newTtl,
   };
   const expressionAttributeNames: Record<string, string> = { '#ttl': 'ttl' };
-  
+
   // ANALYTICS FIX: Append new tools to the session's toolsUsed array
   if (newToolsUsed && newToolsUsed.length > 0) {
     updateExpression += ', toolsUsed = list_append(if_not_exists(toolsUsed, :emptyTools), :newTools)';
     expressionAttributeValues[':emptyTools'] = [];
     expressionAttributeValues[':newTools'] = newToolsUsed;
   }
-  
+
   await docClient.send(new UpdateCommand({
     TableName: VOICE_SESSIONS_TABLE,
     Key: { sessionId },
@@ -749,7 +749,7 @@ async function updateSessionTranscript(
 async function getVoiceAgent(clinicId: string): Promise<AiAgent | null> {
   // FIRST: Get voice config to check enabled state
   const voiceConfig = await getFullVoiceConfig(clinicId);
-  
+
   // If config exists, check the enabled flag FIRST (before any agent lookup)
   if (voiceConfig) {
     // CRITICAL: If AI inbound is explicitly disabled, return null immediately
@@ -757,23 +757,23 @@ async function getVoiceAgent(clinicId: string): Promise<AiAgent | null> {
       console.log(`[getVoiceAgent] AI inbound is explicitly DISABLED for clinic ${clinicId}`);
       return null;
     }
-    
+
     // If agent is configured, try to use it
     if (voiceConfig.inboundAgentId) {
       const agentResponse = await docClient.send(new GetCommand({
         TableName: AGENTS_TABLE,
         Key: { agentId: voiceConfig.inboundAgentId },
       }));
-      
+
       if (agentResponse.Item && agentResponse.Item.isActive && agentResponse.Item.bedrockAgentStatus === 'PREPARED') {
         console.log(`[getVoiceAgent] Using CONFIGURED agent for clinic ${clinicId}:`, voiceConfig.inboundAgentId);
         return agentResponse.Item as AiAgent;
       }
-      
+
       // Configured agent is not ready - log warning but continue to fallbacks
       console.warn(`[getVoiceAgent] Configured agent ${voiceConfig.inboundAgentId} is not ready, trying fallbacks`);
     }
-    
+
     // Config exists but no working agent configured
     // If aiInboundEnabled is explicitly true, try fallbacks
     // If aiInboundEnabled is undefined (legacy), try fallbacks for backwards compatibility
@@ -783,12 +783,12 @@ async function getVoiceAgent(clinicId: string): Promise<AiAgent | null> {
       return null;
     }
   }
-  
+
   // At this point, either:
   // - No config exists (new clinic)
   // - Config exists with aiInboundEnabled=true/undefined but configured agent failed
   // Try fallback agents
-  
+
   // SECOND: Try to find the DEFAULT voice agent for this clinic
   const defaultResponse = await docClient.send(new QueryCommand({
     TableName: AGENTS_TABLE,
@@ -943,7 +943,7 @@ async function sendStreamingChunk(
 
   // FIX: Retry logic for transient Chime errors
   let lastError: Error | null = null;
-  
+
   for (let attempt = 1; attempt <= CONFIG.CHUNK_MAX_RETRIES + 1; attempt++) {
     try {
       await chimeVoiceClient.send(new UpdateSipMediaApplicationCallCommand({
@@ -960,36 +960,36 @@ async function sendStreamingChunk(
 
       console.log('[sendStreamingChunk] Sent chunk:', { callId, textLength: text.length, isFinal, attempt });
       return true;
-      
+
     } catch (error: any) {
       lastError = error;
-      
+
       // FIX: Only retry on transient errors, not on call-ended errors
       const isRetryable = error.name === 'ThrottlingException' ||
-                          error.name === 'ServiceUnavailableException' ||
-                          error.message?.includes('ECONNRESET') ||
-                          error.message?.includes('socket hang up');
-      
+        error.name === 'ServiceUnavailableException' ||
+        error.message?.includes('ECONNRESET') ||
+        error.message?.includes('socket hang up');
+
       // Don't retry if the call is no longer active
       const isCallEnded = error.name === 'NotFoundException' ||
-                          error.message?.includes('Call not found') ||
-                          error.message?.includes('Transaction');
-      
+        error.message?.includes('Call not found') ||
+        error.message?.includes('Transaction');
+
       if (isCallEnded) {
         console.warn('[sendStreamingChunk] Call is no longer active, skipping chunk');
         return false;
       }
-      
+
       if (isRetryable && attempt <= CONFIG.CHUNK_MAX_RETRIES) {
         console.warn(`[sendStreamingChunk] Transient error, retrying (attempt ${attempt}):`, error.message);
         await new Promise(resolve => setTimeout(resolve, CONFIG.CHUNK_RETRY_DELAY_MS * attempt));
         continue;
       }
-      
+
       break;
     }
   }
-  
+
   console.error('[sendStreamingChunk] Failed to send chunk after retries:', {
     callId,
     textLength: text.length,
@@ -1007,6 +1007,109 @@ function splitIntoSentences(text: string): string[] {
   // Split on sentence boundaries while keeping the delimiter
   const sentences = text.match(/[^.!?]+[.!?]+/g) || [text];
   return sentences.map(s => s.trim()).filter(s => s.length > 0);
+}
+
+/**
+ * Sanitize AI response text for voice (Polly / Chime Speak action).
+ *
+ * Bedrock can emit markdown, XML-like tags, ISO datetimes and other
+ * formatting that sounds terrible when read aloud. This function:
+ *  1. Converts ISO datetime strings → natural spoken form
+ *  2. Removes all Markdown formatting (headers, bold, bullets, etc.)
+ *  3. Removes HTML / XML / AWS-style <<...>> tags
+ *  4. Collapses whitespace
+ */
+function sanitizeForVoice(text: string): string {
+  if (!text) return text;
+
+  let out = text;
+
+  // --- 1. Convert ISO datetime strings e.g. "2026-02-26 09:00:00" or "2026-02-26T09:30:00" ---
+  out = out.replace(
+    /\b(\d{4})-(\d{2})-(\d{2})[T ]?(\d{2}):(\d{2})(?::\d{2})?\b/g,
+    (_match, year, month, day, hour, minute) => {
+      try {
+        const dt = new Date(`${year}-${month}-${day}T${hour}:${minute}:00`);
+        if (isNaN(dt.getTime())) return _match;
+
+        const weekday = dt.toLocaleDateString('en-US', { weekday: 'long' });
+        const monthName = dt.toLocaleDateString('en-US', { month: 'long' });
+        const dayNum = parseInt(day, 10);
+        const suffix = dayNum === 1 || dayNum === 21 || dayNum === 31 ? 'st'
+          : dayNum === 2 || dayNum === 22 ? 'nd'
+            : dayNum === 3 || dayNum === 23 ? 'rd'
+              : 'th';
+        const h = parseInt(hour, 10);
+        const m = parseInt(minute, 10);
+        const ampm = h < 12 ? 'AM' : 'PM';
+        const h12 = h % 12 === 0 ? 12 : h % 12;
+        const timePart = m === 0 ? `${h12} ${ampm}` : `${h12}:${String(m).padStart(2, '0')} ${ampm}`;
+
+        return `${weekday}, ${monthName} ${dayNum}${suffix} at ${timePart}`;
+      } catch {
+        return _match;
+      }
+    }
+  );
+
+  // --- 2. Convert date-only strings e.g. "2026-02-26" that remain ---
+  out = out.replace(
+    /\b(\d{4})-(0[1-9]|1[0-2])-(0[1-9]|[12]\d|3[01])\b/g,
+    (_match, year, month, day) => {
+      try {
+        const dt = new Date(`${year}-${month}-${day}T12:00:00`);
+        if (isNaN(dt.getTime())) return _match;
+        const weekday = dt.toLocaleDateString('en-US', { weekday: 'long' });
+        const monthName = dt.toLocaleDateString('en-US', { month: 'long' });
+        const dayNum = parseInt(day, 10);
+        const suffix = dayNum === 1 || dayNum === 21 || dayNum === 31 ? 'st'
+          : dayNum === 2 || dayNum === 22 ? 'nd'
+            : dayNum === 3 || dayNum === 23 ? 'rd'
+              : 'th';
+        return `${weekday}, ${monthName} ${dayNum}${suffix}`;
+      } catch {
+        return _match;
+      }
+    }
+  );
+
+  // --- 3. Strip AWS-style <<...>> delimiters (e.g. <<question_mark>>, <<less_than>>) ---
+  out = out.replace(/<<[^>]*>>/g, '');
+  out = out.replace(/<[^>]+>/g, '');       // HTML / XML tags
+
+  // --- 4. Strip Markdown formatting ---
+  // Headers  (### Title)
+  out = out.replace(/^#{1,6}\s+/gm, '');
+  // Bold / italic  (**text**, *text*, __text__, _text_)
+  out = out.replace(/(\*{1,3}|_{1,3})([^*_]+?)\1/g, '$2');
+  // Inline code  (`code`)
+  out = out.replace(/`([^`]+)`/g, '$1');
+  // Code blocks  (``` ... ```)
+  out = out.replace(/```[\s\S]*?```/g, '');
+  // Horizontal rules
+  out = out.replace(/^[-*_]{3,}\s*$/gm, '');
+  // Bullet / numbered list markers  (• - * or 1.)
+  out = out.replace(/^\s*([•\-\*]|\d+\.?)\s+/gm, '');
+  // Blockquotes
+  out = out.replace(/^>\s*/gm, '');
+  // Links  [text](url)
+  out = out.replace(/\[([^\]]+)\]\([^)]+\)/g, '$1');
+  // Escaped characters  \* \_ etc.
+  out = out.replace(/\\([\*_`#~|>])/g, '$1');
+  // Remaining literal asterisks / underscores used as decoration
+  out = out.replace(/[\*_]{2,}/g, '');
+  // Table separators  | --- |
+  out = out.replace(/\|[-:| ]+\|/g, '');
+  // Table pipe characters
+  out = out.replace(/\|/g, ' ');
+
+  // --- 5. Clean up whitespace ---
+  out = out.replace(/[ \t]{2,}/g, ' ');   // collapse multiple spaces
+  out = out.replace(/\n{3,}/g, '\n\n');   // collapse multiple blank lines
+  out = out.replace(/^\s+|\s+$/gm, '');   // trim each line
+  out = out.trim();
+
+  return out;
 }
 
 /**
@@ -1104,15 +1207,15 @@ async function invokeAiAgentWithStreaming(
         ttsManager.reset(); // Clean up TTS manager state
         break;
       }
-      
+
       // Capture thinking/trace
       if (event.trace?.trace) {
         const trace = event.trace.trace;
-        
+
         if (trace.orchestrationTrace?.rationale?.text) {
           thinking.push(trace.orchestrationTrace.rationale.text);
         }
-        
+
         if (trace.orchestrationTrace?.invocationInput?.actionGroupInvocationInput) {
           const action = trace.orchestrationTrace.invocationInput.actionGroupInvocationInput;
           thinking.push(`Checking: ${action.apiPath}`);
@@ -1130,13 +1233,18 @@ async function invokeAiAgentWithStreaming(
           continue;
         }
 
+        // Sanitize chunk before feeding to TTS - removes markdown / XML tags / ISO dates
+        // Note: sanitization works best on complete tokens; the TTS manager buffers until
+        // sentence boundaries, so stray markdown symbols in mid-sentence chunks are handled.
+        const cleanedChunkText = sanitizeForVoice(chunkText);
+
         // Process text through TTS manager - emits chunks for complete sentences
         await ttsManager.processText(
-          chunkText,
+          cleanedChunkText,
           async (ttsChunk: TTSChunk) => {
             // Double-check cancellation before sending
             if (cancellationSignal?.cancelled) return;
-            
+
             const sent = await sendStreamingChunkWithTTS(
               callId,
               clinicId,
@@ -1171,8 +1279,8 @@ async function invokeAiAgentWithStreaming(
     ttsOptions
   );
 
-  return { 
-    response: fullResponse || "I'm sorry, I couldn't process that request.", 
+  return {
+    response: fullResponse || "I'm sorry, I couldn't process that request.",
     thinking,
     chunksSent
   };
@@ -1219,7 +1327,7 @@ async function sendStreamingChunkWithTTS(
 
   // Retry logic for transient Chime errors
   let lastError: Error | null = null;
-  
+
   for (let attempt = 1; attempt <= CONFIG.CHUNK_MAX_RETRIES + 1; attempt++) {
     try {
       await chimeVoiceClient.send(new UpdateSipMediaApplicationCallCommand({
@@ -1235,32 +1343,32 @@ async function sendStreamingChunkWithTTS(
         },
       }));
 
-      console.log('[sendStreamingChunkWithTTS] Sent TTS chunk:', { 
-        callId, 
-        textLength: ttsChunk.text.length, 
-        isFinal: ttsChunk.isFinal, 
+      console.log('[sendStreamingChunkWithTTS] Sent TTS chunk:', {
+        callId,
+        textLength: ttsChunk.text.length,
+        isFinal: ttsChunk.isFinal,
         sequence: ttsChunk.sequenceNumber,
-        attempt 
+        attempt
       });
       return true;
-      
+
     } catch (error: any) {
       lastError = error;
-      
+
       const isRetryable = error.name === 'ThrottlingException' ||
-                          error.name === 'ServiceUnavailableException' ||
-                          error.message?.includes('ECONNRESET') ||
-                          error.message?.includes('socket hang up');
-      
+        error.name === 'ServiceUnavailableException' ||
+        error.message?.includes('ECONNRESET') ||
+        error.message?.includes('socket hang up');
+
       const isCallEnded = error.name === 'NotFoundException' ||
-                          error.message?.includes('Call not found') ||
-                          error.message?.includes('Transaction');
-      
+        error.message?.includes('Call not found') ||
+        error.message?.includes('Transaction');
+
       if (isCallEnded) {
         console.warn('[sendStreamingChunkWithTTS] Call is no longer active, skipping chunk');
         return false;
       }
-      
+
       if (isRetryable && attempt <= CONFIG.CHUNK_MAX_RETRIES) {
         console.warn(`[sendStreamingChunkWithTTS] Transient error, retrying (attempt ${attempt}):`, error.message);
         await new Promise(resolve => setTimeout(resolve, CONFIG.CHUNK_RETRY_DELAY_MS * attempt));
@@ -1340,11 +1448,11 @@ async function invokeAiAgent(
       // Capture thinking/trace
       if (event.trace?.trace) {
         const trace = event.trace.trace;
-        
+
         if (trace.orchestrationTrace?.rationale?.text) {
           thinking.push(trace.orchestrationTrace.rationale.text);
         }
-        
+
         if (trace.orchestrationTrace?.invocationInput?.actionGroupInvocationInput) {
           const action = trace.orchestrationTrace.invocationInput.actionGroupInvocationInput;
           thinking.push(`Checking: ${action.apiPath}`);
@@ -1376,9 +1484,9 @@ export const handler = async (event: VoiceAiEvent): Promise<VoiceAiResponse[]> =
   try {
     switch (event.eventType) {
       case 'NEW_CALL': {
-        const { 
-          callId, 
-          clinicId, 
+        const {
+          callId,
+          clinicId,
           callerNumber,
           isOutbound,
           purpose,
@@ -1403,7 +1511,7 @@ export const handler = async (event: VoiceAiEvent): Promise<VoiceAiResponse[]> =
             }];
           }
         }
-        
+
         // Log AI phone number routing
         if (isAiPhoneNumber) {
           console.log(`[NEW_CALL] AI Phone Number call - bypassing hours check`, {
@@ -1415,7 +1523,7 @@ export const handler = async (event: VoiceAiEvent): Promise<VoiceAiResponse[]> =
 
         // Get AI agent (use specific agent for outbound, or find one for inbound)
         let agent: AiAgent | null = null;
-        
+
         if (aiAgentId) {
           // Specific agent requested (for outbound calls)
           const agentResponse = await docClient.send(new GetCommand({
@@ -1426,12 +1534,12 @@ export const handler = async (event: VoiceAiEvent): Promise<VoiceAiResponse[]> =
             agent = agentResponse.Item as AiAgent;
           }
         }
-        
+
         // Fallback to finding an agent
         if (!agent) {
           agent = await getVoiceAgent(clinicId);
         }
-        
+
         if (!agent) {
           // Record analytics for failed call
           await recordCallAnalytics({
@@ -1445,7 +1553,7 @@ export const handler = async (event: VoiceAiEvent): Promise<VoiceAiResponse[]> =
             callerNumber,
             patientName,
           });
-          
+
           return [{
             action: 'SPEAK',
             text: "I'm sorry, our AI assistant is not available right now. Please call back during office hours.",
@@ -1503,7 +1611,7 @@ export const handler = async (event: VoiceAiEvent): Promise<VoiceAiResponse[]> =
 
         // Get session - try sessionId first, then lookup by callId
         let session: VoiceSession | undefined;
-        
+
         if (sessionId) {
           const sessionResponse = await docClient.send(new GetCommand({
             TableName: VOICE_SESSIONS_TABLE,
@@ -1511,7 +1619,7 @@ export const handler = async (event: VoiceAiEvent): Promise<VoiceAiResponse[]> =
           }));
           session = sessionResponse.Item as VoiceSession | undefined;
         }
-        
+
         // If no session found by sessionId, try to find by callId
         if (!session && callId) {
           const callIdQuery = await docClient.send(new QueryCommand({
@@ -1523,18 +1631,18 @@ export const handler = async (event: VoiceAiEvent): Promise<VoiceAiResponse[]> =
           }));
           session = callIdQuery.Items?.[0] as VoiceSession | undefined;
         }
-        
+
         // If still no session, create one on-the-fly for real-time transcripts
         if (!session && callId && clinicId) {
           console.log('[TRANSCRIPT] No existing session found, creating new session for real-time transcript');
-          
+
           // Try to get agent by aiAgentId or find default for clinic
           let agentId = aiAgentId;
           if (!agentId) {
             const voiceAgent = await getVoiceAgent(clinicId);
             agentId = voiceAgent?.agentId;
           }
-          
+
           if (agentId) {
             session = await getOrCreateSession(callId, clinicId, agentId, 'real-time-transcript');
           }
@@ -1563,24 +1671,24 @@ export const handler = async (event: VoiceAiEvent): Promise<VoiceAiResponse[]> =
           Key: { agentId: session.agentId },
         }));
         let agent = agentResponse.Item as AiAgent | undefined;
-        
+
         // FIX: Graceful degradation if original agent is deleted/deactivated mid-call
         // Try to find another available agent for the clinic instead of hanging up
         if (!agent || !agent.isActive || agent.bedrockAgentStatus !== 'PREPARED') {
           console.warn(`[TRANSCRIPT] Original agent ${session.agentId} not found or not ready, attempting fallback`);
-          
+
           // Try to find any other active voice agent for this clinic
           const fallbackAgent = await getVoiceAgent(session.clinicId);
-          
+
           if (fallbackAgent) {
             console.log(`[TRANSCRIPT] Using fallback agent ${fallbackAgent.agentId} for call`);
             agent = fallbackAgent;
-            
+
             // FIX: When switching agents, we need a NEW bedrockSessionId since
             // Bedrock agent sessions are bound to specific agent IDs.
             // Generate a new session ID but preserve conversation context via prompt.
             const newBedrockSessionId = uuidv4();
-            
+
             await docClient.send(new UpdateCommand({
               TableName: VOICE_SESSIONS_TABLE,
               Key: { sessionId: activeSessionId },
@@ -1593,7 +1701,7 @@ export const handler = async (event: VoiceAiEvent): Promise<VoiceAiResponse[]> =
                 ':prevSessionId': session.bedrockSessionId,
               },
             }));
-            
+
             // Update session object for this invocation
             session.bedrockSessionId = newBedrockSessionId;
             session.agentId = agent.agentId;
@@ -1603,7 +1711,7 @@ export const handler = async (event: VoiceAiEvent): Promise<VoiceAiResponse[]> =
             const apologyMessage = "I apologize, but I'm experiencing technical difficulties. " +
               "Please call back in a few minutes, or I can have someone from our office call you back. " +
               "Would you like us to call you back?";
-            
+
             await updateSessionTranscript(activeSessionId, 'ai', apologyMessage);
             return [{
               action: 'SPEAK',
@@ -1621,10 +1729,10 @@ export const handler = async (event: VoiceAiEvent): Promise<VoiceAiResponse[]> =
         // e.g., "Byron" shouldn't trigger goodbye, "thank you for helping, now..." shouldn't end call
         const lowerTranscript = transcript.toLowerCase().trim();
         const wordCount = lowerTranscript.split(/\s+/).length;
-        
+
         // FIX: Relaxed word count limit from 6 to 8 to catch phrases like "thanks bye for now"
         const isShortUtterance = wordCount <= 8;
-        
+
         // FIX: Improved patterns to avoid false positives
         const definitiveGoodbyePatterns = [
           /^(bye|goodbye|good\s*bye|bye\s*bye|bye\s*now)\.?$/i,  // Just "bye" variations alone
@@ -1634,19 +1742,19 @@ export const handler = async (event: VoiceAiEvent): Promise<VoiceAiResponse[]> =
           /\bi'?m\s+(all\s+)?done[\s,.]*(thanks?|thank\s*you)?\.?$/i,
           /\bnothing\s+(else|more)[\s,.]*(thanks?|bye)?\.?$/i,
         ];
-        
+
         // FIX: Context-aware goodbye detection
         // Don't trigger goodbye if the phrase contains question indicators
         const hasQuestionIndicator = /\?|\bcan\s+you\b|\bwhat\b|\bhow\b|\bwhen\b|\bwhere\b|\bwhy\b|\bwill\b|\bcould\b|\bwould\b/i.test(lowerTranscript);
-        
+
         // Don't trigger goodbye if it seems like the caller is still engaging
         const hasEngagementIndicator = /\bactually\b|\balso\b|\band\b.*\?|\bbut\b|\bone\s+more\b|\banother\b/i.test(lowerTranscript);
-        
-        const isGoodbye = isShortUtterance && 
-                          !hasQuestionIndicator && 
-                          !hasEngagementIndicator &&
-                          definitiveGoodbyePatterns.some(pattern => pattern.test(lowerTranscript));
-        
+
+        const isGoodbye = isShortUtterance &&
+          !hasQuestionIndicator &&
+          !hasEngagementIndicator &&
+          definitiveGoodbyePatterns.some(pattern => pattern.test(lowerTranscript));
+
         if (isGoodbye) {
           console.log('[TRANSCRIPT] Goodbye phrase detected:', { transcript: lowerTranscript });
           await updateSessionTranscript(activeSessionId, 'ai', CONFIG.GOODBYE_MESSAGE);
@@ -1667,10 +1775,10 @@ export const handler = async (event: VoiceAiEvent): Promise<VoiceAiResponse[]> =
         // When streaming is disabled:
         //   - We wait for full AI response
         //   - Return filler + full response together
-        
+
         if (STREAMING_ENABLED && callId && clinicId) {
           console.log('[TRANSCRIPT] Using streaming response mode');
-          
+
           // Return a brief filler immediately - streaming chunks will follow
           const fillerPhrase = await getThinkingPhrase(clinicId);
           responses.push({
@@ -1678,7 +1786,7 @@ export const handler = async (event: VoiceAiEvent): Promise<VoiceAiResponse[]> =
             text: fillerPhrase,
             sessionId: activeSessionId,
           });
-          
+
           // FIX: Store pending response marker AND generate fallback response synchronously
           // This ensures that if streaming fails or Lambda terminates, there's a fallback
           const streamingStartTime = new Date().toISOString();
@@ -1692,19 +1800,19 @@ export const handler = async (event: VoiceAiEvent): Promise<VoiceAiResponse[]> =
               ':now': streamingStartTime,
             },
           }));
-          
+
           // FIX: Use Promise.race with timeout AND cancellation signal
           // When timeout fires, set cancellation flag to stop streaming immediately
           // This prevents: some chunks sent + fallback spoken + remaining streaming still sending
-          
+
           try {
             // FIX: Create cancellation signal to stop streaming when timeout fires
             const cancellationSignal = { cancelled: false };
-            
+
             const streamingPromise = invokeAiAgentWithStreaming(
               agent, session, transcript, callId, clinicId, cancellationSignal
             );
-            
+
             const timeoutPromise = new Promise<never>((_, reject) => {
               setTimeout(() => {
                 // FIX: Set cancellation flag BEFORE rejecting to stop streaming loop
@@ -1713,24 +1821,24 @@ export const handler = async (event: VoiceAiEvent): Promise<VoiceAiResponse[]> =
                 reject(new Error('Streaming timeout'));
               }, CONFIG.STREAMING_TIMEOUT_MS);
             });
-            
+
             const { response: aiResponse, thinking, chunksSent } = await Promise.race([
               streamingPromise,
               timeoutPromise
             ]);
-            
-            console.log('[TRANSCRIPT] Streaming complete:', { 
-              chunksSent, 
-              responseLength: aiResponse.length 
+
+            console.log('[TRANSCRIPT] Streaming complete:', {
+              chunksSent,
+              responseLength: aiResponse.length
             });
-            
+
             // Extract and save tools used
             const detectedTools = thinking
               .filter((t: string) => t.includes('Checking:'))
               .map((t: string) => t.replace('Checking: ', ''));
-            
+
             await updateSessionTranscript(activeSessionId, 'ai', aiResponse, detectedTools);
-            
+
             // Clear streaming flag after successful completion
             await docClient.send(new UpdateCommand({
               TableName: VOICE_SESSIONS_TABLE,
@@ -1742,19 +1850,19 @@ export const handler = async (event: VoiceAiEvent): Promise<VoiceAiResponse[]> =
                 ':now': new Date().toISOString(),
               },
             }));
-            
+
             // If no chunks were sent via UpdateSipMediaApplicationCall, speak the response now
             if (chunksSent === 0 && aiResponse) {
               responses.push({
                 action: 'SPEAK',
-                text: aiResponse,
+                text: sanitizeForVoice(aiResponse),
                 sessionId: activeSessionId,
               });
             }
-            
+
           } catch (err: any) {
             console.error('[TRANSCRIPT] Streaming error or timeout:', err.message);
-            
+
             // Clear streaming flag and store error
             await docClient.send(new UpdateCommand({
               TableName: VOICE_SESSIONS_TABLE,
@@ -1765,7 +1873,7 @@ export const handler = async (event: VoiceAiEvent): Promise<VoiceAiResponse[]> =
                 ':error': err.message || 'Unknown streaming error',
               },
             }));
-            
+
             // FIX: Fall back to non-streaming response on error
             console.log('[TRANSCRIPT] Falling back to non-streaming response');
             const { response: aiResponse, thinking } = await invokeAiAgent(agent, session, transcript);
@@ -1773,24 +1881,24 @@ export const handler = async (event: VoiceAiEvent): Promise<VoiceAiResponse[]> =
               .filter((t: string) => t.includes('Checking:'))
               .map((t: string) => t.replace('Checking: ', ''));
             await updateSessionTranscript(activeSessionId, 'ai', aiResponse, detectedTools);
-            
+
             responses.push({
               action: 'SPEAK',
-              text: aiResponse,
+              text: sanitizeForVoice(aiResponse),
               sessionId: activeSessionId,
             });
           }
-          
+
           // Continue listening after response
           responses.push({
             action: 'CONTINUE',
             sessionId: activeSessionId,
           });
-          
+
         } else {
           // Non-streaming mode: wait for full response
           console.log('[TRANSCRIPT] Using non-streaming response mode');
-          
+
           // Play thinking phrase while AI processes (avoid silence)
           const fillerPhrase = await getThinkingPhrase(clinicId);
           responses.push({
@@ -1806,7 +1914,7 @@ export const handler = async (event: VoiceAiEvent): Promise<VoiceAiResponse[]> =
           const detectedTools = thinking
             .filter((t: string) => t.includes('Checking:'))
             .map((t: string) => t.replace('Checking: ', ''));
-          
+
           // ANALYTICS FIX: Save AI response WITH tools used to session record
           // This persists toolsUsed across Lambda invocations
           await updateSessionTranscript(activeSessionId, 'ai', aiResponse, detectedTools);
@@ -1814,7 +1922,7 @@ export const handler = async (event: VoiceAiEvent): Promise<VoiceAiResponse[]> =
           // Speak AI response
           responses.push({
             action: 'SPEAK',
-            text: aiResponse,
+            text: sanitizeForVoice(aiResponse),
             sessionId: activeSessionId,
           });
 
@@ -1862,7 +1970,7 @@ export const handler = async (event: VoiceAiEvent): Promise<VoiceAiResponse[]> =
             Key: { sessionId },
           }));
           const session = sessionResponse.Item as VoiceSession | undefined;
-          
+
           // Update session status
           await docClient.send(new UpdateCommand({
             TableName: VOICE_SESSIONS_TABLE,
@@ -1882,14 +1990,14 @@ export const handler = async (event: VoiceAiEvent): Promise<VoiceAiResponse[]> =
               ?.slice(-5)
               .map((t: { speaker: string; text: string }) => `${t.speaker}: ${t.text}`)
               .join(' | ');
-            
+
             // Check if an appointment was booked (look for scheduling keywords in AI responses)
             const aiResponses = session.transcripts
               ?.filter((t: { speaker: string }) => t.speaker === 'ai')
               .map((t: { text: string }) => t.text.toLowerCase())
               .join(' ') || '';
-            const appointmentBooked = 
-              aiResponses.includes('scheduled') || 
+            const appointmentBooked =
+              aiResponses.includes('scheduled') ||
               aiResponses.includes('booked') ||
               aiResponses.includes('appointment confirmed');
 
@@ -1924,7 +2032,7 @@ export const handler = async (event: VoiceAiEvent): Promise<VoiceAiResponse[]> =
     return responses;
   } catch (error: any) {
     console.error('Voice AI error:', error);
-    
+
     // Try to record error analytics
     try {
       await recordCallAnalytics({
@@ -1941,7 +2049,7 @@ export const handler = async (event: VoiceAiEvent): Promise<VoiceAiResponse[]> =
     } catch {
       // Ignore analytics errors
     }
-    
+
     return [{
       action: 'SPEAK',
       text: CONFIG.ERROR_MESSAGE,
@@ -1955,11 +2063,11 @@ export const handler = async (event: VoiceAiEvent): Promise<VoiceAiResponse[]> =
 // EXPORTS FOR CHIME INTEGRATION
 // ========================================================================
 
-export { 
-  textToSpeech, 
-  isClinicOpen, 
-  getVoiceAgent, 
-  getGreeting, 
+export {
+  textToSpeech,
+  isClinicOpen,
+  getVoiceAgent,
+  getGreeting,
   getVoiceSettings,
   recordCallAnalytics,
 };
