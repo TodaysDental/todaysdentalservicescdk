@@ -1393,6 +1393,10 @@ async function getTasksByStatus(userID: string, params: any, logCtx?: LogContext
     items = Array.from(byId.values());
     log.flowCount('getTasksByStatus', 'afterDedupe', items.length, fnCtx);
 
+    // Filter to only actual tasks (exclude regular chats)
+    items = items.filter(i => i.isTask === true);
+    log.flowCount('getTasksByStatus', 'afterIsTaskFilter', items.length, fnCtx);
+
     // Additional filters
     if (category) { items = items.filter(i => i.category === category); }
     if (priority) { items = items.filter(i => i.priority === priority); }

@@ -2,7 +2,7 @@ import { APIGatewayEvent, APIGatewayProxyResult } from 'aws-lambda';
 import { DynamoDBClient } from '@aws-sdk/client-dynamodb';
 import { DynamoDBDocumentClient, BatchGetCommand, DeleteCommand, GetCommand, PutCommand, UpdateCommand, QueryCommand, ScanCommand } from '@aws-sdk/lib-dynamodb';
 import { ApiGatewayManagementApiClient, PostToConnectionCommand } from '@aws-sdk/client-apigatewaymanagementapi';
-import { S3Client, PutObjectCommand, GetObjectCommand } from '@aws-sdk/client-s3';
+import { S3Client, PutObjectCommand, GetObjectCommand, DeleteObjectCommand } from '@aws-sdk/client-s3';
 import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
 import { SNSClient, PublishCommand } from '@aws-sdk/client-sns';
 import { LambdaClient, InvokeCommand } from '@aws-sdk/client-lambda';
@@ -164,6 +164,9 @@ interface FavorRequest {
     // Per-user deletion: list of userIDs who have deleted this conversation from their view
     deletedBy?: string[];
 
+    // Per-user clear chat: timestamp per user — messages before this time are hidden for that user
+    clearedAt?: Record<string, number>;
+
     // Task badge: true when this conversation was created via task assignment
     isTask?: boolean;
 
@@ -320,6 +323,9 @@ export const handler = async (event: APIGatewayEvent): Promise<APIGatewayProxyRe
                 break;
             case 'deleteConversation':
                 await deleteConversation(senderID, payload, connectionId, apiGwManagement);
+                break;
+            case 'clearChat':
+                await clearChat(senderID, payload, connectionId, apiGwManagement);
                 break;
             // Meeting Actions
             case 'scheduleMeeting':
@@ -3063,19 +3069,29 @@ async function fetchHistory(
             return;
         }
 
-        // 3. Query the MessagesTable (PK: favorRequestID, SK: timestamp)
-        const queryInput = {
+        // 3. Determine the user's clearedAt timestamp (if any)
+        const userClearedAt = favor.clearedAt?.[callerID];
+
+        // 4. Query the MessagesTable (PK: favorRequestID, SK: timestamp)
+        //    If user has cleared the chat, only fetch messages after their clearedAt
+        const queryInput: any = {
             TableName: MESSAGES_TABLE,
-            KeyConditionExpression: 'favorRequestID = :id',
-            ExpressionAttributeValues: { ':id': favorRequestID },
+            KeyConditionExpression: userClearedAt
+                ? 'favorRequestID = :id AND #ts > :clearedAt'
+                : 'favorRequestID = :id',
+            ExpressionAttributeNames: userClearedAt ? { '#ts': 'timestamp' } : undefined,
+            ExpressionAttributeValues: userClearedAt
+                ? { ':id': favorRequestID, ':clearedAt': userClearedAt }
+                : { ':id': favorRequestID },
             ScanIndexForward: true, // Chronological order (oldest first)
             Limit: limit,
-            // Optional: Use ExclusiveStartKey for pagination (not fully implemented here, just lastTimestamp as anchor)
         };
+        // Remove undefined keys
+        if (!queryInput.ExpressionAttributeNames) delete queryInput.ExpressionAttributeNames;
 
         const historyResult = await ddb.send(new QueryCommand(queryInput));
 
-        // 4. Send history back to the client
+        // 5. Send history back to the client
         await sendToClient(apiGwManagement, connectionId, {
             type: 'favorHistory',
             favorRequestID,
@@ -4079,6 +4095,131 @@ async function deleteConversation(
         });
 
         console.log(`Conversation ${favorRequestID} deleted from view by ${senderID}`);
+    }
+}
+
+/**
+ * Clear Chat — WhatsApp-style per-user message wipe.
+ *
+ * Instead of batch-deleting messages (expensive, breaks other user's view),
+ * we store a per-user `clearedAt` timestamp on the FavorRequest.
+ * When fetchHistory runs, messages before `clearedAt` are excluded via
+ * a KeyConditionExpression on the sort key.
+ *
+ * If `deleteMedia` is true, we also delete S3 objects for file messages.
+ */
+async function clearChat(
+    senderID: string,
+    payload: any,
+    connectionId: string,
+    apiGwManagement: ApiGatewayManagementApiClient
+): Promise<void> {
+    const { favorRequestID, deleteMedia } = payload;
+
+    if (!favorRequestID) {
+        await sendToClient(apiGwManagement, connectionId, { type: 'error', message: 'Missing favorRequestID.' });
+        return;
+    }
+
+    try {
+        // 1. Fetch the favor request
+        const favorResult = await ddb.send(new GetCommand({
+            TableName: FAVORS_TABLE,
+            Key: { favorRequestID },
+        }));
+        const favor = favorResult.Item as FavorRequest;
+
+        if (!favor) {
+            await sendToClient(apiGwManagement, connectionId, { type: 'error', message: 'Conversation not found.' });
+            return;
+        }
+
+        // 2. Verify sender is a participant
+        const isParticipant = favor.senderID === senderID || favor.receiverID === senderID || favor.currentAssigneeID === senderID;
+        if (!isParticipant) {
+            // Also check group membership
+            if (favor.teamID) {
+                const team = await getTeamByID(favor.teamID);
+                if (!team || !team.members.includes(senderID)) {
+                    await sendToClient(apiGwManagement, connectionId, { type: 'error', message: 'Unauthorized.' });
+                    return;
+                }
+            } else {
+                await sendToClient(apiGwManagement, connectionId, { type: 'error', message: 'Unauthorized.' });
+                return;
+            }
+        }
+
+        const clearTimestamp = Date.now();
+        const nowIso = new Date().toISOString();
+
+        // 3. (Optional) Delete media files from S3
+        if (deleteMedia && FILE_BUCKET_NAME) {
+            try {
+                // Query all file messages in this conversation
+                const msgResult = await ddb.send(new QueryCommand({
+                    TableName: MESSAGES_TABLE,
+                    KeyConditionExpression: 'favorRequestID = :id',
+                    ExpressionAttributeValues: { ':id': favorRequestID },
+                    FilterExpression: '#t = :file',
+                    ExpressionAttributeNames: { '#t': 'type' },
+                    ProjectionExpression: 'fileKey',
+                }));
+
+                const fileKeys = (msgResult.Items || [])
+                    .map((m: any) => m.fileKey)
+                    .filter(Boolean);
+
+                // Delete files from S3 in batches of 10
+                for (let i = 0; i < fileKeys.length; i += 10) {
+                    const batch = fileKeys.slice(i, i + 10);
+                    await Promise.all(
+                        batch.map((key: string) =>
+                            s3.send(new DeleteObjectCommand({
+                                Bucket: FILE_BUCKET_NAME,
+                                Key: key,
+                            })).catch((e: any) => console.warn(`Failed to delete S3 object ${key}:`, e.message))
+                        )
+                    );
+                }
+                console.log(`Deleted ${fileKeys.length} media files for ${favorRequestID}`);
+            } catch (mediaErr: any) {
+                console.warn('Media deletion failed (non-blocking):', mediaErr.message);
+            }
+        }
+
+        // 4. Update clearedAt map on the FavorRequest
+        //    Merge with existing map so other users' clearTimestamps are preserved
+        const existingClearedAt = favor.clearedAt || {};
+        const updatedClearedAt = { ...existingClearedAt, [senderID]: clearTimestamp };
+
+        await ddb.send(new UpdateCommand({
+            TableName: FAVORS_TABLE,
+            Key: { favorRequestID },
+            UpdateExpression: 'SET clearedAt = :ca, lastMessage = :lm, lastMessageAt = :lma, updatedAt = :ua',
+            ExpressionAttributeValues: {
+                ':ca': updatedClearedAt,
+                ':lm': '',
+                ':lma': nowIso,
+                ':ua': nowIso,
+            },
+        }));
+
+        // 5. Confirm to the caller
+        await sendToClient(apiGwManagement, connectionId, {
+            type: 'chatCleared',
+            favorRequestID,
+            clearedAt: clearTimestamp,
+        });
+
+        console.log(`Chat cleared for user ${senderID} in conversation ${favorRequestID}`);
+
+    } catch (error: any) {
+        console.error(`[clearChat] Error:`, error);
+        await sendToClient(apiGwManagement, connectionId, {
+            type: 'error',
+            message: `Failed to clear chat: ${error.message || 'Unknown error'}`,
+        });
     }
 }
 

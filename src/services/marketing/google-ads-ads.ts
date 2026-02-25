@@ -351,18 +351,16 @@ async function createAd(
     const client = await getGoogleAdsClient(customerId);
 
     const adGroupAdOperation = {
-      create: {
-        ad_group: adGroupResourceName,
-        status,
-        ad: {
-          responsive_search_ad: {
-            headlines: headlines.map(text => ({ text })),
-            descriptions: descriptions.map(text => ({ text })),
-            path1: path1 || undefined,
-            path2: path2 || undefined,
-          },
-          final_urls: [finalUrl],
+      ad_group: adGroupResourceName,
+      status,
+      ad: {
+        responsive_search_ad: {
+          headlines: headlines.map(text => ({ text })),
+          descriptions: descriptions.map(text => ({ text })),
+          path1: path1 || undefined,
+          path2: path2 || undefined,
         },
+        final_urls: [finalUrl],
       },
     };
 
@@ -633,32 +631,24 @@ async function updateAd(
         };
       }
 
-      // Step 1: Delete the old ad (set to REMOVED)
-      const removeOperation = {
-        update: {
-          resource_name: adGroupAdResourceName,
-          status: 'REMOVED',
-        },
-        update_mask: { paths: ['status'] },
-      };
-
-      await (client as any).adGroupAds.update([removeOperation]);
+      // Step 1: Delete the old ad
+      // Google Ads API doesn't allow setting status to REMOVED via update;
+      // must use the remove operation instead
+      await (client as any).adGroupAds.remove([adGroupAdResourceName]);
       console.log(`[GoogleAdsAds] Removed old ad: ${adId}`);
 
       // Step 2: Create new ad with updated content
       const adGroupAdOperation = {
-        create: {
-          ad_group: currentAdGroupResourceName,
-          status: newStatus,
-          ad: {
-            responsive_search_ad: {
-              headlines: newHeadlines.map((text: string) => ({ text })),
-              descriptions: newDescriptions.map((text: string) => ({ text })),
-              path1: newPath1 || undefined,
-              path2: newPath2 || undefined,
-            },
-            final_urls: [newFinalUrl],
+        ad_group: currentAdGroupResourceName,
+        status: newStatus,
+        ad: {
+          responsive_search_ad: {
+            headlines: newHeadlines.map((text: string) => ({ text })),
+            descriptions: newDescriptions.map((text: string) => ({ text })),
+            path1: newPath1 || undefined,
+            path2: newPath2 || undefined,
           },
+          final_urls: [newFinalUrl],
         },
       };
 
@@ -683,12 +673,10 @@ async function updateAd(
 
     // Status-only update (in-place)
     if (status) {
-      const updateOperation: any = {
-        update: {
-          resource_name: adGroupAdResourceName,
-          status,
-        },
-        update_mask: { paths: ['status'] },
+      // google-ads-api library auto-computes field masks from provided fields
+      const updateOperation = {
+        resource_name: adGroupAdResourceName,
+        status,
       };
 
       await (client as any).adGroupAds.update([updateOperation]);
@@ -760,16 +748,8 @@ async function deleteAd(
     const adGroupId = adGroupResourceName ? adGroupResourceName.split('/').pop() : '';
     const adGroupAdResourceName = `customers/${customerId}/adGroupAds/${adGroupId}~${adId}`;
 
-    // Remove = set status to REMOVED
-    const removeOperation = {
-      update: {
-        resource_name: adGroupAdResourceName,
-        status: 'REMOVED',
-      },
-      update_mask: { paths: ['status'] },
-    };
-
-    await (client as any).adGroupAds.update([removeOperation]);
+    // Remove the ad — Google Ads API requires .remove(), not update with REMOVED status
+    await (client as any).adGroupAds.remove([adGroupAdResourceName]);
 
     console.log(`[GoogleAdsAds] Deleted (removed) ad: ${adId}`);
 

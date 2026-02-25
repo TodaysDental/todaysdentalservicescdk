@@ -1049,7 +1049,7 @@ async function fetchPatientPortalData(clinicId: string, date: string): Promise<P
             appointmentsUsed: metrics.appointmentsUsed || 0,
             appointmentsCancelled: metrics.appointmentsCancelled || 0,
             appointmentsRescheduled: metrics.appointmentsRescheduled || 0,
-            billPayments: metrics.billPayments || 0,
+            billPayments: metrics.paymentsSucceeded || 0,
             status: 'success',
         };
     } catch (error: any) {
