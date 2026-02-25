@@ -41,6 +41,7 @@ const MESSAGES_TABLE = process.env.MESSAGES_TABLE || '';
 const FAVORS_TABLE = process.env.FAVORS_TABLE || '';
 const TEAMS_TABLE = process.env.TEAMS_TABLE || '';
 const MEETINGS_TABLE = process.env.MEETINGS_TABLE || '';
+const USER_PREFERENCES_TABLE = process.env.USER_PREFERENCES_TABLE || '';
 const FILE_BUCKET_NAME = process.env.FILE_BUCKET_NAME || '';
 const NOTIFICATIONS_TOPIC_ARN = process.env.NOTICES_TOPIC_ARN || '';
 const SES_SOURCE_EMAIL = process.env.SES_SOURCE_EMAIL || 'no-reply@todaysdentalinsights.com';
@@ -590,6 +591,17 @@ export const handler = async (event: APIGatewayEvent): Promise<APIGatewayProxyRe
                 break;
             case 'getMessageInfo':
                 await handleGetMessageInfo(senderID, payload, connectionId, apiGwManagement);
+                break;
+
+            // ======= USER PREFERENCES =======
+            case 'saveUserPreference':
+                await handleSaveUserPreference(senderID, payload, connectionId, apiGwManagement);
+                break;
+            case 'getUserPreferences':
+                await handleGetUserPreferences(senderID, payload, connectionId, apiGwManagement);
+                break;
+            case 'getPreferencesUploadUrl':
+                await handleGetPreferencesUploadUrl(senderID, payload, connectionId, apiGwManagement);
                 break;
 
             // ======= POLLS =======
@@ -4785,4 +4797,305 @@ async function handleClosePoll(
     }
 
     console.log(`Poll closed: "${message.pollData.question}" by ${senderID} in ${favorRequestID}`);
+}
+
+// ========================================
+// USER PREFERENCES HANDLERS
+// ========================================
+
+/**
+ * Valid preference keys that users can save.
+ * - profileImage: S3 URL for the user's profile picture
+ * - profileAbout: Short bio/about text
+ * - wallpaperTheme: CSS theme identifier (e.g. 'color-default', 'glitter-gold')
+ * - customWallpaper: S3 URL for custom wallpaper photo
+ * - msgColor: Hex color code for outgoing message bubbles
+ * - groupImage: S3 URL for a group image (requires extra 'teamID' field)
+ */
+const VALID_PREFERENCE_KEYS = [
+    'profileImage', 'profileAbout', 'wallpaperTheme',
+    'customWallpaper', 'msgColor', 'groupImage',
+] as const;
+type PreferenceKey = typeof VALID_PREFERENCE_KEYS[number];
+
+/**
+ * Saves a single user preference to DynamoDB.
+ * Payload: { action: 'saveUserPreference', key: PreferenceKey, value: string, teamID?: string }
+ *
+ * For 'groupImage', the value is saved inside a DynamoDB Map attribute `groupImages`
+ * keyed by teamID, so multiple group images can be stored per user.
+ */
+async function handleSaveUserPreference(
+    senderID: string,
+    payload: { key: PreferenceKey; value: string; teamID?: string },
+    connectionId: string,
+    apiGwManagement: ApiGatewayManagementApiClient
+): Promise<void> {
+    const { key, value, teamID } = payload;
+
+    if (!key || value === undefined || value === null) {
+        await sendToClient(apiGwManagement, connectionId, {
+            type: 'error', message: 'Missing key or value for saveUserPreference.',
+        });
+        return;
+    }
+
+    if (!VALID_PREFERENCE_KEYS.includes(key as PreferenceKey)) {
+        await sendToClient(apiGwManagement, connectionId, {
+            type: 'error', message: `Invalid preference key: ${key}. Valid keys: ${VALID_PREFERENCE_KEYS.join(', ')}`,
+        });
+        return;
+    }
+
+    if (!USER_PREFERENCES_TABLE) {
+        await sendToClient(apiGwManagement, connectionId, {
+            type: 'error', message: 'Server error: User preferences table not configured.',
+        });
+        return;
+    }
+
+    // Enforce max lengths
+    if (key === 'profileAbout' && String(value).length > 500) {
+        await sendToClient(apiGwManagement, connectionId, {
+            type: 'error', message: 'Profile about text must be under 500 characters.',
+        });
+        return;
+    }
+
+    if (key === 'wallpaperTheme' && String(value).length > 100) {
+        await sendToClient(apiGwManagement, connectionId, {
+            type: 'error', message: 'Invalid wallpaper theme value.',
+        });
+        return;
+    }
+
+    const nowIso = new Date().toISOString();
+
+    try {
+        if (key === 'groupImage') {
+            // Group images are stored in a nested Map: groupImages.{teamID} = value
+            if (!teamID) {
+                await sendToClient(apiGwManagement, connectionId, {
+                    type: 'error', message: 'Missing teamID for groupImage preference.',
+                });
+                return;
+            }
+            // First ensure the groupImages map exists, then set the specific key
+            await ddb.send(new UpdateCommand({
+                TableName: USER_PREFERENCES_TABLE,
+                Key: { userID: senderID },
+                UpdateExpression: 'SET groupImages.#tid = :val, updatedAt = :ua',
+                ExpressionAttributeNames: { '#tid': teamID },
+                ExpressionAttributeValues: { ':val': String(value), ':ua': nowIso },
+            })).catch(async () => {
+                // If groupImages doesn't exist yet, create the map first
+                await ddb.send(new UpdateCommand({
+                    TableName: USER_PREFERENCES_TABLE,
+                    Key: { userID: senderID },
+                    UpdateExpression: 'SET groupImages = if_not_exists(groupImages, :emptyMap), updatedAt = :ua',
+                    ExpressionAttributeValues: { ':emptyMap': {}, ':ua': nowIso },
+                }));
+                await ddb.send(new UpdateCommand({
+                    TableName: USER_PREFERENCES_TABLE,
+                    Key: { userID: senderID },
+                    UpdateExpression: 'SET groupImages.#tid = :val, updatedAt = :ua',
+                    ExpressionAttributeNames: { '#tid': teamID },
+                    ExpressionAttributeValues: { ':val': String(value), ':ua': nowIso },
+                }));
+            });
+        } else {
+            // Standard scalar preference
+            await ddb.send(new UpdateCommand({
+                TableName: USER_PREFERENCES_TABLE,
+                Key: { userID: senderID },
+                UpdateExpression: `SET #k = :v, updatedAt = :ua`,
+                ExpressionAttributeNames: { '#k': key },
+                ExpressionAttributeValues: { ':v': String(value), ':ua': nowIso },
+            }));
+        }
+
+        await sendToClient(apiGwManagement, connectionId, {
+            type: 'userPreferenceSaved',
+            key,
+            value: String(value),
+            ...(teamID && { teamID }),
+        });
+
+        console.log(`User preference saved: ${senderID} → ${key}${teamID ? ` (team: ${teamID})` : ''}`);
+    } catch (e) {
+        console.error('Error saving user preference:', e);
+        await sendToClient(apiGwManagement, connectionId, {
+            type: 'error', message: 'Failed to save user preference.',
+        });
+    }
+}
+
+/**
+ * Retrieves user preferences from DynamoDB.
+ * Payload: { action: 'getUserPreferences', targetUserID?: string }
+ *
+ * - If targetUserID is omitted, returns ALL preferences for the caller (own data).
+ * - If targetUserID is provided, returns only the PUBLIC preferences (profileImage, profileAbout)
+ *   for that user — useful for viewing another user's profile.
+ */
+async function handleGetUserPreferences(
+    senderID: string,
+    payload: { targetUserID?: string },
+    connectionId: string,
+    apiGwManagement: ApiGatewayManagementApiClient
+): Promise<void> {
+    if (!USER_PREFERENCES_TABLE) {
+        await sendToClient(apiGwManagement, connectionId, {
+            type: 'error', message: 'Server error: User preferences table not configured.',
+        });
+        return;
+    }
+
+    const targetID = payload.targetUserID || senderID;
+    const isOwnProfile = targetID === senderID;
+
+    try {
+        const result = await ddb.send(new GetCommand({
+            TableName: USER_PREFERENCES_TABLE,
+            Key: { userID: targetID },
+        }));
+
+        const prefs = result.Item || {};
+
+        if (isOwnProfile) {
+            // Return everything for the user's own preferences
+            await sendToClient(apiGwManagement, connectionId, {
+                type: 'userPreferences',
+                userID: targetID,
+                preferences: {
+                    profileImage: prefs.profileImage || null,
+                    profileAbout: prefs.profileAbout || null,
+                    wallpaperTheme: prefs.wallpaperTheme || null,
+                    customWallpaper: prefs.customWallpaper || null,
+                    msgColor: prefs.msgColor || null,
+                    groupImages: prefs.groupImages || {},
+                },
+            });
+        } else {
+            // Only return public profile data for other users
+            await sendToClient(apiGwManagement, connectionId, {
+                type: 'userPreferences',
+                userID: targetID,
+                preferences: {
+                    profileImage: prefs.profileImage || null,
+                    profileAbout: prefs.profileAbout || null,
+                },
+            });
+        }
+
+        console.log(`User preferences fetched for ${targetID} by ${senderID}`);
+    } catch (e) {
+        console.error('Error fetching user preferences:', e);
+        await sendToClient(apiGwManagement, connectionId, {
+            type: 'error', message: 'Failed to fetch user preferences.',
+        });
+    }
+}
+
+/**
+ * Generates a presigned S3 PUT URL for uploading preference-related images
+ * (profile pictures, group images, custom wallpapers).
+ *
+ * Payload: { action: 'getPreferencesUploadUrl', fileName: string, fileType: string, category: 'profile' | 'group' | 'wallpaper', teamID?: string }
+ *
+ * The image is stored under:
+ *   - profiles: preferences/profiles/{userID}/{uuid}.{ext}
+ *   - groups:   preferences/groups/{teamID}/{uuid}.{ext}
+ *   - wallpapers: preferences/wallpapers/{userID}/{uuid}.{ext}
+ */
+async function handleGetPreferencesUploadUrl(
+    senderID: string,
+    payload: { fileName: string; fileType: string; category: 'profile' | 'group' | 'wallpaper'; teamID?: string },
+    connectionId: string,
+    apiGwManagement: ApiGatewayManagementApiClient
+): Promise<void> {
+    const { fileName, fileType, category, teamID } = payload;
+
+    if (!fileName || !fileType || !category) {
+        await sendToClient(apiGwManagement, connectionId, {
+            type: 'error', message: 'Missing fileName, fileType, or category.',
+        });
+        return;
+    }
+
+    if (!FILE_BUCKET_NAME) {
+        await sendToClient(apiGwManagement, connectionId, {
+            type: 'error', message: 'Server error: File bucket not configured.',
+        });
+        return;
+    }
+
+    // Validate content type is an image
+    if (!fileType.startsWith('image/')) {
+        await sendToClient(apiGwManagement, connectionId, {
+            type: 'error', message: 'Invalid file type. Only images are allowed for preferences.',
+        });
+        return;
+    }
+
+    const validCategories = ['profile', 'group', 'wallpaper'];
+    if (!validCategories.includes(category)) {
+        await sendToClient(apiGwManagement, connectionId, {
+            type: 'error', message: `Invalid category: ${category}. Use: ${validCategories.join(', ')}`,
+        });
+        return;
+    }
+
+    if (category === 'group' && !teamID) {
+        await sendToClient(apiGwManagement, connectionId, {
+            type: 'error', message: 'Missing teamID for group image upload.',
+        });
+        return;
+    }
+
+    const rawName = String(fileName);
+    const ext = rawName.split('.').pop() || 'jpg';
+
+    let fileKey: string;
+    switch (category) {
+        case 'profile':
+            fileKey = `preferences/profiles/${senderID}/${uuidv4()}.${ext}`;
+            break;
+        case 'group':
+            fileKey = `preferences/groups/${teamID}/${uuidv4()}.${ext}`;
+            break;
+        case 'wallpaper':
+            fileKey = `preferences/wallpapers/${senderID}/${uuidv4()}.${ext}`;
+            break;
+        default:
+            fileKey = `preferences/misc/${senderID}/${uuidv4()}.${ext}`;
+    }
+
+    try {
+        const command = new PutObjectCommand({
+            Bucket: FILE_BUCKET_NAME,
+            Key: fileKey,
+            ContentType: fileType,
+        });
+
+        const url = await getSignedUrl(s3, command, { expiresIn: 900 }); // 15 min
+
+        await sendToClient(apiGwManagement, connectionId, {
+            type: 'preferencesUploadUrl',
+            url,
+            fileKey,
+            fileType,
+            category,
+            ...(teamID && { teamID }),
+            // Public URL after upload (bucket has public read)
+            publicUrl: `https://${FILE_BUCKET_NAME}.s3.${REGION}.amazonaws.com/${fileKey}`,
+        });
+
+        console.log(`Preferences upload URL generated for ${senderID}: ${category} → ${fileKey}`);
+    } catch (e) {
+        console.error('Error generating preferences upload URL:', e);
+        await sendToClient(apiGwManagement, connectionId, {
+            type: 'error', message: 'Failed to generate upload URL.',
+        });
+    }
 }

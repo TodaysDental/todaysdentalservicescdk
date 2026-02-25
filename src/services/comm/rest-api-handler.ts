@@ -12,6 +12,7 @@ const FAVORS_TABLE = process.env.FAVORS_TABLE || '';
 const TEAMS_TABLE = process.env.TEAMS_TABLE || '';
 const MEETINGS_TABLE = process.env.MEETINGS_TABLE || '';
 const MESSAGES_TABLE = process.env.MESSAGES_TABLE || '';
+const USER_PREFERENCES_TABLE = process.env.USER_PREFERENCES_TABLE || '';
 const LOG_LEVEL = process.env.LOG_LEVEL || 'INFO';
 
 // Public meeting link base (fixed domain default)
@@ -566,6 +567,22 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
             log.info('Routing to getGroups', logCtx);
             routeMatched = true;
             result = await getGroups(authedUserID, queryStringParameters, logCtx);
+        }
+
+        // User Preferences endpoints
+        else if (path.match(/^\/api\/preferences\/[^/]+$/) && httpMethod === 'GET') {
+            const targetUserID = pathParameters?.userID || path.split('/')[3];
+            log.info('Routing to getPublicUserPreferences', { ...logCtx, targetUserID });
+            routeMatched = true;
+            result = await restGetUserPreferences(authedUserID, targetUserID, logCtx);
+        } else if (path.match(/^\/api\/preferences$/) && httpMethod === 'GET') {
+            log.info('Routing to getUserPreferences (own)', logCtx);
+            routeMatched = true;
+            result = await restGetUserPreferences(authedUserID, authedUserID, logCtx);
+        } else if (path.match(/^\/api\/preferences$/) && httpMethod === 'PUT') {
+            log.info('Routing to saveUserPreference', logCtx);
+            routeMatched = true;
+            result = await restSaveUserPreference(authedUserID, parsedBody, logCtx);
         }
 
         if (!routeMatched) {
@@ -3302,5 +3319,137 @@ async function removeGroupMember(userID: string, teamID: string, memberUserID: s
             durationMs: Date.now() - startTime,
         });
         throw error;
+    }
+}
+
+// ========================================
+// USER PREFERENCES ENDPOINTS (REST)
+// ========================================
+
+/**
+ * GET /api/preferences — Get own preferences
+ * GET /api/preferences/{userID} — Get another user's public profile
+ */
+async function restGetUserPreferences(
+    callerUserID: string,
+    targetUserID: string,
+    logCtx?: LogContext
+): Promise<APIGatewayProxyResult> {
+    const fnCtx = { ...logCtx, function: 'restGetUserPreferences', targetUserID };
+
+    if (!USER_PREFERENCES_TABLE) {
+        log.error('USER_PREFERENCES_TABLE not configured', fnCtx);
+        return response(500, { success: false, message: 'Server error: Preferences table not configured.' });
+    }
+
+    const isOwnProfile = callerUserID === targetUserID;
+
+    try {
+        const result = await ddb.send(new GetCommand({
+            TableName: USER_PREFERENCES_TABLE,
+            Key: { userID: targetUserID },
+        }));
+
+        const prefs = result.Item || {};
+
+        if (isOwnProfile) {
+            return response(200, {
+                success: true,
+                userID: targetUserID,
+                preferences: {
+                    profileImage: prefs.profileImage || null,
+                    profileAbout: prefs.profileAbout || null,
+                    wallpaperTheme: prefs.wallpaperTheme || null,
+                    customWallpaper: prefs.customWallpaper || null,
+                    msgColor: prefs.msgColor || null,
+                    groupImages: prefs.groupImages || {},
+                },
+            });
+        } else {
+            // Only public data
+            return response(200, {
+                success: true,
+                userID: targetUserID,
+                preferences: {
+                    profileImage: prefs.profileImage || null,
+                    profileAbout: prefs.profileAbout || null,
+                },
+            });
+        }
+    } catch (error) {
+        const err = error instanceof Error ? error : new Error(String(error));
+        log.error('Failed to get user preferences', fnCtx, err);
+        return response(500, { success: false, message: 'Failed to fetch preferences.' });
+    }
+}
+
+/**
+ * PUT /api/preferences
+ * Body: { key: string, value: string, teamID?: string }
+ */
+async function restSaveUserPreference(
+    userID: string,
+    body: { key: string; value: string; teamID?: string },
+    logCtx?: LogContext
+): Promise<APIGatewayProxyResult> {
+    const fnCtx = { ...logCtx, function: 'restSaveUserPreference' };
+    const { key, value, teamID } = body;
+
+    const VALID_KEYS = ['profileImage', 'profileAbout', 'wallpaperTheme', 'customWallpaper', 'msgColor', 'groupImage'];
+
+    if (!key || value === undefined || value === null) {
+        return response(400, { success: false, message: 'Missing key or value.' });
+    }
+
+    if (!VALID_KEYS.includes(key)) {
+        return response(400, { success: false, message: `Invalid key: ${key}. Valid: ${VALID_KEYS.join(', ')}` });
+    }
+
+    if (!USER_PREFERENCES_TABLE) {
+        log.error('USER_PREFERENCES_TABLE not configured', fnCtx);
+        return response(500, { success: false, message: 'Server error: Preferences table not configured.' });
+    }
+
+    if (key === 'profileAbout' && String(value).length > 500) {
+        return response(400, { success: false, message: 'About text must be under 500 characters.' });
+    }
+
+    const nowIso = new Date().toISOString();
+
+    try {
+        if (key === 'groupImage') {
+            if (!teamID) {
+                return response(400, { success: false, message: 'Missing teamID for groupImage.' });
+            }
+            // Ensure groupImages map exists
+            await ddb.send(new UpdateCommand({
+                TableName: USER_PREFERENCES_TABLE,
+                Key: { userID },
+                UpdateExpression: 'SET groupImages = if_not_exists(groupImages, :emptyMap), updatedAt = :ua',
+                ExpressionAttributeValues: { ':emptyMap': {}, ':ua': nowIso },
+            }));
+            await ddb.send(new UpdateCommand({
+                TableName: USER_PREFERENCES_TABLE,
+                Key: { userID },
+                UpdateExpression: 'SET groupImages.#tid = :val, updatedAt = :ua',
+                ExpressionAttributeNames: { '#tid': teamID },
+                ExpressionAttributeValues: { ':val': String(value), ':ua': nowIso },
+            }));
+        } else {
+            await ddb.send(new UpdateCommand({
+                TableName: USER_PREFERENCES_TABLE,
+                Key: { userID },
+                UpdateExpression: 'SET #k = :v, updatedAt = :ua',
+                ExpressionAttributeNames: { '#k': key },
+                ExpressionAttributeValues: { ':v': String(value), ':ua': nowIso },
+            }));
+        }
+
+        log.info('Preference saved', { ...fnCtx, key, teamID });
+        return response(200, { success: true, key, value: String(value), ...(teamID && { teamID }) });
+    } catch (error) {
+        const err = error instanceof Error ? error : new Error(String(error));
+        log.error('Failed to save user preference', fnCtx, err);
+        return response(500, { success: false, message: 'Failed to save preference.' });
     }
 }

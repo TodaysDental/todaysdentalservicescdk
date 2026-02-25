@@ -51,6 +51,7 @@ export class CommStack extends Stack {
   public readonly meetingsTable: dynamodb.Table; // Meetings table for scheduled meetings
   public readonly callsTable: dynamodb.Table; // Calls table for voice/video calling sessions
   public readonly auditLogsTable: dynamodb.Table; // Audit trail table
+  public readonly userPreferencesTable: dynamodb.Table; // User preferences (profile image, wallpaper, etc.)
   public readonly fileBucket: s3.Bucket;
   public readonly notificationsTopic: sns.Topic;
   public readonly getFileFn: lambdaNode.NodejsFunction;
@@ -303,6 +304,14 @@ export class CommStack extends Stack {
       projectionType: dynamodb.ProjectionType.ALL,
     });
 
+    // 7. User Preferences Table (Stores user-specific settings: profile images, wallpaper, etc.)
+    this.userPreferencesTable = new dynamodb.Table(this, 'UserPreferencesTableV1', {
+      tableName: `${this.stackName}-UserPreferencesV1`,
+      partitionKey: { name: 'userID', type: dynamodb.AttributeType.STRING },
+      billingMode: dynamodb.BillingMode.PAY_PER_REQUEST,
+      removalPolicy: RemovalPolicy.RETAIN,
+    });
+    applyTags(this.userPreferencesTable, { Table: 'user-preferences' });
 
     // ========================================
     // S3 BUCKET (for File Sharing)
@@ -350,6 +359,7 @@ export class CommStack extends Stack {
       MEETINGS_TABLE: this.meetingsTable.tableName,
       CALLS_TABLE: this.callsTable.tableName,
       AUDIT_LOGS_TABLE: this.auditLogsTable.tableName,
+      USER_PREFERENCES_TABLE: this.userPreferencesTable.tableName,
       FILE_BUCKET_NAME: this.fileBucket.bucketName,
       NOTIFICATIONS_TOPIC_ARN: this.notificationsTopic.topicArn,
       // Push Notifications Integration
@@ -432,6 +442,7 @@ export class CommStack extends Stack {
     this.teamsTable.grantReadWriteData(defaultFn);
     this.meetingsTable.grantReadWriteData(defaultFn);
     this.callsTable.grantReadWriteData(defaultFn);
+    this.userPreferencesTable.grantReadWriteData(defaultFn);
     this.fileBucket.grantReadWrite(defaultFn);
     this.notificationsTopic.grantPublish(defaultFn);
 
@@ -514,6 +525,7 @@ export class CommStack extends Stack {
     this.teamsTable.grantReadWriteData(restApiHandler);
     this.meetingsTable.grantReadWriteData(restApiHandler);
     this.auditLogsTable.grantReadWriteData(restApiHandler);
+    this.userPreferencesTable.grantReadWriteData(restApiHandler);
 
     // ========================================
     // CHIME SDK MEETINGS PERMISSIONS (MEETINGS JOIN)
@@ -722,6 +734,13 @@ export class CommStack extends Stack {
     const groupMemberById = groupMembers.addResource('{memberUserID}');
     groupMemberById.addMethod('DELETE', restIntegration, { authorizer });
 
+    // /api/preferences endpoints (User Preferences — profile image, wallpaper, etc.)
+    const preferences = api.addResource('preferences');
+    preferences.addMethod('GET', restIntegration, { authorizer });   // Get own preferences
+    preferences.addMethod('PUT', restIntegration, { authorizer });   // Save a preference
+    const preferencesByUser = preferences.addResource('{userID}');
+    preferencesByUser.addMethod('GET', restIntegration, { authorizer }); // Get another user's public prefs
+
     // CloudWatch alarms for REST API handler
     createLambdaErrorAlarm(restApiHandler, 'rest-api-handler');
     createLambdaThrottleAlarm(restApiHandler, 'rest-api-handler');
@@ -848,6 +867,10 @@ export class CommStack extends Stack {
       value: this.getFileFn.functionArn,
       description: 'ARN of the S3 Get File Download Lambda',
       exportName: `${this.stackName}-FileDownloadFnArn`,
+    });
+    new CfnOutput(this, 'UserPreferencesTableName', {
+      value: this.userPreferencesTable.tableName,
+      exportName: `${this.stackName}-UserPreferencesTableName`,
     });
   }
 }
