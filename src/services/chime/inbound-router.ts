@@ -1031,6 +1031,18 @@ export const handler = async (event: any): Promise<any> => {
                     return buildActions([buildHangupAction('There was an error connecting your call.')]);
                 }
 
+                // Guardrail: avoid call-forwarding loops where our outbound clinic ring (or after-hours forward)
+                // gets forwarded back into this same DID, creating repeated NEW_INBOUND_CALL invocations.
+                // Common symptom: To and From are identical (e.g., +1720... calling +1720...).
+                if (fromPhoneNumber === toPhoneNumber && fromPhoneNumber !== 'Unknown') {
+                    console.warn('[NEW_INBOUND_CALL] Possible call-forwarding loop detected (from == to). Rejecting to avoid recursion.', {
+                        callId,
+                        toPhoneNumber,
+                        fromPhoneNumber,
+                    });
+                    return buildActions([{ Type: 'Hangup', Parameters: { SipResponseCode: '486' } }]);
+                }
+
                 // ========== REGULAR CALL ROUTING ==========
                 // 1. Find which clinic was called
                 // (Assuming you have a GSI named 'phoneNumber-index' on your ClinicsTable)
