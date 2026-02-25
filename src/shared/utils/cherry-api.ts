@@ -153,9 +153,6 @@ export interface CherryTransactionQueryOptions {
  */
 const FETCH_LOANS_QUERY = `
 query FetchLoans(
-  $merchantId: Int
-  $limit: Int
-  $offset: Int
   $startDate: String
   $endDate: String
   $status: [String]
@@ -163,9 +160,6 @@ query FetchLoans(
   $sortDirection: String
 ) {
   fetchLoans(
-    merchantId: $merchantId
-    limit: $limit
-    offset: $offset
     startDate: $startDate
     endDate: $endDate
     status: $status
@@ -372,15 +366,13 @@ export class CherryClient {
      * Returns the raw loan data from Cherry's GraphQL API.
      */
     async getLoans(options: CherryTransactionQueryOptions): Promise<CherryLoan[]> {
-        const { dateStart, dateEnd, status, limit = 100, offset = 0 } = options;
+        const { dateStart, dateEnd, status } = options;
 
         console.log(`[CherryGQL] Fetching loans from ${dateStart} to ${dateEnd}`);
 
         const variables: Record<string, any> = {
             startDate: dateStart,
             endDate: dateEnd,
-            limit,
-            offset,
             sortBy: 'createdAt',
             sortDirection: 'DESC',
         };
@@ -404,16 +396,9 @@ export class CherryClient {
 
         console.log(`[CherryGQL] Fetched ${loans.length} of ${total} total loans`);
 
-        // If there are more pages, fetch them
-        if (total > offset + limit && loans.length === limit) {
-            console.log(`[CherryGQL] Fetching additional pages (total: ${total})`);
-            const nextPage = await this.getLoans({
-                ...options,
-                limit,
-                offset: offset + limit,
-            });
-            return [...loans, ...nextPage];
-        }
+        // Cherry API doesn't support limit/offset pagination
+        // All matching loans are returned in a single response
+        console.log(`[CherryGQL] Fetched ${loans.length} of ${total} total loans (no pagination available)`);
 
         return loans;
     }
