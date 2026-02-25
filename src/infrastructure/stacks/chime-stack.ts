@@ -33,6 +33,9 @@ const clinicsData = clinicConfigData.map((c: any) => ({
   clinicState: c.clinicState,
   clinicZipCode: c.clinicZipCode,
   clinicPhone: c.clinicPhone,
+  // When true, the clinic PBX is expected to ring the clinic phones itself (simultaneous ring),
+  // so the SMA should defer answering until an agent accepts.
+  pbxSimultaneousRingEnabled: c.pbxSimultaneousRingEnabled === true,
   clinicEmail: c.clinicEmail,
   websiteLink: c.websiteLink,
   logoUrl: c.logoUrl,
@@ -301,6 +304,7 @@ export class ChimeStack extends Stack {
             clinicState: { S: c.clinicState || '' },
             clinicZipCode: { S: c.clinicZipCode || '' },
             clinicPhone: { S: c.clinicPhone || '' },
+            pbxSimultaneousRingEnabled: { BOOL: !!c.pbxSimultaneousRingEnabled },
             clinicEmail: { S: c.clinicEmail || '' },
             websiteLink: { S: c.websiteLink || '' },
             logoUrl: { S: c.logoUrl || '' },

@@ -1060,6 +1060,14 @@ export const handler = async (event: any): Promise<any> => {
                 const clinic = clinics[0];
                 const clinicId = clinic.clinicId;
                 const aiPhoneNumber = typeof clinic.aiPhoneNumber === 'string' ? clinic.aiPhoneNumber.trim() : '';
+                const pbxSimultaneousRingEnabled = (clinic as any)?.pbxSimultaneousRingEnabled === true;
+                const deferAnswerUntilAgentAccept =
+                    pbxSimultaneousRingEnabled || CHIME_CONFIG.INBOUND.DEFER_ANSWER_UNTIL_AGENT_ACCEPT === true;
+                const deferAnswerPauseMsRaw = CHIME_CONFIG.INBOUND.DEFER_ANSWER_PAUSE_MS;
+                const deferAnswerPauseMs =
+                    Number.isFinite(deferAnswerPauseMsRaw) && deferAnswerPauseMsRaw > 0
+                        ? deferAnswerPauseMsRaw
+                        : 1000;
                 console.log(`[NEW_INBOUND_CALL] Call is for clinic ${clinicId}`);
 
                 // ========== AFTER-HOURS ROUTING CHECK ==========
@@ -1334,7 +1342,9 @@ export const handler = async (event: any): Promise<any> => {
                         return normalized;
                     })();
                     const shouldRingClinicPhone =
-                        CHIME_CONFIG.INBOUND.ENABLE_CLINIC_PHONE_RING === true && !!clinicPhoneE164;
+                        !deferAnswerUntilAgentAccept &&
+                        CHIME_CONFIG.INBOUND.ENABLE_CLINIC_PHONE_RING === true &&
+                        !!clinicPhoneE164;
 
                     try {
                         const assignments: string[] = [
@@ -1352,6 +1362,11 @@ export const handler = async (event: any): Promise<any> => {
                             ':ts': ringAttemptTimestamp,
                             ':now': Date.now(),
                         };
+
+                        if (deferAnswerUntilAgentAccept) {
+                            assignments.push('deferAnswerUntilAgentAccept = :deferAnswer');
+                            exprValues[':deferAnswer'] = true;
+                        }
 
                         if (shouldRingClinicPhone) {
                             assignments.push(
@@ -1401,6 +1416,16 @@ export const handler = async (event: any): Promise<any> => {
                         agentsNotified: uniqueAgentIds.length,
                         ringingStarted,
                     });
+
+                    if (deferAnswerUntilAgentAccept) {
+                        console.log('[NEW_INBOUND_CALL] Deferred answer enabled; keeping call ringing with Pause', {
+                            callId,
+                            clinicId,
+                            pauseMs: deferAnswerPauseMs,
+                            pbxSimultaneousRingEnabled,
+                        });
+                        return buildActions([buildPauseAction(deferAnswerPauseMs)]);
+                    }
 
                     // Start call recording if enabled
                     const enableRecording = process.env.ENABLE_CALL_RECORDING === 'true';
@@ -1502,7 +1527,9 @@ export const handler = async (event: any): Promise<any> => {
                                     return normalized;
                                 })();
                                 const shouldRingClinicPhone =
-                                    CHIME_CONFIG.INBOUND.ENABLE_CLINIC_PHONE_RING === true && !!clinicPhoneE164;
+                                    !deferAnswerUntilAgentAccept &&
+                                    CHIME_CONFIG.INBOUND.ENABLE_CLINIC_PHONE_RING === true &&
+                                    !!clinicPhoneE164;
 
                                 const assignments: string[] = [
                                     '#status = :ringing',
@@ -1521,6 +1548,11 @@ export const handler = async (event: any): Promise<any> => {
                                     ':now': Date.now(),
                                     ':true': true,
                                 };
+
+                                if (deferAnswerUntilAgentAccept) {
+                                    assignments.push('deferAnswerUntilAgentAccept = :deferAnswer');
+                                    exprValues[':deferAnswer'] = true;
+                                }
 
                                 if (shouldRingClinicPhone) {
                                     assignments.push(
@@ -1549,6 +1581,15 @@ export const handler = async (event: any): Promise<any> => {
                                         callerPhoneNumber: fromPhoneNumber,
                                         timestamp: ringTs,
                                     }).catch(pushErr => console.warn('[NEW_INBOUND_CALL] Overflow push failed (non-fatal):', pushErr));
+                                }
+
+                                if (deferAnswerUntilAgentAccept) {
+                                    console.log('[NEW_INBOUND_CALL/Overflow] Deferred answer enabled; keeping call ringing with Pause', {
+                                        callId,
+                                        clinicId,
+                                        pauseMs: deferAnswerPauseMs,
+                                    });
+                                    return buildActions([buildPauseAction(deferAnswerPauseMs)]);
                                 }
 
                                 if (shouldRingClinicPhone) {
@@ -3111,6 +3152,35 @@ export const handler = async (event: any): Promise<any> => {
 
                         return buildActions([]);
                     }
+                }
+
+                // If we are deferring answer (e.g., clinic PBX simultaneous ring),
+                // keep the call in ringback by chaining short Pause actions until:
+                // - an agent accepts (call record transitions away from 'ringing'), or
+                // - the other fork cancels (HANGUP), or
+                // - the caller hangs up.
+                if (eventType === 'ACTION_SUCCESSFUL' && actionType === 'Pause') {
+                    try {
+                        const { Items: callRecords } = await ddb.send(new QueryCommand({
+                            TableName: CALL_QUEUE_TABLE_NAME,
+                            IndexName: 'callId-index',
+                            KeyConditionExpression: 'callId = :id',
+                            ExpressionAttributeValues: { ':id': callId },
+                            Limit: 1,
+                        }));
+
+                        const callRecord: any = callRecords?.[0];
+                        const status = String(callRecord?.status || '');
+                        const deferAnswer = callRecord?.deferAnswerUntilAgentAccept === true;
+
+                        if (deferAnswer && status === 'ringing') {
+                            return buildActions([buildPauseAction(CHIME_CONFIG.INBOUND.DEFER_ANSWER_PAUSE_MS)]);
+                        }
+                    } catch (err) {
+                        console.warn('[ACTION_SUCCESSFUL/defer-answer] Failed to chain Pause (non-fatal):', err);
+                    }
+
+                    return buildActions([]);
                 }
 
                 if ((actionType === 'PlayAudioAndGetDigits' || actionType === 'SpeakAndGetDigits') && receivedDigits) {

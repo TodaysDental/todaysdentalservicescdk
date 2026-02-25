@@ -32,6 +32,31 @@ export const CHIME_CONFIG = {
      * @default true (set CHIME_ENABLE_CLINIC_PHONE_RING=false to disable)
      */
     ENABLE_CLINIC_PHONE_RING: process.env.CHIME_ENABLE_CLINIC_PHONE_RING !== 'false',
+
+    /**
+     * Defer answering inbound calls until an agent explicitly accepts.
+     *
+     * Use this when the clinic PBX is configured for simultaneous ring (clinic phones + SMA DID).
+     * If we answer immediately (Speak/PlayAudio), we can "win" the PBX race and stop the clinic
+     * phones from ringing. With deferred answer, we keep the call in ringback using Pause actions
+     * until either:
+     * - an agent accepts (CALL_UPDATE_REQUESTED / BRIDGE_CUSTOMER_INBOUND), or
+     * - the caller/other fork cancels the call (HANGUP with 487, etc.)
+     *
+     * @default false
+     */
+    DEFER_ANSWER_UNTIL_AGENT_ACCEPT: process.env.CHIME_DEFER_ANSWER_UNTIL_AGENT_ACCEPT === 'true',
+
+    /**
+     * Pause duration used while deferring answer (milliseconds).
+     * Smaller values reduce pickup latency but increase SMA invocations.
+     *
+     * @default 1000
+     */
+    DEFER_ANSWER_PAUSE_MS: (() => {
+      const raw = parseInt(process.env.CHIME_DEFER_ANSWER_PAUSE_MS || '1000', 10);
+      return Number.isFinite(raw) && raw > 0 ? raw : 1000;
+    })(),
   },
 
   /**
