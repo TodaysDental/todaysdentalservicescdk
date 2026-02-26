@@ -16,6 +16,8 @@ export interface CallbackStackProps extends StackProps {
 export class CallbackStack extends Stack {
   public readonly callbackTablePrefix: string;
   public readonly callbackLambdaArn: string;
+  public readonly defaultCallbackTableName: string;
+  public readonly defaultCallbackTableArn: string;
 
   constructor(scope: Construct, id: string, props: CallbackStackProps) {
     super(scope, id, props);
@@ -118,6 +120,8 @@ export class CallbackStack extends Stack {
       pointInTimeRecovery: true,
     });
     applyTags(defaultCallbackTable, { Table: 'callback-default' });
+    this.defaultCallbackTableName = defaultCallbackTable.tableName;
+    this.defaultCallbackTableArn = defaultCallbackTable.tableArn;
 
     // Note: Legacy RequestCallBacks_* tables may exist from previous deployments
     // Lambda will use the wildcard permissions to access both old and new naming patterns

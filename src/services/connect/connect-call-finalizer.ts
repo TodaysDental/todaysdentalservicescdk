@@ -139,6 +139,7 @@ async function finalizeAnalytics(params: {
             outcome = :outcome,
             callEndTime = :endTime,
             duration = :duration,
+            totalDuration = :duration,
             disconnectReason = :reason,
             lastActivityTime = :now
       `,

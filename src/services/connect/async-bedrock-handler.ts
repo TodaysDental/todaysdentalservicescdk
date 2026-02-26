@@ -31,6 +31,7 @@ import {
 import { LambdaClient, InvokeCommand } from '@aws-sdk/client-lambda';
 import { v4 as uuidv4 } from 'uuid';
 import { getDateContext } from '../../shared/prompts/ai-prompts';
+import { TranscriptBufferManager, TranscriptSegment } from '../shared/utils/transcript-buffer-manager';
 
 // ========================================================================
 // CONFIGURATION
@@ -40,6 +41,12 @@ const ASYNC_RESULTS_TABLE = process.env.ASYNC_RESULTS_TABLE || 'ConnectAsyncResu
 const SESSIONS_TABLE = process.env.SESSIONS_TABLE || 'AiAgentSessions';
 const AGENTS_TABLE = process.env.AGENTS_TABLE || 'AiAgents';
 const VOICE_CONFIG_TABLE = process.env.VOICE_CONFIG_TABLE || '';
+const CALL_ANALYTICS_TABLE = process.env.CALL_ANALYTICS_TABLE || '';
+const TRANSCRIPT_BUFFER_TABLE = process.env.TRANSCRIPT_BUFFER_TABLE_NAME || '';
+const ANALYTICS_TTL_DAYS = (() => {
+  const raw = parseInt(process.env.ANALYTICS_TTL_DAYS || '90', 10);
+  return Number.isFinite(raw) && raw > 0 ? raw : 90;
+})();
 const RESULT_TTL_SECONDS = 300; // 5 minutes
 const DEFAULT_CLINIC_ID = process.env.DEFAULT_CLINIC_ID || 'dentistingreenville';
 
@@ -95,6 +102,12 @@ const lambdaClient = new LambdaClient({});
 const bedrockAgentClient = new BedrockAgentRuntimeClient({
   region: process.env.AWS_REGION || 'us-east-1',
 });
+
+// Transcript buffering (shared TranscriptBuffersV2 table)
+let transcriptManager: TranscriptBufferManager | null = null;
+if (TRANSCRIPT_BUFFER_TABLE) {
+  transcriptManager = new TranscriptBufferManager(docClient, TRANSCRIPT_BUFFER_TABLE);
+}
 
 // Used by the START path to spawn a separate background invocation that can run up to the Lambda timeout.
 // Defaulting to AWS_LAMBDA_FUNCTION_NAME allows "self-invocation" without extra wiring.
@@ -304,6 +317,8 @@ async function getAgentForClinic(clinicId: string): Promise<AgentInfo | null> {
 interface SessionInfo {
   bedrockSessionId: string;
   clinicId: string;
+  callId: string;
+  callStartMs: number;
 }
 
 async function getOrCreateSession(contactId: string, clinicId: string): Promise<SessionInfo> {
@@ -316,9 +331,24 @@ async function getOrCreateSession(contactId: string, clinicId: string): Promise<
     }));
 
     if (existing.Item) {
+      const existingBedrockSessionId =
+        typeof existing.Item.bedrockSessionId === 'string' && existing.Item.bedrockSessionId.trim()
+          ? existing.Item.bedrockSessionId.trim()
+          : uuidv4();
+      const existingCallId =
+        typeof existing.Item.callId === 'string' && existing.Item.callId.trim()
+          ? existing.Item.callId.trim()
+          : `connect-${contactId}`;
+      const existingCallStartMs =
+        typeof existing.Item.callStartMs === 'number' && Number.isFinite(existing.Item.callStartMs)
+          ? existing.Item.callStartMs
+          : Date.now();
+
       return {
-        bedrockSessionId: existing.Item.bedrockSessionId,
+        bedrockSessionId: existingBedrockSessionId,
         clinicId: existing.Item.clinicId || clinicId,
+        callId: existingCallId,
+        callStartMs: existingCallStartMs,
       };
     }
   } catch (error) {
@@ -328,6 +358,7 @@ async function getOrCreateSession(contactId: string, clinicId: string): Promise<
   // Create new session
   const bedrockSessionId = uuidv4();
   const now = Date.now();
+  const callId = `connect-${contactId}`;
   const ttl = Math.floor(now / 1000) + (60 * 60); // 1 hour TTL
 
   try {
@@ -335,7 +366,7 @@ async function getOrCreateSession(contactId: string, clinicId: string): Promise<
       TableName: SESSIONS_TABLE,
       Item: {
         sessionId: sessionKey,
-        callId: `connect-${contactId}`,
+        callId,
         clinicId,
         bedrockSessionId,
         callStartMs: now,
@@ -344,12 +375,264 @@ async function getOrCreateSession(contactId: string, clinicId: string): Promise<
         lastActivity: new Date(now).toISOString(),
         ttl,
       },
+      ConditionExpression: 'attribute_not_exists(sessionId)',
     }));
-  } catch (error) {
-    console.error('[AsyncBedrock] Error creating session:', error);
+  } catch (error: any) {
+    if (error.name === 'ConditionalCheckFailedException') {
+      // Another invocation created the session; fetch and return it.
+      try {
+        const existing = await docClient.send(new GetCommand({
+          TableName: SESSIONS_TABLE,
+          Key: { sessionId: sessionKey },
+        }));
+        if (existing.Item) {
+          const existingBedrockSessionId =
+            typeof existing.Item.bedrockSessionId === 'string' && existing.Item.bedrockSessionId.trim()
+              ? existing.Item.bedrockSessionId.trim()
+              : bedrockSessionId;
+          const existingCallId =
+            typeof existing.Item.callId === 'string' && existing.Item.callId.trim()
+              ? existing.Item.callId.trim()
+              : callId;
+          const existingCallStartMs =
+            typeof existing.Item.callStartMs === 'number' && Number.isFinite(existing.Item.callStartMs)
+              ? existing.Item.callStartMs
+              : now;
+
+          return {
+            bedrockSessionId: existingBedrockSessionId,
+            clinicId: existing.Item.clinicId || clinicId,
+            callId: existingCallId,
+            callStartMs: existingCallStartMs,
+          };
+        }
+      } catch (getErr) {
+        console.warn('[AsyncBedrock] Error getting session after conditional failure:', getErr);
+      }
+    } else {
+      console.error('[AsyncBedrock] Error creating session:', error);
+    }
   }
 
-  return { bedrockSessionId, clinicId };
+  return { bedrockSessionId, clinicId, callId, callStartMs: now };
+}
+
+// ========================================================================
+// CALL ANALYTICS (Connect/Lex AI) + TRANSCRIPT BUFFERING
+// ========================================================================
+
+interface ConnectCallAnalytics {
+  callId: string; // PK
+  timestamp: number; // SK (epoch seconds)
+  clinicId: string;
+  callCategory: 'ai_voice' | 'ai_outbound';
+  callType: 'inbound' | 'outbound';
+  callStatus: string;
+  outcome?: string;
+  callerNumber?: string;
+  customerPhone?: string;
+  dialedNumber?: string;
+  callDirection?: 'inbound' | 'outbound';
+  aiAgentId?: string;
+  agentId?: string; // alias for dashboards
+  aiAgentName?: string;
+  analyticsSource?: 'connect_lex';
+  contactId?: string;
+  turnCount?: number;
+  transcriptCount?: number;
+  callStartTime?: string;
+  direction?: 'inbound' | 'outbound';
+  lastActivityTime?: string;
+  toolsUsed?: string[];
+  ttl?: number;
+}
+
+async function ensureAnalyticsRecord(params: {
+  callId: string;
+  contactId: string;
+  clinicId: string;
+  callStartMs: number;
+  callerNumber?: string;
+  dialedNumber?: string;
+  aiAgentId?: string;
+  aiAgentName?: string;
+}): Promise<{ callId: string; timestamp: number }> {
+  const {
+    callId,
+    contactId,
+    clinicId,
+    callStartMs,
+    callerNumber,
+    dialedNumber,
+    aiAgentId,
+    aiAgentName,
+  } = params;
+
+  const timestampMs = Number.isFinite(callStartMs) ? Math.floor(callStartMs) : Date.now();
+  const timestamp = Math.floor(timestampMs / 1000);
+
+  if (!CALL_ANALYTICS_TABLE) {
+    console.warn('[AsyncBedrock] CALL_ANALYTICS_TABLE not configured');
+    return { callId, timestamp };
+  }
+
+  const effectiveClinicId = clinicId || DEFAULT_CLINIC_ID;
+  const ttl = timestamp + (ANALYTICS_TTL_DAYS * 24 * 60 * 60);
+  const callStartTimeIso = new Date(timestampMs).toISOString();
+
+  const analytics: ConnectCallAnalytics = {
+    callId,
+    timestamp,
+    clinicId: effectiveClinicId,
+    callCategory: 'ai_voice',
+    callType: 'inbound',
+    callStatus: 'active',
+    outcome: 'answered',
+    callerNumber: callerNumber || '',
+    customerPhone: callerNumber || '',
+    dialedNumber: dialedNumber || '',
+    callDirection: 'inbound',
+    aiAgentId: aiAgentId || '',
+    agentId: aiAgentId || '',
+    aiAgentName: aiAgentName || '',
+    analyticsSource: 'connect_lex',
+    contactId,
+    turnCount: 0,
+    transcriptCount: 0,
+    callStartTime: callStartTimeIso,
+    direction: 'inbound',
+    lastActivityTime: callStartTimeIso,
+    toolsUsed: [],
+    ttl,
+  };
+
+  try {
+    await docClient.send(new PutCommand({
+      TableName: CALL_ANALYTICS_TABLE,
+      Item: analytics,
+      ConditionExpression: 'attribute_not_exists(callId)',
+    }));
+    console.log('[AsyncBedrock] Created analytics record:', { callId, clinicId: effectiveClinicId });
+  } catch (error: any) {
+    if (error.name !== 'ConditionalCheckFailedException') {
+      console.error('[AsyncBedrock] Error creating analytics record:', error);
+    }
+  }
+
+  // Best-effort: ensure transcript buffer exists so the UI can hydrate progressively.
+  if (transcriptManager) {
+    transcriptManager.initialize(callId).catch((err: any) => {
+      console.warn('[AsyncBedrock] TranscriptBuffer initialize failed (non-fatal):', err?.message || String(err));
+    });
+  }
+
+  return { callId, timestamp };
+}
+
+async function updateAnalyticsTurn(params: {
+  callId: string;
+  timestamp: number;
+  callerUtterance: string;
+  aiResponse: string;
+  toolsUsed?: string[];
+  aiAgentId?: string;
+  aiAgentName?: string;
+}): Promise<void> {
+  if (!CALL_ANALYTICS_TABLE) return;
+
+  const { callId, timestamp, callerUtterance, aiResponse, toolsUsed, aiAgentId, aiAgentName } = params;
+  const now = new Date().toISOString();
+
+  try {
+    const setItems = [
+      'lastActivityTime = :now',
+      'lastCallerUtterance = :caller',
+      'lastAiResponse = :ai',
+    ];
+    const exprValues: Record<string, any> = {
+      ':now': now,
+      ':caller': String(callerUtterance || '').substring(0, 500),
+      ':ai': String(aiResponse || '').substring(0, 1000),
+      ':one': 1,
+      ':two': 2,
+    };
+
+    const resolvedAgentId = typeof aiAgentId === 'string' ? aiAgentId.trim() : '';
+    const resolvedAgentName = typeof aiAgentName === 'string' ? aiAgentName.trim() : '';
+    if (resolvedAgentId) {
+      setItems.push('aiAgentId = :agentId', 'agentId = :agentId');
+      exprValues[':agentId'] = resolvedAgentId;
+    }
+    if (resolvedAgentName) {
+      setItems.push('aiAgentName = :agentName');
+      exprValues[':agentName'] = resolvedAgentName;
+    }
+
+    if (toolsUsed && toolsUsed.length > 0) {
+      setItems.push('toolsUsed = list_append(if_not_exists(toolsUsed, :emptyList), :tools)');
+      exprValues[':emptyList'] = [];
+      exprValues[':tools'] = toolsUsed.slice(0, 10);
+    }
+
+    const updateExpr = `SET ${setItems.join(', ')} ADD turnCount :one, transcriptCount :two`;
+
+    await docClient.send(new UpdateCommand({
+      TableName: CALL_ANALYTICS_TABLE,
+      Key: { callId, timestamp },
+      UpdateExpression: updateExpr,
+      ExpressionAttributeValues: exprValues,
+      ConditionExpression: 'attribute_exists(callId)',
+    }));
+  } catch (error: any) {
+    if (error.name !== 'ConditionalCheckFailedException') {
+      console.error('[AsyncBedrock] Error updating analytics turn:', error);
+    }
+  }
+}
+
+async function addTranscriptTurn(params: {
+  callId: string;
+  callerUtterance: string;
+  aiResponse: string;
+  callStartMs: number;
+  confidence?: number;
+}): Promise<void> {
+  if (!transcriptManager) {
+    console.warn('[AsyncBedrock] TranscriptBufferManager not configured');
+    return;
+  }
+
+  const { callId, callerUtterance, aiResponse, callStartMs, confidence } = params;
+  const nowMs = Date.now();
+
+  const callerStartTime = (nowMs - callStartMs) / 1000;
+  const callerEndTime = callerStartTime + 0.5;
+  const aiStartTime = callerEndTime + 0.1;
+  const aiEndTime = aiStartTime + (String(aiResponse || '').length / 15);
+
+  try {
+    await transcriptManager.initialize(callId);
+
+    const customerSegment: TranscriptSegment = {
+      content: String(callerUtterance || ''),
+      startTime: callerStartTime,
+      endTime: callerEndTime,
+      speaker: 'CUSTOMER',
+      confidence: Number.isFinite(confidence) ? Number(confidence) : 0.9,
+    };
+    await transcriptManager.addSegment(callId, customerSegment);
+
+    const agentSegment: TranscriptSegment = {
+      content: String(aiResponse || ''),
+      startTime: aiStartTime,
+      endTime: aiEndTime,
+      speaker: 'AGENT',
+      confidence: 1.0,
+    };
+    await transcriptManager.addSegment(callId, agentSegment);
+  } catch (error) {
+    console.error('[AsyncBedrock] Error adding transcript segments:', error);
+  }
 }
 
 // ========================================================================
@@ -366,6 +649,7 @@ async function startAsync(event: any): Promise<{ requestId: string; status: stri
 
   const contactId = contactData?.ContactId || '';
   const inputTranscript = params.inputTranscript || '';
+  const confidenceRaw = params.confidence || '';
   const callerNumber = contactData?.CustomerEndpoint?.Address || '';
   const dialedNumber = contactData?.SystemEndpoint?.Address || '';
   const contactAttributes = contactData?.Attributes || {};
@@ -434,6 +718,7 @@ async function startAsync(event: any): Promise<{ requestId: string; status: stri
           requestId,
           contactId,
           inputText: inputTranscript.trim(),
+          confidence: String(confidenceRaw || '').trim(),
           clinicId,
           callerNumber,
           dialedNumber,
@@ -485,6 +770,7 @@ async function processBedrockInvocation(params: {
   requestId: string;
   contactId: string;
   inputText: string;
+  confidence?: string;
   clinicId: string;
   callerNumber?: string;
   dialedNumber?: string;
@@ -503,16 +789,45 @@ async function processBedrockInvocation(params: {
   initialGreetingAlreadyPlayed?: string;
 }): Promise<void> {
   const { requestId, contactId, inputText, clinicId } = params;
+  const callerNumber = String(params.callerNumber || '').trim();
+  const dialedNumber = String(params.dialedNumber || '').trim();
+  const confidence = (() => {
+    const raw = String(params.confidence || '').trim();
+    if (!raw) return undefined;
+    const n = Number(raw);
+    return Number.isFinite(n) ? n : undefined;
+  })();
   const prosody: ProsodySettings = {
     speakingRate: normalizeProsody(params.ttsSpeakingRate, ALLOWED_SPEAKING_RATES, DEFAULT_PROSODY.speakingRate),
     pitch: normalizeProsody(params.ttsPitch, ALLOWED_PITCH, DEFAULT_PROSODY.pitch),
     volume: normalizeProsody(params.ttsVolume, ALLOWED_VOLUME, DEFAULT_PROSODY.volume),
   };
 
+  let session: SessionInfo | null = null;
+  let analyticsInfo: { callId: string; timestamp: number } | null = null;
+  let aiAgentIdForAnalytics = 'unknown';
+  let aiAgentNameForAnalytics = '';
+
   try {
+    // Ensure we have a stable call start time for analytics + transcript offsets
+    session = await getOrCreateSession(contactId, clinicId);
+    const effectiveClinicId = session.clinicId || clinicId || DEFAULT_CLINIC_ID;
+    const analyticsCallId = session.callId || `connect-${contactId}`;
+    const callStartMs = Number.isFinite(session.callStartMs) ? session.callStartMs : Date.now();
+
     // Handle empty input
     if (!inputText) {
       const response = "I'm sorry, I didn't catch that. Could you please repeat what you said?";
+      analyticsInfo = await ensureAnalyticsRecord({
+        callId: analyticsCallId,
+        contactId,
+        clinicId: effectiveClinicId,
+        callStartMs,
+        callerNumber,
+        dialedNumber,
+        aiAgentId: aiAgentIdForAnalytics,
+        aiAgentName: aiAgentNameForAnalytics,
+      });
       await updateResult(requestId, {
         status: 'completed',
         response,
@@ -521,18 +836,49 @@ async function processBedrockInvocation(params: {
       return;
     }
 
-    // Get session and agent
-    const session = await getOrCreateSession(contactId, clinicId);
-    const agent = await getAgentForClinic(session.clinicId);
+    const agent = await getAgentForClinic(effectiveClinicId);
+    aiAgentIdForAnalytics = agent?.internalAgentId || agent?.agentId || 'unknown';
+    aiAgentNameForAnalytics = agent?.agentName || '';
+
+    analyticsInfo = await ensureAnalyticsRecord({
+      callId: analyticsCallId,
+      contactId,
+      clinicId: effectiveClinicId,
+      callStartMs,
+      callerNumber,
+      dialedNumber,
+      aiAgentId: aiAgentIdForAnalytics,
+      aiAgentName: aiAgentNameForAnalytics,
+    });
 
     if (!agent) {
       const response = "I'm sorry, the AI assistant is not available right now. Please call back during office hours.";
       await updateResult(requestId, {
         status: 'error',
-        errorMessage: `No Bedrock agent configured for clinic: ${clinicId}`,
+        errorMessage: `No Bedrock agent configured for clinic: ${effectiveClinicId}`,
         response,
         ssmlResponse: buildProsodySsml(response, prosody),
       });
+
+      if (analyticsInfo) {
+        await Promise.allSettled([
+          updateAnalyticsTurn({
+            callId: analyticsInfo.callId,
+            timestamp: analyticsInfo.timestamp,
+            callerUtterance: inputText,
+            aiResponse: response,
+            aiAgentId: aiAgentIdForAnalytics,
+            aiAgentName: aiAgentNameForAnalytics,
+          }),
+          addTranscriptTurn({
+            callId: analyticsInfo.callId,
+            callerUtterance: inputText,
+            aiResponse: response,
+            callStartMs,
+            confidence,
+          }),
+        ]);
+      }
       return;
     }
 
@@ -548,8 +894,6 @@ async function processBedrockInvocation(params: {
     const [year, month, day] = d.today.split('-');
     const todayFormatted = `${month}/${day}/${year}`;
 
-    const callerNumber = String(params.callerNumber || '').trim();
-    const dialedNumber = String(params.dialedNumber || '').trim();
     const patNum = String(params.PatNum || '').trim();
     const fName = String(params.FName || params.patientFirstName || '').trim();
     const lName = String(params.LName || '').trim();
@@ -657,13 +1001,35 @@ async function processBedrockInvocation(params: {
 
     const rawResponse = (fullResponse.trim() || "I'm sorry, I couldn't process that. How else can I help you?");
     const safeResponse = sanitizeVoiceTtsText(rawResponse);
+    const uniqueToolsUsed = [...new Set(toolsUsed)];
 
     await updateResult(requestId, {
       status: 'completed',
       response: safeResponse,
       ssmlResponse: buildProsodySsml(safeResponse, prosody),
-      toolsUsed: [...new Set(toolsUsed)],
+      toolsUsed: uniqueToolsUsed,
     });
+
+    if (analyticsInfo) {
+      await Promise.allSettled([
+        updateAnalyticsTurn({
+          callId: analyticsInfo.callId,
+          timestamp: analyticsInfo.timestamp,
+          callerUtterance: inputText,
+          aiResponse: safeResponse,
+          toolsUsed: uniqueToolsUsed,
+          aiAgentId: aiAgentIdForAnalytics,
+          aiAgentName: aiAgentNameForAnalytics,
+        }),
+        addTranscriptTurn({
+          callId: analyticsInfo.callId,
+          callerUtterance: inputText,
+          aiResponse: safeResponse,
+          callStartMs,
+          confidence,
+        }),
+      ]);
+    }
 
   } catch (error: any) {
     console.error('[AsyncBedrock] Bedrock invocation error:', error);
@@ -675,6 +1041,43 @@ async function processBedrockInvocation(params: {
       response,
       ssmlResponse: buildProsodySsml(response, prosody),
     });
+
+    try {
+      const fallbackCallId = session?.callId || `connect-${contactId}`;
+      const fallbackCallStartMs =
+        (session && Number.isFinite(session.callStartMs)) ? session.callStartMs : Date.now();
+      const fallbackClinicId = session?.clinicId || clinicId || DEFAULT_CLINIC_ID;
+      const info = analyticsInfo || await ensureAnalyticsRecord({
+        callId: fallbackCallId,
+        contactId,
+        clinicId: fallbackClinicId,
+        callStartMs: fallbackCallStartMs,
+        callerNumber,
+        dialedNumber,
+        aiAgentId: aiAgentIdForAnalytics,
+        aiAgentName: aiAgentNameForAnalytics,
+      });
+
+      await Promise.allSettled([
+        updateAnalyticsTurn({
+          callId: info.callId,
+          timestamp: info.timestamp,
+          callerUtterance: inputText,
+          aiResponse: response,
+          aiAgentId: aiAgentIdForAnalytics,
+          aiAgentName: aiAgentNameForAnalytics,
+        }),
+        addTranscriptTurn({
+          callId: info.callId,
+          callerUtterance: inputText,
+          aiResponse: response,
+          callStartMs: fallbackCallStartMs,
+          confidence,
+        }),
+      ]);
+    } catch (analyticsError: any) {
+      console.warn('[AsyncBedrock] Failed to write analytics for error path (non-fatal):', analyticsError?.message || String(analyticsError));
+    }
   }
 }
 
@@ -1171,6 +1574,7 @@ export const handler = async (event: any): Promise<any> => {
       const requestId = params.requestId || '';
       const contactId = params.contactId || '';
       const inputText = (params.inputText || '').toString();
+      const confidence = (params.confidence || '').toString();
       const clinicId = params.clinicId || DEFAULT_CLINIC_ID;
       const callerNumber = (params.callerNumber || '').toString();
       const dialedNumber = (params.dialedNumber || '').toString();
@@ -1197,6 +1601,7 @@ export const handler = async (event: any): Promise<any> => {
         requestId,
         contactId,
         inputText: inputText.trim(),
+        confidence: confidence.trim(),
         clinicId,
         callerNumber,
         dialedNumber,

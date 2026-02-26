@@ -1172,9 +1172,11 @@ async function handleTool(
   toolName: string,
   params: Record<string, any>,
   odClient: OpenDentalClient,
-  sessionAttributes: Record<string, string>
+  sessionAttributes: Record<string, string>,
+  rawInputText?: string
 ): Promise<{ statusCode: number; body: any; updatedSessionAttributes?: Record<string, string> }> {
   const updatedSessionAttributes = { ...sessionAttributes };
+  const inputText = typeof rawInputText === 'string' ? rawInputText.trim() : '';
 
   try {
     switch (toolName) {
@@ -1301,6 +1303,9 @@ async function handleTool(
 
       case 'searchPatientsByPhone': {
         const isPublicRequest = sessionAttributes?.isPublicRequest === 'true';
+        const channel = String(sessionAttributes.channel || '').trim().toLowerCase();
+        const inputMode = String(sessionAttributes.inputMode || '').trim().toLowerCase();
+        const isVoiceCall = channel === 'voice' || inputMode === 'speech';
 
         const phoneFromParams =
           (typeof params.WirelessPhone === 'string' && params.WirelessPhone.trim()) ||
@@ -1324,6 +1329,7 @@ async function handleTool(
               status: 'FAILURE',
               message: 'WirelessPhone (or callerNumber/callerPhone in session) is required to search by phone',
               missingFields: ['WirelessPhone'],
+              ...(isVoiceCall ? { directAnswer: "I'm not seeing a caller ID. What's the best phone number to reach you?" } : {}),
             },
             updatedSessionAttributes,
           };
@@ -1394,19 +1400,24 @@ async function handleTool(
         }
 
         if (patients.length === 0) {
+          updatedSessionAttributes.IsNewPatient = 'true';
+          updatedSessionAttributes.callerPhoneLookupStatus = 'NOT_FOUND';
           return {
             statusCode: 404,
             body: {
-              status: 'FAILURE',
+              status: 'NOT_FOUND',
               data: { items: [] },
-              message: 'No matching patient found for phone number',
+              message: 'No existing patient found for this phone number. This is a new patient — do NOT call searchPatients or searchPatientsByPhone again. Proceed immediately to collect their first name, last name, and date of birth, then call createPatient to register them.',
+              nextAction: 'createPatient',
               usedFormat,
+              ...(isVoiceCall ? { directAnswer: 'Sure. May I know your first name?' } : {}),
             },
             updatedSessionAttributes,
           };
         }
 
         if (patients.length > 1) {
+          updatedSessionAttributes.callerPhoneLookupStatus = 'MULTIPLE';
           // Avoid wrong-patient selection; force confirmation with name + DOB.
           return {
             statusCode: 404,
@@ -1415,12 +1426,14 @@ async function handleTool(
               data: { items: isPublicRequest ? [] : patients.slice(0, 5).map(toSafePatient) },
               message: `Multiple matches found (${patients.length}). Ask the caller for their first name, last name, and date of birth to confirm.`,
               usedFormat,
+              ...(isVoiceCall ? { directAnswer: 'To make sure I have the right patient, may I have your first name?' } : {}),
             },
             updatedSessionAttributes,
           };
         }
 
         const patient = patients[0];
+        updatedSessionAttributes.callerPhoneLookupStatus = 'FOUND';
         updatedSessionAttributes.PatNum = patient.PatNum.toString();
         updatedSessionAttributes.FName = patient.FName;
         updatedSessionAttributes.LName = patient.LName;
@@ -1444,6 +1457,9 @@ async function handleTool(
 
       case 'searchPatients': {
         const isPublicRequest = sessionAttributes?.isPublicRequest === 'true';
+        const channel = String(sessionAttributes.channel || '').trim().toLowerCase();
+        const inputMode = String(sessionAttributes.inputMode || '').trim().toLowerCase();
+        const isVoiceCall = channel === 'voice' || inputMode === 'speech';
 
         const cleanName = (value: any): string => {
           if (!value || typeof value !== 'string') return '';
@@ -1505,20 +1521,59 @@ async function handleTool(
           console.log(`[searchPatients] Normalized birthdate: ${params.Birthdate || sessionAttributes?.Birthdate} → ${normalizedBirthdate}`);
         }
 
-        const providedFName = cleanName(params.FName);
-        const providedLName = cleanName(params.LName);
+        const providedFName = cleanName(params.FName || sessionAttributes?.FName);
+        const providedLName = cleanName(params.LName || sessionAttributes?.LName);
+
+        // Persist collected identity fields (best-effort) to reduce re-asking in voice flows.
+        if (providedFName) updatedSessionAttributes.FName = providedFName;
+        if (providedLName) updatedSessionAttributes.LName = providedLName;
 
         // SAFETY: Require DOB for name-based patient lookup to avoid wrong-patient matches.
         // Caller-ID matching is handled by searchPatientsByPhone.
         const isIsoBirthdate = typeof normalizedBirthdate === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(normalizedBirthdate);
-        if (!isIsoBirthdate) {
+        if (isIsoBirthdate && normalizedBirthdate) {
+          updatedSessionAttributes.Birthdate = normalizedBirthdate;
+        }
+
+        // Guardrail: If the model called searchPatients with no name/DOB (common on voice),
+        // redirect to caller-ID phone lookup first (searchPatientsByPhone) instead of failing.
+        const callerPhoneFromSession =
+          (typeof sessionAttributes?.callerPhone === 'string' && sessionAttributes.callerPhone.trim()) ||
+          (typeof sessionAttributes?.callerNumber === 'string' && sessionAttributes.callerNumber.trim()) ||
+          (typeof sessionAttributes?.PatientPhone === 'string' && sessionAttributes.PatientPhone.trim()) ||
+          '';
+        const isEmptyIdentityQuery = !providedFName && !providedLName && !normalizedBirthdate;
+        if (isVoiceCall && isEmptyIdentityQuery && callerPhoneFromSession) {
+          return await handleTool('searchPatientsByPhone', {}, odClient, sessionAttributes, inputText);
+        }
+
+        const missing: string[] = [];
+        if (!providedFName) missing.push('FName');
+        if (!providedLName) missing.push('LName');
+        if (!isIsoBirthdate) missing.push('Birthdate');
+
+        if (missing.length > 0) {
+          const directAnswer = (() => {
+            if (!isVoiceCall) return undefined;
+            if (missing.includes('FName')) return 'Sure. May I know your first name?';
+            if (missing.includes('LName')) return 'Got it. What is your last name?';
+            if (missing.includes('Birthdate')) {
+              return providedFName
+                ? `Thank you ${providedFName}. And your date of birth?`
+                : 'And your date of birth?';
+            }
+            return undefined;
+          })();
+
           return {
             statusCode: 400,
             body: {
               status: 'FAILURE',
               message:
-                'Birthdate is required to look up a patient by name. Ask for the caller’s date of birth, then call searchPatients again.',
-              missingFields: ['Birthdate'],
+                `Missing required patient details (${missing.join(', ')}). ` +
+                `Ask for the missing information, then call searchPatients again.`,
+              missingFields: missing,
+              ...(directAnswer ? { directAnswer } : {}),
             },
             updatedSessionAttributes,
           };
@@ -1613,9 +1668,10 @@ async function handleTool(
           return {
             statusCode: 404,
             body: {
-              status: 'FAILURE',
+              status: 'NOT_FOUND',
               data: { items: [] },
-              message: 'No matching patient found',
+              message: 'No existing patient found matching the provided name and date of birth. This caller is a new patient — do NOT call searchPatients or searchPatientsByPhone again. Proceed immediately to call createPatient with the FName, LName, Birthdate, and WirelessPhone (from caller ID in session) already collected.',
+              nextAction: 'createPatient',
             },
             updatedSessionAttributes,
           };
@@ -1687,6 +1743,47 @@ async function handleTool(
       }
 
       case 'createPatient': {
+        const channel = String(sessionAttributes.channel || '').trim().toLowerCase();
+        const inputMode = String(sessionAttributes.inputMode || '').trim().toLowerCase();
+        const isVoiceCall = channel === 'voice' || inputMode === 'speech';
+
+        const normalizeYesNo = (value: string): { yes: boolean; no: boolean } => {
+          const v = String(value || '').trim().toLowerCase();
+          if (!v) return { yes: false, no: false };
+          const yes = /\b(yes|yep|yeah|ya|correct|right|that's right|that is right|sure|affirmative|exactly)\b/.test(v);
+          const no = /\b(no|nope|nah|incorrect|not right|that's wrong|that is wrong)\b/.test(v);
+          return { yes: yes && !no, no: no && !yes };
+        };
+
+        const extractSpelledLetters = (utterance: string): string | null => {
+          const normalized = String(utterance || '')
+            .replace(/[^a-zA-Z]/g, ' ')
+            .replace(/\s+/g, ' ')
+            .trim();
+          if (!normalized) return null;
+          const tokens = normalized.split(' ');
+
+          let best: string[] = [];
+          let current: string[] = [];
+          for (const t of tokens) {
+            if (t.length === 1 && /[a-zA-Z]/.test(t)) {
+              current.push(t.toUpperCase());
+            } else {
+              if (current.length > best.length) best = current;
+              current = [];
+            }
+          }
+          if (current.length > best.length) best = current;
+          if (best.length < 2) return null;
+          return best.join(' ');
+        };
+
+        const spellingToName = (spelling: string): string => {
+          const joined = String(spelling || '').replace(/\s+/g, '').trim();
+          if (!joined) return '';
+          return joined.charAt(0).toUpperCase() + joined.slice(1).toLowerCase();
+        };
+
         const cleanName = (value: any): string => {
           if (!value || typeof value !== 'string') return '';
           return value
@@ -1697,8 +1794,8 @@ async function handleTool(
             .trim();
         };
 
-        const rawFName = cleanName(params.FName);
-        const rawLName = cleanName(params.LName);
+        const rawFName = cleanName(params.FName || sessionAttributes?.FName);
+        const rawLName = cleanName(params.LName || sessionAttributes?.LName);
 
         let phoneNumber =
           params.WirelessPhone ||
@@ -1720,7 +1817,8 @@ async function handleTool(
         }
 
         // Normalize birthdate to YYYY-MM-DD format
-        const normalizedBirthdateRaw = params.Birthdate ? normalizeDateFormat(params.Birthdate) : '';
+        const birthdateRaw = params.Birthdate || sessionAttributes?.Birthdate || '';
+        const normalizedBirthdateRaw = birthdateRaw ? normalizeDateFormat(String(birthdateRaw)) : '';
         const normalizedBirthdate = typeof normalizedBirthdateRaw === 'string' ? normalizedBirthdateRaw.trim() : '';
         const isIsoBirthdate = /^\d{4}-\d{2}-\d{2}$/.test(normalizedBirthdate);
 
@@ -1730,6 +1828,13 @@ async function handleTool(
         if (!isIsoBirthdate) missing.push('Birthdate');
 
         if (missing.length > 0) {
+          const directAnswer = (() => {
+            if (!isVoiceCall) return undefined;
+            if (missing.includes('FName')) return 'Sure. May I know your first name?';
+            if (missing.includes('LName')) return 'Got it. What is your last name?';
+            if (missing.includes('Birthdate')) return `Thank you ${rawFName || ''}. And your date of birth?`.trim();
+            return undefined;
+          })();
           return {
             statusCode: 400,
             body: {
@@ -1738,16 +1843,185 @@ async function handleTool(
                 `Missing required patient details (${missing.join(', ')}). ` +
                 `Ask the caller for their first name, last name, and date of birth, then call createPatient again.`,
               missingFields: missing,
+              ...(directAnswer ? { directAnswer } : {}),
             },
             updatedSessionAttributes,
           };
         }
 
+        // =========================================================
+        // VOICE GUARDRAIL: mandatory spelling confirmation for NEW patients
+        // =========================================================
+        if (isVoiceCall) {
+          // Persist the latest name/DOB inputs in session (best-effort)
+          if (rawFName) updatedSessionAttributes.FName = rawFName;
+          if (rawLName) updatedSessionAttributes.LName = rawLName;
+          if (isIsoBirthdate) updatedSessionAttributes.Birthdate = normalizedBirthdate;
+
+          const pendingCollectField = String(sessionAttributes.pendingNameSpellingCollectField || '').trim(); // "FName" | "LName"
+          const pendingConfirmField = String(sessionAttributes.pendingNameSpellingConfirmField || '').trim(); // "FName" | "LName"
+          const pendingConfirmValue = String(sessionAttributes.pendingNameSpellingValue || '').trim();        // "S U N I L"
+
+          // 1) If we're waiting for a YES/NO confirmation, interpret the caller's last utterance.
+          if (pendingConfirmField === 'FName' || pendingConfirmField === 'LName') {
+            const { yes, no } = normalizeYesNo(inputText);
+            const label = pendingConfirmField === 'FName' ? 'first name' : 'last name';
+            const spelling = pendingConfirmValue;
+
+            if (yes) {
+              updatedSessionAttributes.pendingNameSpellingConfirmField = '';
+              updatedSessionAttributes.pendingNameSpellingValue = '';
+              if (pendingConfirmField === 'FName') updatedSessionAttributes.FNameSpellingConfirmed = 'true';
+              if (pendingConfirmField === 'LName') updatedSessionAttributes.LNameSpellingConfirmed = 'true';
+            } else if (no) {
+              updatedSessionAttributes.pendingNameSpellingConfirmField = '';
+              updatedSessionAttributes.pendingNameSpellingValue = '';
+              updatedSessionAttributes.pendingNameSpellingCollectField = pendingConfirmField;
+              return {
+                statusCode: 400,
+                body: {
+                  status: 'FAILURE',
+                  message: `Spelling confirmation failed for ${label}.`,
+                  directAnswer: `Okay. Could you spell your ${label} again?`,
+                },
+                updatedSessionAttributes,
+              };
+            } else {
+              // Ask again clearly
+              return {
+                statusCode: 400,
+                body: {
+                  status: 'FAILURE',
+                  message: `Waiting for spelling confirmation (${label}).`,
+                  directAnswer: spelling
+                    ? `Please say yes or no. Is it spelled ${spelling}?`
+                    : `Please say yes or no. Is that spelling correct?`,
+                },
+                updatedSessionAttributes,
+              };
+            }
+          }
+
+          // 2) If we're waiting for the caller to SPELL a field, extract spelled letters.
+          if (pendingCollectField === 'FName' || pendingCollectField === 'LName') {
+            const label = pendingCollectField === 'FName' ? 'first name' : 'last name';
+            const spelling = extractSpelledLetters(inputText);
+            if (!spelling) {
+              return {
+                statusCode: 400,
+                body: {
+                  status: 'FAILURE',
+                  message: `Missing spelling for ${label}.`,
+                  directAnswer: `Could you spell your ${label} for me?`,
+                },
+                updatedSessionAttributes,
+              };
+            }
+
+            // Store spelling and prompt for confirmation
+            updatedSessionAttributes.pendingNameSpellingCollectField = '';
+            updatedSessionAttributes.pendingNameSpellingConfirmField = pendingCollectField;
+            updatedSessionAttributes.pendingNameSpellingValue = spelling;
+            if (pendingCollectField === 'FName') {
+              updatedSessionAttributes.FNameSpelling = spelling;
+              const derived = spellingToName(spelling);
+              if (derived) updatedSessionAttributes.FName = derived;
+            }
+            if (pendingCollectField === 'LName') {
+              updatedSessionAttributes.LNameSpelling = spelling;
+              const derived = spellingToName(spelling);
+              if (derived) updatedSessionAttributes.LName = derived;
+            }
+
+            return {
+              statusCode: 400,
+              body: {
+                status: 'FAILURE',
+                message: `Confirm spelling for ${label}.`,
+                directAnswer: `Let me get this right. Is it spelled ${spelling}?`,
+              },
+              updatedSessionAttributes,
+            };
+          }
+
+          // 3) Enforce mandatory spelling confirmation before creating a new patient.
+          const fConfirmed = String(updatedSessionAttributes.FNameSpellingConfirmed || sessionAttributes.FNameSpellingConfirmed || '') === 'true';
+          const lConfirmed = String(updatedSessionAttributes.LNameSpellingConfirmed || sessionAttributes.LNameSpellingConfirmed || '') === 'true';
+
+          if (!fConfirmed) {
+            const spelling =
+              String(updatedSessionAttributes.FNameSpelling || sessionAttributes.FNameSpelling || '').trim() ||
+              extractSpelledLetters(inputText) ||
+              '';
+            if (spelling) {
+              updatedSessionAttributes.pendingNameSpellingConfirmField = 'FName';
+              updatedSessionAttributes.pendingNameSpellingValue = spelling;
+              updatedSessionAttributes.FNameSpelling = spelling;
+              const derived = spellingToName(spelling);
+              if (derived) updatedSessionAttributes.FName = derived;
+              return {
+                statusCode: 400,
+                body: {
+                  status: 'FAILURE',
+                  message: 'First name spelling must be confirmed before creating a new patient.',
+                  directAnswer: `Let me get this right. Is it spelled ${spelling}?`,
+                },
+                updatedSessionAttributes,
+              };
+            }
+            updatedSessionAttributes.pendingNameSpellingCollectField = 'FName';
+            return {
+              statusCode: 400,
+              body: {
+                status: 'FAILURE',
+                message: 'First name spelling is required for new patients.',
+                directAnswer: 'Could you spell your first name for me?',
+              },
+              updatedSessionAttributes,
+            };
+          }
+
+          if (!lConfirmed) {
+            const spelling =
+              String(updatedSessionAttributes.LNameSpelling || sessionAttributes.LNameSpelling || '').trim() ||
+              extractSpelledLetters(inputText) ||
+              '';
+            if (spelling) {
+              updatedSessionAttributes.pendingNameSpellingConfirmField = 'LName';
+              updatedSessionAttributes.pendingNameSpellingValue = spelling;
+              updatedSessionAttributes.LNameSpelling = spelling;
+              const derived = spellingToName(spelling);
+              if (derived) updatedSessionAttributes.LName = derived;
+              return {
+                statusCode: 400,
+                body: {
+                  status: 'FAILURE',
+                  message: 'Last name spelling must be confirmed before creating a new patient.',
+                  directAnswer: `Let me get this right. Is it spelled ${spelling}?`,
+                },
+                updatedSessionAttributes,
+              };
+            }
+            updatedSessionAttributes.pendingNameSpellingCollectField = 'LName';
+            return {
+              statusCode: 400,
+              body: {
+                status: 'FAILURE',
+                message: 'Last name spelling is required for new patients.',
+                directAnswer: 'Could you spell your last name for me?',
+              },
+              updatedSessionAttributes,
+            };
+          }
+        }
+
         // NOTE: OpenDental returns 400 if TxtMsgOk='Yes' but WirelessPhone is empty.
         // Only set TxtMsgOk when we have a valid wireless phone number.
+        const finalFName = cleanName(updatedSessionAttributes.FName || rawFName);
+        const finalLName = cleanName(updatedSessionAttributes.LName || rawLName);
         const createData: any = {
-          LName: rawLName,
-          FName: rawFName,
+          LName: finalLName,
+          FName: finalFName,
           Birthdate: normalizedBirthdate,
         };
         if (phoneNumber) {
@@ -1759,15 +2033,31 @@ async function handleTool(
         updatedSessionAttributes.PatNum = newPatient.PatNum.toString();
         updatedSessionAttributes.FName = newPatient.FName;
         updatedSessionAttributes.LName = newPatient.LName;
+        updatedSessionAttributes.Birthdate = normalizedBirthdate;
         updatedSessionAttributes.IsNewPatient = 'true';
+        updatedSessionAttributes.pendingNameSpellingCollectField = '';
+        updatedSessionAttributes.pendingNameSpellingConfirmField = '';
+        updatedSessionAttributes.pendingNameSpellingValue = '';
         if (phoneNumber) {
           updatedSessionAttributes.PatientPhone = String(phoneNumber);
           updatedSessionAttributes.callerPhone = updatedSessionAttributes.callerPhone || String(phoneNumber);
         }
 
+        const safePatient = {
+          PatNum: newPatient?.PatNum,
+          FName: newPatient?.FName,
+          LName: newPatient?.LName,
+          Birthdate: newPatient?.Birthdate || normalizedBirthdate,
+        };
+
         return {
           statusCode: 201,
-          body: { status: 'SUCCESS', data: newPatient },
+          body: {
+            status: 'SUCCESS',
+            message: 'Patient created successfully',
+            data: isVoiceCall ? safePatient : newPatient,
+            ...(isVoiceCall ? { directAnswer: 'Perfect. May I know the reason for the appointment?' } : {}),
+          },
           updatedSessionAttributes,
         };
       }
@@ -4257,6 +4547,9 @@ async function handleTool(
         // For reliability, this handler also supports passing appointmentType (label) so we can default
         // Op/ProvNum/AppointmentTypeNum/duration when missing.
         const clinicId = sessionAttributes.clinicId || params.clinicId;
+        const channel = String(sessionAttributes.channel || '').trim().toLowerCase();
+        const inputMode = String(sessionAttributes.inputMode || '').trim().toLowerCase();
+        const isVoiceCall = channel === 'voice' || inputMode === 'speech';
         const appointmentTypeLabelFromParams = String(params.appointmentType || params.label || '').trim();
         const appointmentTypeLabelLower = appointmentTypeLabelFromParams.toLowerCase();
         let isNewPatient =
@@ -4264,7 +4557,8 @@ async function handleTool(
           params.IsNewPatient === true ||
           params.IsNewPatient === 'true' ||
           appointmentTypeLabelLower.includes('new patient');
-        const reason = String(params.Reason || params.reason || '').trim() || 'Appointment';
+        const reasonFromParams = String(params.Reason || params.reason || '').trim();
+        const reason = reasonFromParams || 'Appointment';
         const reasonLower = reason.toLowerCase();
 
         // Best-effort: Look up appointment type details (duration, Op, provider defaults)
@@ -4367,7 +4661,13 @@ async function handleTool(
           console.log(`[scheduleAppointment] No Op resolved, using hardcoded default: ${opNum}`);
         }
 
-        const patNumRaw = params.PatNum;
+        const patNumRaw =
+          params.PatNum ??
+          (params as any).patNum ??
+          sessionAttributes.PatNum ??
+          (sessionAttributes as any).patNum ??
+          (sessionAttributes as any).patnum ??
+          '';
         const patNum = (() => {
           const n = typeof patNumRaw === 'number' ? patNumRaw : parseInt(String(patNumRaw || ''), 10);
           return Number.isFinite(n) && n > 0 ? n : NaN;
@@ -4383,10 +4683,26 @@ async function handleTool(
         const aptDateTime = normalizeDateTimeFormat(String(aptDateTimeRaw || '').trim());
         const isValidAptDateTime = /^\d{4}-\d{2}-\d{2}\s+\d{2}:\d{2}:\d{2}$/.test(aptDateTime);
 
-        if (!Number.isFinite(patNum) || !isValidAptDateTime) {
-          const missingBits: string[] = [];
-          if (!Number.isFinite(patNum)) missingBits.push('PatNum');
-          if (!isValidAptDateTime) missingBits.push('Date (YYYY-MM-DD HH:mm:ss)');
+        const missingBits: string[] = [];
+        if (!Number.isFinite(patNum)) missingBits.push('PatNum');
+        if (isVoiceCall && !reasonFromParams) missingBits.push('Reason');
+        if (!isValidAptDateTime) missingBits.push('Date (YYYY-MM-DD HH:mm:ss)');
+
+        if (missingBits.length > 0) {
+          const directAnswer = (() => {
+            if (!isVoiceCall) return undefined;
+            // Ask ONE question at a time (reason first).
+            if (missingBits.includes('Reason')) {
+              return 'Perfect. May I know the reason for the appointment?';
+            }
+            if (missingBits.includes('Date (YYYY-MM-DD HH:mm:ss)')) {
+              return 'When would you like to schedule?';
+            }
+            if (missingBits.includes('PatNum')) {
+              return 'May I have your first name?';
+            }
+            return undefined;
+          })();
 
           return {
             statusCode: 400,
@@ -4394,8 +4710,17 @@ async function handleTool(
               status: 'FAILURE',
               message:
                 `Missing or invalid scheduling details (${missingBits.join(', ')}). ` +
-                `Search/select the patient first (PatNum), then pick an available slot and pass the exact DateTime.`,
+                (missingBits.includes('PatNum')
+                  ? `Identify the patient first (PatNum). `
+                  : '') +
+                (missingBits.includes('Reason')
+                  ? `Ask for the reason for the appointment. `
+                  : '') +
+                (missingBits.includes('Date (YYYY-MM-DD HH:mm:ss)')
+                  ? `Ask for a specific date and time, then pass Date in YYYY-MM-DD HH:mm:ss format. `
+                  : ''),
               missingFields: missingBits,
+              ...(directAnswer ? { directAnswer } : {}),
             },
             updatedSessionAttributes,
           };
@@ -4510,17 +4835,42 @@ async function handleTool(
             }
           }
 
+          // Common failure: requested time is unavailable / conflicts with existing schedule.
+          // For voice calls, allow a follow-up getAppointmentSlots call to offer 1-3 alternatives
+          // instead of creating a staff callback.
+          const isTimeConflict =
+            errText.includes('not available') ||
+            errText.includes('unavailable') ||
+            errText.includes('overlap') ||
+            errText.includes('conflict') ||
+            errText.includes('already') ||
+            errText.includes('not within') ||
+            errText.includes('outside');
+          if (isVoiceCall && isTimeConflict) {
+            updatedSessionAttributes.allowSlotSuggestions = 'true';
+            return {
+              statusCode: 409,
+              body: {
+                status: 'FAILURE',
+                message: scheduleError?.message || 'Requested time is not available',
+                directAnswer: "That time isn't available. Would you like the next available appointment?",
+                nextAction: 'getAppointmentSlots',
+              },
+              updatedSessionAttributes,
+            };
+          }
+
           // Save callback for failed appointment booking
           const patientName = sessionAttributes.FName && sessionAttributes.LName
             ? `${sessionAttributes.FName} ${sessionAttributes.LName}`
-            : `Patient ${params.PatNum}`;
+            : `Patient ${patNum}`;
           const patientPhone = sessionAttributes.callerPhone || sessionAttributes.PatientPhone;
 
           await saveAppointmentFailureAsCallback({
             clinicId: clinicId || odClient.getClinicId(),
             patientName,
             patientPhone,
-            patNum: parseInt(params.PatNum.toString()),
+            patNum,
             requestedDate: aptDateTime,
             reason,
             errorMessage: scheduleError?.message || 'Unknown scheduling error',
@@ -5054,6 +5404,33 @@ async function handleTool(
       case 'getAppointmentSlots': {
         // Use the same direct OpenDental appointments/Slots API as the chat implementation
         // for consistency across voice and chat channels
+        const channel = String(sessionAttributes.channel || '').trim().toLowerCase();
+        const inputMode = String(sessionAttributes.inputMode || '').trim().toLowerCase();
+        const isVoiceCall = channel === 'voice' || inputMode === 'speech';
+        const allowSlotSuggestions = String(sessionAttributes.allowSlotSuggestions || '').trim().toLowerCase() === 'true';
+        const wantsNextAvailable = (() => {
+          const u = String(inputText || '').trim().toLowerCase();
+          if (!u) return false;
+          return /\b(next available|soonest|earliest|asap|first available|any openings?|any availability|what do you have|whatever you have|no preference|anything works|anytime|any time)\b/.test(u);
+        })();
+
+        // Guardrail (voice): Do NOT suggest slots unless caller explicitly asks "earliest/next available"
+        // or we are recovering from a schedule conflict.
+        if (isVoiceCall && !allowSlotSuggestions && !wantsNextAvailable) {
+          delete (updatedSessionAttributes as any).lastAppointmentSlotOptions;
+          delete (updatedSessionAttributes as any).lastAppointmentSlotCount;
+          return {
+            statusCode: 400,
+            body: {
+              status: 'FAILURE',
+              message:
+                'Appointment slot lookup is only for "next available/earliest" requests or after a scheduling conflict. Ask the caller when they would like to schedule.',
+              directAnswer: 'When would you like to schedule?',
+            },
+            updatedSessionAttributes,
+          };
+        }
+
         const slotParams: any = {};
 
         // Support date or dateStart/dateEnd
@@ -5076,19 +5453,121 @@ async function handleTool(
           slotParams.OpNum = params.OpNum;
         }
 
+        // If the agent didn't provide a date range, default to the next 14 days (prevents huge payloads).
+        if (!slotParams.date && !slotParams.dateStart && !slotParams.dateEnd) {
+          const todayIso = String(sessionAttributes.todayDate || '').trim();
+          if (/^\d{4}-\d{2}-\d{2}$/.test(todayIso)) {
+            slotParams.dateStart = todayIso;
+            const end = new Date(`${todayIso}T12:00:00Z`);
+            end.setUTCDate(end.getUTCDate() + 14);
+            slotParams.dateEnd = end.toISOString().slice(0, 10);
+          }
+        }
+
+        // Default duration (30 min) if not provided.
+        if (slotParams.lengthMinutes == null || slotParams.lengthMinutes === '') {
+          slotParams.lengthMinutes = 30;
+        }
+
         try {
           const slots = await odClient.request('GET', 'appointments/Slots', { params: slotParams });
           const availableSlots = Array.isArray(slots) ? slots : (slots?.items ?? []);
+
+          // Reduce payload size for voice callers so the model doesn't read raw JSON.
+          const totalCount = availableSlots.length;
+          const maxReturn = isVoiceCall ? 20 : 80;
+          const trimmed = availableSlots.slice(0, maxReturn);
+
+          const minimalSlots = trimmed.map((s: any) => ({
+            DateTimeStart: s?.DateTimeStart,
+            DateTimeEnd: s?.DateTimeEnd,
+            ProvNum: s?.ProvNum,
+            OpNum: s?.OpNum,
+          }));
+
+          const optionStarts: string[] = [...new Set<string>(minimalSlots
+            .map((s: any) => String(s?.DateTimeStart || '').trim())
+            .filter((v: string) => v.length > 0))].slice(0, 3);
+
+          const toOrdinalSuffix = (n: number): string => {
+            const mod100 = n % 100;
+            if (mod100 >= 11 && mod100 <= 13) return 'th';
+            switch (n % 10) {
+              case 1: return 'st';
+              case 2: return 'nd';
+              case 3: return 'rd';
+              default: return 'th';
+            }
+          };
+          const MONTH_NAMES = [
+            'January', 'February', 'March', 'April', 'May', 'June',
+            'July', 'August', 'September', 'October', 'November', 'December',
+          ];
+          const DAY_NAMES = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
+          const toSpokenDateTime = (dateTimeStr: string): string => {
+            const raw = String(dateTimeStr || '').trim();
+            const m = raw.match(/^(\d{4})-(\d{2})-(\d{2})\s+(\d{2}):(\d{2})(?::(\d{2}))?$/);
+            if (!m) return raw;
+            const year = parseInt(m[1], 10);
+            const month = parseInt(m[2], 10);
+            const day = parseInt(m[3], 10);
+            const hour24 = parseInt(m[4], 10);
+            const minute = parseInt(m[5], 10);
+            if (!Number.isFinite(year) || !Number.isFinite(month) || !Number.isFinite(day) || !Number.isFinite(hour24) || !Number.isFinite(minute)) {
+              return raw;
+            }
+
+            const dowIdx = new Date(Date.UTC(year, month - 1, day)).getUTCDay();
+            const dow = DAY_NAMES[dowIdx] || '';
+            const monthName = MONTH_NAMES[month - 1] || '';
+            const suffix = toOrdinalSuffix(day);
+
+            const ampm = hour24 >= 12 ? 'PM' : 'AM';
+            const hour12 = (() => {
+              const h = hour24 % 12;
+              return h === 0 ? 12 : h;
+            })();
+            const timePart = minute === 0 ? `${hour12} ${ampm}` : `${hour12}:${String(minute).padStart(2, '0')} ${ampm}`;
+            return `${dow}, ${monthName} ${day}${suffix} at ${timePart}`.trim();
+          };
+          const optionStartsSpoken = optionStarts.map(toSpokenDateTime);
+
+          // Store top slot options in session for follow-up scheduling attempts.
+          // Keep it SMALL to avoid Bedrock session bloat.
+          if (optionStarts.length > 0) {
+            const topOptions = minimalSlots.slice(0, 5);
+            updatedSessionAttributes.lastAppointmentSlotOptions = JSON.stringify(topOptions);
+            updatedSessionAttributes.lastAppointmentSlotCount = String(totalCount);
+          } else {
+            delete (updatedSessionAttributes as any).lastAppointmentSlotOptions;
+            delete (updatedSessionAttributes as any).lastAppointmentSlotCount;
+          }
+
+          // Consume the recovery flag so slots aren't suggested repeatedly.
+          if (allowSlotSuggestions) {
+            updatedSessionAttributes.allowSlotSuggestions = 'false';
+          }
+
+          const directAnswer = (() => {
+            if (!isVoiceCall) return undefined;
+            if (optionStartsSpoken.length === 1) return `I can do ${optionStartsSpoken[0]}. Does that work for you?`;
+            if (optionStartsSpoken.length === 2) return `I can do ${optionStartsSpoken[0]} or ${optionStartsSpoken[1]}. Which works best for you?`;
+            if (optionStartsSpoken.length >= 3) return `I can do ${optionStartsSpoken[0]}, ${optionStartsSpoken[1]}, or ${optionStartsSpoken[2]}. Which works best for you?`;
+            return 'When would you like to schedule?';
+          })();
 
           return {
             statusCode: availableSlots.length > 0 ? 200 : 404,
             body: {
               status: availableSlots.length > 0 ? 'SUCCESS' : 'FAILURE',
-              data: availableSlots,
+              ...(directAnswer ? { directAnswer } : {}),
+              data: minimalSlots,
+              totalCount,
               message: availableSlots.length > 0
-                ? `Found ${availableSlots.length} available slot(s)`
-                : 'No available slots found',
+                ? `Found ${totalCount} appointment time(s)`
+                : 'No appointment times found',
             },
+            ...(isVoiceCall ? { updatedSessionAttributes } : {}),
           };
         } catch (error: any) {
           // Return error details for debugging
@@ -5241,7 +5720,7 @@ async function handleTool(
           const slots = await odClient.request('GET', 'appointments/Slots', { params: queryParams });
           const slotsArray = Array.isArray(slots) ? slots : (slots?.items ?? []);
 
-          let message = `Found ${slotsArray.length} available slot(s)`;
+          let message = `Found ${slotsArray.length} appointment time(s)`;
           if (params.ProvNum) message += ` for ProvNum ${params.ProvNum}`;
           if (params.OpNum) message += ` in OpNum ${params.OpNum}`;
 
@@ -6005,6 +6484,9 @@ async function handleTool(
         // This tool reads from the ApptTypes DynamoDB table (configured in Patient Portal)
         // Helps AI book appointments by knowing available types, durations, and operatory mappings
         // Required: clinicId. Optional: label (to get a specific appointment type)
+        if (params.isNewPatient === undefined && (sessionAttributes.IsNewPatient === 'true' || sessionAttributes.IsNewPatient === 'false')) {
+          params.isNewPatient = sessionAttributes.IsNewPatient;
+        }
         const result = await lookupAppointmentTypes(params, sessionAttributes.clinicId || params.clinicId);
         return result;
       }
@@ -9918,61 +10400,25 @@ async function lookupAppointmentTypes(
     let directAnswer = '';
     if (searchLabel && appointmentTypes.length === 1) {
       const apptType = appointmentTypes[0];
-      directAnswer = `=== APPOINTMENT TYPE: ${apptType.label} ===\n`;
-      directAnswer += `Duration: ${apptType.duration} minutes\n`;
-      directAnswer += `Operatory Number (Op): ${apptType.opNum}\n`;
-      if (apptType.opName) {
-        directAnswer += `Operatory Name: ${apptType.opName}\n`;
-      }
-      if (apptType.defaultProvNum) {
-        directAnswer += `Default Provider: ${apptType.defaultProvName || 'Provider'} (ProvNum: ${apptType.defaultProvNum})\n`;
-      }
-      if (apptType.AppointmentTypeNum) {
-        directAnswer += `AppointmentTypeNum: ${apptType.AppointmentTypeNum}\n`;
-      }
-      directAnswer += `\nUse these values when calling scheduleAppointment:\n`;
-      directAnswer += `  Op: ${apptType.opNum}\n`;
-      if (apptType.defaultProvNum) directAnswer += `  ProvNum: ${apptType.defaultProvNum}\n`;
-      if (apptType.AppointmentTypeNum) directAnswer += `  AppointmentTypeNum: ${apptType.AppointmentTypeNum}\n`;
-      directAnswer += `  duration: ${apptType.duration}\n`;
+      const parts: string[] = [
+        `Appointment type ${apptType.label}.`,
+        `Duration ${apptType.duration} minutes.`,
+        `Op ${apptType.opNum}.`,
+        apptType.opName ? `OpName ${apptType.opName}.` : '',
+        apptType.defaultProvNum ? `ProvNum ${apptType.defaultProvNum}.` : '',
+        apptType.AppointmentTypeNum ? `AppointmentTypeNum ${apptType.AppointmentTypeNum}.` : '',
+        'Use these values when scheduling.',
+      ].filter(Boolean);
+      directAnswer = parts.join(' ');
     } else {
-      directAnswer = `=== AVAILABLE APPOINTMENT TYPES FOR CLINIC ===\n\n`;
-      directAnswer += `Choose the best appointment type based on the patient's needs:\n\n`;
-
-      // Group by new patient vs existing patient for easier selection
-      const newPatientTypes = appointmentTypes.filter(t => t.label.toLowerCase().includes('new patient'));
-      const existingPatientTypes = appointmentTypes.filter(t => !t.label.toLowerCase().includes('new patient'));
-
-      if (newPatientTypes.length > 0) {
-        directAnswer += `--- NEW PATIENT TYPES ---\n`;
-        for (const apptType of newPatientTypes) {
-          directAnswer += `• "${apptType.label}"\n`;
-          directAnswer += `  Op: ${apptType.opNum} | Duration: ${apptType.duration}min`;
-          if (apptType.defaultProvNum) directAnswer += ` | ProvNum: ${apptType.defaultProvNum}`;
-          if (apptType.AppointmentTypeNum) directAnswer += ` | TypeNum: ${apptType.AppointmentTypeNum}`;
-          directAnswer += `\n`;
-        }
-        directAnswer += `\n`;
-      }
-
-      if (existingPatientTypes.length > 0) {
-        directAnswer += `--- EXISTING PATIENT TYPES ---\n`;
-        for (const apptType of existingPatientTypes) {
-          directAnswer += `• "${apptType.label}"\n`;
-          directAnswer += `  Op: ${apptType.opNum} | Duration: ${apptType.duration}min`;
-          if (apptType.defaultProvNum) directAnswer += ` | ProvNum: ${apptType.defaultProvNum}`;
-          if (apptType.AppointmentTypeNum) directAnswer += ` | TypeNum: ${apptType.AppointmentTypeNum}`;
-          directAnswer += `\n`;
-        }
-      }
-
-      directAnswer += `\n=== HOW TO CHOOSE ===\n`;
-      directAnswer += `• For emergencies/pain → Choose "emergency" type\n`;
-      directAnswer += `• For treatment plan follow-up → Choose "treatment plan" type\n`;
-      directAnswer += `• For routine checkup/cleaning → Choose "other" type\n`;
-      directAnswer += `• New patients → Use "new patient" types\n`;
-      directAnswer += `• Existing patients → Use "existing patient" types\n`;
-      directAnswer += `\nPass the Op, ProvNum, AppointmentTypeNum, and duration to scheduleAppointment.\n`;
+      const summaries = appointmentTypes
+        .slice(0, 10)
+        .map((t) => `${t.label} (${t.duration} minutes)`)
+        .join(', ');
+      directAnswer =
+        `Available appointment types: ${summaries}. ` +
+        `Choose an emergency type for pain or urgent issues, a treatment plan type for follow up, otherwise choose other. ` +
+        `Use new patient types for new patients and existing patient types for existing patients.`;
     }
 
     return {
@@ -15996,7 +16442,7 @@ export const handler = async (event: ActionGroupEvent): Promise<ActionGroupRespo
     const odClient = new OpenDentalClient(clinicId, clinicConfig.developerKey, clinicConfig.customerKey);
 
     // Execute the tool
-    const result = await handleTool(toolName, params, odClient, event.sessionAttributes);
+    const result = await handleTool(toolName, params, odClient, event.sessionAttributes || {}, event.inputText);
 
     // IMPORTANT: Bedrock treats non-2xx action group responses as API execution failures
     // and can surface them as DependencyFailedException to the caller. We always return 200

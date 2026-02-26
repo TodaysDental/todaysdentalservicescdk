@@ -80,6 +80,17 @@ export interface AnalyticsDashboardStackProps extends StackProps {
      * Secrets encryption key ARN
      */
     secretsEncryptionKeyArn?: string;
+
+    /**
+     * Callback table prefix from CallbackStack (e.g., 'todaysdentalinsights-callback-')
+     */
+    callbackTablePrefix?: string;
+
+    /**
+     * Default callback table name from CallbackStack
+     */
+    callbackDefaultTableName?: string;
+    callbackDefaultTableArn?: string;
 }
 
 export class AnalyticsDashboardStack extends Stack {
@@ -221,6 +232,9 @@ export class AnalyticsDashboardStack extends Stack {
                 GLOBAL_SECRETS_TABLE_NAME: props.globalSecretsTableName || '',
                 // SFTP configuration for Open Dental query results
                 CONSOLIDATED_SFTP_HOST: props.consolidatedTransferServerId + '.server.transfer.' + Stack.of(this).region + '.amazonaws.com',
+                // Callback tables configuration
+                CALLBACK_TABLE_PREFIX: props.callbackTablePrefix || 'todaysdentalinsights-callback-',
+                CALLBACK_DEFAULT_TABLE: props.callbackDefaultTableName || '',
                 NODE_OPTIONS: '--enable-source-maps',
             },
             logRetention: logs.RetentionDays.ONE_WEEK,
@@ -298,6 +312,26 @@ export class AnalyticsDashboardStack extends Stack {
                 resources: [
                     props.globalSecretsTableArn,
                     `${props.globalSecretsTableArn}/index/*`,
+                ],
+            }));
+        }
+
+        // Callback tables permissions (wildcard for per-clinic tables + default table)
+        dashboardFn.addToRolePolicy(new iam.PolicyStatement({
+            effect: iam.Effect.ALLOW,
+            actions: ['dynamodb:Query'],
+            resources: [
+                `arn:aws:dynamodb:${Stack.of(this).region}:${Stack.of(this).account}:table/todaysdentalinsights-callback-*`,
+                `arn:aws:dynamodb:${Stack.of(this).region}:${Stack.of(this).account}:table/todaysdentalinsights-callback-*/index/*`,
+            ],
+        }));
+        if (props.callbackDefaultTableArn) {
+            dashboardFn.addToRolePolicy(new iam.PolicyStatement({
+                effect: iam.Effect.ALLOW,
+                actions: ['dynamodb:Query'],
+                resources: [
+                    props.callbackDefaultTableArn,
+                    `${props.callbackDefaultTableArn}/index/*`,
                 ],
             }));
         }

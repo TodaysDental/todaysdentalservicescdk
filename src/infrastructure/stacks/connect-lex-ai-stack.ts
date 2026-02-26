@@ -51,6 +51,15 @@ export interface ConnectLexAiStackProps extends StackProps {
   connectAiPhoneNumber: string;
 
   /**
+   * Optional list of Connect phone numbers to associate with the inbound AI flow (E.164).
+   * If provided (non-empty), all numbers will be associated to the same inbound AI flow.
+   *
+   * This enables per-clinic dedicated AI numbers (Chime after-hours forwarding) to reach
+   * the same Connect/Lex contact flow, while the Lex hook maps dialed number → clinicId.
+   */
+  connectAiPhoneNumbers?: string[];
+
+  /**
    * AI Agents table name for looking up Bedrock agent config.
    */
   agentsTableName: string;
@@ -402,6 +411,8 @@ export class ConnectLexAiStack extends Stack {
           AGENTS_TABLE: props.agentsTableName,
           SESSIONS_TABLE: props.sessionsTableName,
           VOICE_CONFIG_TABLE: props.voiceConfigTableName,
+          CALL_ANALYTICS_TABLE: props.callAnalyticsTableName,
+          TRANSCRIPT_BUFFER_TABLE_NAME: props.transcriptBufferTableName,
           AI_PHONE_NUMBERS_JSON: props.aiPhoneNumbersJson || '{}',
           DEFAULT_CLINIC_ID: props.defaultClinicId || 'dentistingreenville',
         },
@@ -426,6 +437,23 @@ export class ConnectLexAiStack extends Stack {
         effect: iam.Effect.ALLOW,
         actions: ['dynamodb:GetItem', 'dynamodb:PutItem', 'dynamodb:UpdateItem'],
         resources: [props.sessionsTableArn],
+      }));
+
+      // Call analytics writes (Connect/Lex AI records)
+      asyncBedrockLambda.addToRolePolicy(new iam.PolicyStatement({
+        effect: iam.Effect.ALLOW,
+        actions: ['dynamodb:GetItem', 'dynamodb:PutItem', 'dynamodb:UpdateItem', 'dynamodb:Query'],
+        resources: [
+          props.callAnalyticsTableArn,
+          `${props.callAnalyticsTableArn}/index/*`,
+        ],
+      }));
+
+      // Transcript buffer writes (TranscriptBuffersV2)
+      asyncBedrockLambda.addToRolePolicy(new iam.PolicyStatement({
+        effect: iam.Effect.ALLOW,
+        actions: ['dynamodb:GetItem', 'dynamodb:PutItem', 'dynamodb:UpdateItem'],
+        resources: [props.transcriptBufferTableArn],
       }));
 
       // Voice config table read: select configured inbound voice agent (if set)
@@ -1112,7 +1140,7 @@ export class ConnectLexAiStack extends Stack {
         DisconnectFlowArn: disconnectFlow.attrContactFlowArn,
         // Force update ONLY when dependencies actually change
         // Bump version when contact flow logic changes (forces custom resource update)
-        UpdateTrigger: `${lexBotAliasArn}|${this.lexBedrockHookFn.functionArn}|${keyboardPromptId}|${disconnectFlow.attrContactFlowArn}|v17`,
+        UpdateTrigger: `${lexBotAliasArn}|${this.lexBedrockHookFn.functionArn}|${keyboardPromptId}|${disconnectFlow.attrContactFlowArn}|v18`,
       },
     });
     inboundFlow.node.addDependency(disconnectFlow);
@@ -1176,7 +1204,7 @@ export class ConnectLexAiStack extends Stack {
           DisconnectFlowArn: disconnectFlow.attrContactFlowArn,
           MaxPollLoops: String(props.asyncMaxPollLoops || 20),
           // Bump version when contact flow logic changes (forces custom resource update)
-          UpdateTrigger: `${lexBotAliasArn}|${this.lexBedrockHookFn.functionArn}|${asyncBedrockLambda.functionArn}|${keyboardPromptId}|${disconnectFlow.attrContactFlowArn}|${props.asyncMaxPollLoops || 20}|v13`,
+          UpdateTrigger: `${lexBotAliasArn}|${this.lexBedrockHookFn.functionArn}|${asyncBedrockLambda.functionArn}|${keyboardPromptId}|${disconnectFlow.attrContactFlowArn}|${props.asyncMaxPollLoops || 20}|v14`,
         },
       });
       asyncInboundFlow.node.addDependency(disconnectFlow);
@@ -1224,15 +1252,38 @@ export class ConnectLexAiStack extends Stack {
       logRetention: logs.RetentionDays.ONE_WEEK,
     });
 
-    const phoneNumberAssociation = new CustomResource(this, 'PhoneNumberAssociation', {
-      serviceToken: phoneAssociationProvider.serviceToken,
-      properties: {
-        InstanceArn: props.connectInstanceArn,
-        PhoneNumber: props.connectAiPhoneNumber,
-        ContactFlowArn: activeInboundFlow.getAttString('ContactFlowArn'),
-      },
-    });
-    phoneNumberAssociation.node.addDependency(activeInboundFlow);
+    const phoneNumbersToAssociate = (
+      Array.isArray(props.connectAiPhoneNumbers) && props.connectAiPhoneNumbers.length > 0
+        ? props.connectAiPhoneNumbers
+        : [props.connectAiPhoneNumber]
+    )
+      .map((value) => String(value).trim())
+      .filter((value) => value.length > 0);
+
+    const uniquePhoneNumbersToAssociate = Array.from(new Set(phoneNumbersToAssociate));
+    console.log(`[ConnectLexAiStack] Associating ${uniquePhoneNumbersToAssociate.length} phone number(s) with inbound AI flow`);
+
+    // Create one custom resource per phone number so CloudFormation can cleanly
+    // disassociate numbers on deletion (and avoids complex diff logic on Update).
+    // Chain dependencies to reduce the chance of Connect API throttling during deployment.
+    let previousAssociation: CustomResource | undefined;
+    for (const phoneNumber of uniquePhoneNumbersToAssociate) {
+      const digits = phoneNumber.replace(/\D/g, '');
+      const associationIdSuffix = digits || crypto.createHash('sha1').update(phoneNumber).digest('hex').slice(0, 12);
+      const association = new CustomResource(this, `PhoneNumberAssociation${associationIdSuffix}`, {
+        serviceToken: phoneAssociationProvider.serviceToken,
+        properties: {
+          InstanceArn: props.connectInstanceArn,
+          PhoneNumber: phoneNumber,
+          ContactFlowArn: activeInboundFlow.getAttString('ContactFlowArn'),
+        },
+      });
+      association.node.addDependency(activeInboundFlow);
+      if (previousAssociation) {
+        association.node.addDependency(previousAssociation);
+      }
+      previousAssociation = association;
+    }
 
     // Store flow ARNs for reference
     this.inboundFlowArn = activeInboundFlow.getAttString('ContactFlowArn');
@@ -1283,7 +1334,7 @@ export class ConnectLexAiStack extends Stack {
         LambdaFunctionArn: this.lexBedrockHookFn.functionArn,
         KeyboardPromptId: keyboardPromptId,
         DisconnectFlowArn: disconnectFlow.attrContactFlowArn,
-        UpdateTrigger: `${lexBotAliasArn}|${this.lexBedrockHookFn.functionArn}|${keyboardPromptId}|${disconnectFlow.attrContactFlowArn}|v7`,
+        UpdateTrigger: `${lexBotAliasArn}|${this.lexBedrockHookFn.functionArn}|${keyboardPromptId}|${disconnectFlow.attrContactFlowArn}|v8`,
       },
     });
     outboundFlow.node.addDependency(disconnectFlow);
@@ -1366,8 +1417,18 @@ export class ConnectLexAiStack extends Stack {
 
     new CfnOutput(this, 'AssociatedPhoneNumber', {
       value: props.connectAiPhoneNumber,
-      description: 'Phone number associated with the AI contact flow',
+      description: 'Primary phone number associated with the AI contact flow',
       exportName: `${this.stackName}-AssociatedPhoneNumber`,
+    });
+
+    new CfnOutput(this, 'AssociatedPhoneNumbers', {
+      value: (
+        Array.isArray(props.connectAiPhoneNumbers) && props.connectAiPhoneNumbers.length > 0
+          ? Array.from(new Set(props.connectAiPhoneNumbers.map((n) => String(n).trim()).filter((n) => n.length > 0))).join(', ')
+          : props.connectAiPhoneNumber
+      ),
+      description: 'All phone numbers associated with the inbound AI contact flow (comma-separated)',
+      exportName: `${this.stackName}-AssociatedPhoneNumbers`,
     });
 
     new CfnOutput(this, 'KeyboardSoundPromptId', {
@@ -1394,7 +1455,11 @@ export class ConnectLexAiStack extends Stack {
 DEPLOYMENT COMPLETE:
 - Inbound AI Flow: ${props.useAsyncPattern ? `${this.stackName}-AsyncInboundAiFlow` : `${this.stackName}-InboundAiFlowV2`}
 - Disconnect Flow: ${this.stackName}-DisconnectFlow  
-- Phone Number: ${props.connectAiPhoneNumber} (auto-associated)
+- Phone Number(s): ${
+        (Array.isArray(props.connectAiPhoneNumbers) && props.connectAiPhoneNumbers.length > 0
+          ? Array.from(new Set(props.connectAiPhoneNumbers.map((n) => String(n).trim()).filter((n) => n.length > 0))).join(', ')
+          : props.connectAiPhoneNumber)
+      } (auto-associated)
 - Lex Bot: ${lexBot.name} (alias: prod)
 - Keyboard Sound: Plays during AI thinking${asyncInfo}
 

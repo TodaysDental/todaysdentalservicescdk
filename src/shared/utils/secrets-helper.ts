@@ -100,7 +100,13 @@ export interface ClinicConfig {
   websiteLink: string;
   phoneNumber: string;
   sesIdentityArn?: string;
+  /** Dedicated SMS number patients text (E.164). */
+  smsPhoneNumber?: string;
   smsOriginationArn?: string;
+  /** SNS topic ARN configured as the two-way inbound destination for this clinic's SMS number. */
+  smsIncomingSnsTopicArn?: string;
+  smsSnsTopicName?: string;
+  smsTwoWayEnabled?: boolean;
   sftpFolderPath?: string;
   hostedZoneId?: string;
   email?: {

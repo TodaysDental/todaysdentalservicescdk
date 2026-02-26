@@ -1073,14 +1073,49 @@ export const handler = async (event: any): Promise<any> => {
                 // ========== AFTER-HOURS ROUTING CHECK ==========
                 // When the clinic is closed, apply the configured after-hours behavior:
                 // - OFF: ignore clinic hours and always route to human agents
-                // - FORWARD_TO_AI: forward to `clinic.aiPhoneNumber`
-                // - PLAY_CLOSED_MESSAGE: play "clinic is closed" message and hang up
+                // - FORWARD_TO_AI: forward to `clinic.aiPhoneNumber` only when CLOSED
+                // - PLAY_CLOSED_MESSAGE: play "clinic is closed" message and hang up when CLOSED
+                // - FORWARD_TO_AI_ALWAYS: ALWAYS forward to AI, ignoring clinic hours entirely
                 //
                 // Global toggle (ENABLE_AFTER_HOURS_AI) is a master switch.
                 if (ENABLE_AFTER_HOURS_AI) {
                     const afterHoursMode = await getAfterHoursCallingMode(clinicId);
 
-                    if (afterHoursMode === 'OFF') {
+                    // ── NEW: FORWARD_TO_AI_ALWAYS ──────────────────────────────────────
+                    // Bypass clinic hours check entirely. Forward every call to the AI
+                    // phone number immediately, regardless of open/closed status and
+                    // regardless of whether human agents are available.
+                    if (afterHoursMode === 'FORWARD_TO_AI_ALWAYS') {
+                        if (aiPhoneNumber) {
+                            console.log(`[NEW_INBOUND_CALL] Mode=FORWARD_TO_AI_ALWAYS - routing directly to AI phone number (ignoring clinic hours & agents)`, {
+                                callId,
+                                clinicId,
+                                callerNumber: fromPhoneNumber,
+                                aiPhoneNumber,
+                            });
+
+                            const aiForwardCallerId = fromPhoneNumber !== 'Unknown' ? fromPhoneNumber : toPhoneNumber;
+
+                            return buildActions([
+                                buildSpeakAction('Please hold while we connect you to our AI assistant.'),
+                                buildCallAndBridgeAction(
+                                    aiForwardCallerId,
+                                    aiPhoneNumber,
+                                    {
+                                        'X-Clinic-Id': clinicId,
+                                        'X-Forward-Reason': 'forward-to-ai-always',
+                                        'X-Original-Caller': fromPhoneNumber,
+                                        'X-Forwarded-From': toPhoneNumber,
+                                        'X-Forward-Attempt': '0',
+                                    }
+                                ),
+                            ]);
+                        }
+
+                        // No AI phone number configured - fall through to normal human-agent routing
+                        console.warn(`[NEW_INBOUND_CALL] Mode=FORWARD_TO_AI_ALWAYS but no aiPhoneNumber configured for clinic ${clinicId}; falling back to human agents`);
+                        // Fall through below
+                    } else if (afterHoursMode === 'OFF') {
                         console.log(`[NEW_INBOUND_CALL] After-hours calling is OFF - routing to human agents regardless of clinic hours`, {
                             callId,
                             clinicId,
@@ -2376,7 +2411,6 @@ export const handler = async (event: any): Promise<any> => {
                     // Bridge the waiting customer (PSTN) into the agent's meeting
                     return buildActions([
                         ...cancelOutboundLegActions,
-                        buildSpeakAction('An agent will assist you now.'),
                         buildJoinChimeMeetingAction(
                             pstnLegCallId,
                             { MeetingId: meetingId },

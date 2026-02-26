@@ -207,13 +207,19 @@ export class GoogleAdsStack extends Stack {
     });
 
     // Google Ads AI Suggestions Lambda (Bedrock Integration)
+    // NOTE: Bedrock Claude calls can take 15-30+ seconds, so we need a higher timeout
     const aiFn = new lambdaNode.NodejsFunction(this, 'AiFn', {
       entry: path.join(__dirname, '..', '..', 'services', 'marketing', 'google-ads-ai.ts'),
       handler: 'handler',
       runtime: lambda.Runtime.NODEJS_20_X,
       memorySize: 1024,
-      timeout: Duration.seconds(60),
+      timeout: Duration.seconds(90),
       environment: envVars,
+    });
+
+    // Create a Lambda integration with extended timeout for AI operations
+    const aiIntegration = new apigw.LambdaIntegration(aiFn, {
+      timeout: Duration.seconds(29),
     });
 
     // Grant Bedrock permissions to AI Lambda
@@ -413,23 +419,23 @@ export class GoogleAdsStack extends Stack {
     const aiRes = root.addResource('ai');
 
     const aiHeadlinesRes = aiRes.addResource('headlines');
-    aiHeadlinesRes.addMethod('POST', new apigw.LambdaIntegration(aiFn), { authorizer });
+    aiHeadlinesRes.addMethod('POST', aiIntegration, { authorizer });
 
     const aiDescriptionsRes = aiRes.addResource('descriptions');
-    aiDescriptionsRes.addMethod('POST', new apigw.LambdaIntegration(aiFn), { authorizer });
+    aiDescriptionsRes.addMethod('POST', aiIntegration, { authorizer });
 
     const aiKeywordsRes = aiRes.addResource('keywords');
-    aiKeywordsRes.addMethod('POST', new apigw.LambdaIntegration(aiFn), { authorizer });
+    aiKeywordsRes.addMethod('POST', aiIntegration, { authorizer });
 
     const aiNegativeKeywordsRes = aiRes.addResource('negative-keywords');
-    aiNegativeKeywordsRes.addMethod('POST', new apigw.LambdaIntegration(aiFn), { authorizer });
+    aiNegativeKeywordsRes.addMethod('POST', aiIntegration, { authorizer });
 
     const aiAnalyzeRes = aiRes.addResource('analyze-queries');
-    aiAnalyzeRes.addMethod('POST', new apigw.LambdaIntegration(aiFn), { authorizer });
+    aiAnalyzeRes.addMethod('POST', aiIntegration, { authorizer });
 
     const aiClinicContextRes = aiRes.addResource('clinic-context');
     const aiClinicContextByIdRes = aiClinicContextRes.addResource('{clinicId}');
-    aiClinicContextByIdRes.addMethod('GET', new apigw.LambdaIntegration(aiFn), { authorizer });
+    aiClinicContextByIdRes.addMethod('GET', aiIntegration, { authorizer });
 
     // --- Ads Management Routes ---
     const adsRes = root.addResource('ads');

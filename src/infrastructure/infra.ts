@@ -816,6 +816,7 @@ const aiPhoneNumbersMap = clinicsWithAiPhones.reduce(
 // Use the first AI phone number as the primary Connect AI phone (or fallback)
 const primaryAiPhoneNumber = clinicsWithAiPhones[0]?.aiPhoneNumber || '+14439272295';
 const defaultClinicForAi = clinicsWithAiPhones[0]?.clinicId || 'dentistingreenville';
+const connectAiPhoneNumbers = Array.from(new Set(clinicsWithAiPhones.map((c) => c.aiPhoneNumber)));
 
 console.log(`[ConnectLexAiStack] Found ${clinicsWithAiPhones.length} clinics with AI phone numbers`);
 
@@ -824,8 +825,10 @@ const connectLexAiStack = new ConnectLexAiStack(app, 'TodaysDentalInsightsConnec
   // Existing Amazon Connect instance
   connectInstanceId: '0626aa86-d377-44c8-9311-84e4f230cc72',
   connectInstanceArn: 'arn:aws:connect:us-east-1:851620242036:instance/0626aa86-d377-44c8-9311-84e4f230cc72',
-  // Phone number to attach to AI contact flow (uses first AI phone from config)
+  // Primary phone number to attach to AI contact flow (kept for outputs/testing)
   connectAiPhoneNumber: primaryAiPhoneNumber,
+  // Associate all clinic AI numbers to the same inbound AI flow
+  connectAiPhoneNumbers,
   // AI Agents table for Bedrock agent lookup (from AiAgentsStack)
   agentsTableName: aiAgentsStack.agentsTable.tableName,
   agentsTableArn: aiAgentsStack.agentsTable.tableArn,
@@ -924,6 +927,7 @@ analyticsStack.addDependency(coreStack);
 // Cross-service dependencies for services that need data from other services
 notificationsStack.addDependency(coreStack); // Explicit - imports AuthorizerFunctionArn
 notificationsStack.addDependency(templatesStack); // Explicit - uses table name
+notificationsStack.addDependency(aiAgentsStack); // Explicit - imports AiAgents table outputs for SMS AI auto-replies
 adminStack.addDependency(coreStack); // Explicit - imports AuthorizerFunctionArn
 adminStack.addDependency(secretsStack); // Explicit - uses GlobalSecrets for cPanel credentials
 schedulesStack.addDependency(coreStack); // Explicit - imports AuthorizerFunctionArn
@@ -1095,12 +1099,17 @@ const analyticsDashboardStack = new AnalyticsDashboardStack(app, ANALYTICS_DASHB
   globalSecretsTableArn: secretsStack.globalSecretsTable.tableArn,
   // Secrets encryption key for decrypting credentials
   secretsEncryptionKeyArn: secretsStack.secretsEncryptionKey.keyArn,
+  // Callback tables for callback analytics
+  callbackTablePrefix: callbackStack.callbackTablePrefix,
+  callbackDefaultTableName: callbackStack.defaultCallbackTableName,
+  callbackDefaultTableArn: callbackStack.defaultCallbackTableArn,
 });
 analyticsDashboardStack.addDependency(coreStack); // Explicit - uses JWT secret
 analyticsDashboardStack.addDependency(analyticsStack); // Explicit - uses CallAnalytics table
 analyticsDashboardStack.addDependency(patientPortalStack); // Explicit - uses PatientPortalMetrics table
 analyticsDashboardStack.addDependency(secretsStack); // Explicit - uses GlobalSecrets table
 analyticsDashboardStack.addDependency(openDentalStack); // Explicit - uses consolidated SFTP transfer server
+analyticsDashboardStack.addDependency(callbackStack); // Explicit - uses Callback tables
 
 // CRITICAL FIX: Remove commented-out code that could lead to circular dependencies
 // Note: The proper dependencies are already set above:

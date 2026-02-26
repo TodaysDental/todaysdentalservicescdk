@@ -237,6 +237,9 @@ function buildAsyncContactFlowContent(params: {
           RecordingBehavior: {
             // Record both directions so the recording includes the system/AI prompts and the caller.
             RecordedParticipants: ['Agent', 'Customer'],
+            // IMPORTANT: Enable automated interaction (IVR/bot) recording; without this,
+            // Connect will not produce recordings for bot-only flows (no live agent).
+            IVRRecordingBehavior: 'Enabled',
           },
         },
         Transitions: {

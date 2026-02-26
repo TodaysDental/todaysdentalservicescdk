@@ -321,10 +321,10 @@ async function createPMaxCampaign(
         const agResourceName = agResponse.results[0].resource_name;
         console.log(`[GoogleAdsPMax] Asset group created: ${agResourceName}`);
 
-        // Create and link text assets
+        // Create and link ALL required assets
         const assetGroupAssetOps: any[] = [];
 
-        // Headlines
+        // Headlines (text assets)
         for (const text of assetGroup.headlines) {
           const assetRes = await (client as any).assets.create([{ text_asset: { text } }]);
           assetGroupAssetOps.push({
@@ -332,9 +332,10 @@ async function createPMaxCampaign(
           });
         }
 
-        // Long headlines
+        // Long headlines (text assets)
         if (assetGroup.longHeadlines?.length) {
           for (const text of assetGroup.longHeadlines) {
+            if (!text.trim()) continue;
             const assetRes = await (client as any).assets.create([{ text_asset: { text } }]);
             assetGroupAssetOps.push({
               asset_group: agResourceName, asset: assetRes.results[0].resource_name, field_type: 'LONG_HEADLINE',
@@ -342,7 +343,7 @@ async function createPMaxCampaign(
           }
         }
 
-        // Descriptions
+        // Descriptions (text assets)
         for (const text of assetGroup.descriptions) {
           const assetRes = await (client as any).assets.create([{ text_asset: { text } }]);
           assetGroupAssetOps.push({
@@ -350,11 +351,95 @@ async function createPMaxCampaign(
           });
         }
 
-        // Business name
+        // Business name (text asset)
         const bnRes = await (client as any).assets.create([{ text_asset: { text: assetGroup.businessName } }]);
         assetGroupAssetOps.push({
           asset_group: agResourceName, asset: bnRes.results[0].resource_name, field_type: 'BUSINESS_NAME',
         });
+
+        // Helper: download image and return base64 data
+        const downloadImageAsBase64 = async (url: string): Promise<string> => {
+          const https = require('https');
+          const http = require('http');
+          const module = url.startsWith('https') ? https : http;
+          return new Promise((resolve, reject) => {
+            module.get(url, { timeout: 15000 }, (res: any) => {
+              // Follow redirects
+              if (res.statusCode >= 300 && res.statusCode < 400 && res.headers.location) {
+                downloadImageAsBase64(res.headers.location).then(resolve).catch(reject);
+                return;
+              }
+              if (res.statusCode !== 200) {
+                reject(new Error(`HTTP ${res.statusCode} downloading image`));
+                return;
+              }
+              const chunks: Buffer[] = [];
+              res.on('data', (chunk: Buffer) => chunks.push(chunk));
+              res.on('end', () => resolve(Buffer.concat(chunks).toString('base64')));
+              res.on('error', reject);
+            }).on('error', reject);
+          });
+        };
+
+        // Marketing images (landscape, 1.91:1 — required)
+        if (assetGroup.marketingImages?.length) {
+          for (const imageUrl of assetGroup.marketingImages) {
+            try {
+              console.log(`[GoogleAdsPMax] Downloading marketing image: ${imageUrl.substring(0, 80)}...`);
+              const imageData = await downloadImageAsBase64(imageUrl);
+              const assetRes = await (client as any).assets.create([{
+                name: `PMax Marketing Image - ${Date.now()}`,
+                image_asset: { data: imageData },
+              }]);
+              assetGroupAssetOps.push({
+                asset_group: agResourceName, asset: assetRes.results[0].resource_name, field_type: 'MARKETING_IMAGE',
+              });
+              console.log(`[GoogleAdsPMax] Marketing image asset created`);
+            } catch (imgErr: any) {
+              console.error(`[GoogleAdsPMax] Failed to create marketing image asset: ${imgErr.message}`);
+            }
+          }
+        }
+
+        // Square marketing images (1:1 — required)
+        if (assetGroup.squareMarketingImages?.length) {
+          for (const imageUrl of assetGroup.squareMarketingImages) {
+            try {
+              console.log(`[GoogleAdsPMax] Downloading square image: ${imageUrl.substring(0, 80)}...`);
+              const imageData = await downloadImageAsBase64(imageUrl);
+              const assetRes = await (client as any).assets.create([{
+                name: `PMax Square Image - ${Date.now()}`,
+                image_asset: { data: imageData },
+              }]);
+              assetGroupAssetOps.push({
+                asset_group: agResourceName, asset: assetRes.results[0].resource_name, field_type: 'SQUARE_MARKETING_IMAGE',
+              });
+              console.log(`[GoogleAdsPMax] Square marketing image asset created`);
+            } catch (imgErr: any) {
+              console.error(`[GoogleAdsPMax] Failed to create square marketing image asset: ${imgErr.message}`);
+            }
+          }
+        }
+
+        // Logo images (1:1, min 128x128 — required)
+        if (assetGroup.logos?.length) {
+          for (const imageUrl of assetGroup.logos) {
+            try {
+              console.log(`[GoogleAdsPMax] Downloading logo: ${imageUrl.substring(0, 80)}...`);
+              const imageData = await downloadImageAsBase64(imageUrl);
+              const assetRes = await (client as any).assets.create([{
+                name: `PMax Logo - ${Date.now()}`,
+                image_asset: { data: imageData },
+              }]);
+              assetGroupAssetOps.push({
+                asset_group: agResourceName, asset: assetRes.results[0].resource_name, field_type: 'LOGO',
+              });
+              console.log(`[GoogleAdsPMax] Logo asset created`);
+            } catch (imgErr: any) {
+              console.error(`[GoogleAdsPMax] Failed to create logo asset: ${imgErr.message}`);
+            }
+          }
+        }
 
         // Link all assets to asset group
         if (assetGroupAssetOps.length > 0) {
