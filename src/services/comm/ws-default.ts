@@ -1,6 +1,6 @@
 import { APIGatewayEvent, APIGatewayProxyResult } from 'aws-lambda';
 import { DynamoDBClient } from '@aws-sdk/client-dynamodb';
-import { DynamoDBDocumentClient, BatchGetCommand, DeleteCommand, GetCommand, PutCommand, UpdateCommand, QueryCommand, ScanCommand } from '@aws-sdk/lib-dynamodb';
+import { DynamoDBDocumentClient, BatchGetCommand, BatchWriteCommand, DeleteCommand, GetCommand, PutCommand, UpdateCommand, QueryCommand, ScanCommand } from '@aws-sdk/lib-dynamodb';
 import { ApiGatewayManagementApiClient, PostToConnectionCommand } from '@aws-sdk/client-apigatewaymanagementapi';
 import { S3Client, PutObjectCommand, GetObjectCommand, DeleteObjectCommand } from '@aws-sdk/client-s3';
 import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
@@ -151,7 +151,7 @@ interface FavorRequest {
     createdAt: string;
     updatedAt: string;
     userID: string;
-    requestType: 'General' | 'Assign Task' | 'Ask a Favor' | 'Other';
+    requestType: 'General' | 'Assign Task' | 'IT Ticket' | 'Ask a Favor' | 'Other';
     unreadCount: number;
     initialMessage: string;
     deadline?: string;
@@ -4441,7 +4441,9 @@ async function handleFetchTasks(
 }
 
 /**
- * Delete a conversation/task (soft delete or archive).
+ * Delete a conversation/task.
+ * - Tasks: soft-delete (add to deletedBy, preserves data)
+ * - Chats: hard-delete (permanently removes FavorRequest + all messages)
  */
 async function deleteConversation(
     senderID: string,
@@ -4475,9 +4477,13 @@ async function deleteConversation(
         return;
     }
 
-    // 3. Delete based on type
-    const deleteType = payload.deleteType || 'forMe'; // 'forMe' or 'forEveryone'
+    // 3. Determine if this is a task (tasks use soft-delete, chats use hard-delete)
+    const deleteType = payload.deleteType || 'forMe';
     const nowIso = new Date().toISOString();
+    const isTask = favor.isTask === true ||
+        favor.requestType === 'Assign Task' ||
+        favor.requestType === 'IT Ticket' ||
+        favor.requestType === 'Ask a Favor';
 
     if (deleteType === 'forEveryone') {
         // === PERMANENT DELETE: Set status to 'deleted' — hides for ALL participants ===
@@ -4502,8 +4508,8 @@ async function deleteConversation(
         }, { notifyOffline: false });
 
         console.log(`Conversation ${favorRequestID} permanently deleted by ${senderID}`);
-    } else {
-        // === PER-USER DELETE: Add senderID to deletedBy list ===
+    } else if (isTask) {
+        // === TASK: Soft-delete only (add to deletedBy) — tasks are preserved ===
         const currentDeletedBy = favor.deletedBy || [];
         if (!currentDeletedBy.includes(senderID)) {
             const updatedDeletedBy = [...currentDeletedBy, senderID];
@@ -4518,7 +4524,7 @@ async function deleteConversation(
             }));
         }
 
-        // Notify only the deleting user (per-user delete)
+        // Notify only the deleting user
         await sendToClient(apiGwManagement, connectionId, {
             type: 'conversationDeleted',
             favorRequestID,
@@ -4526,7 +4532,58 @@ async function deleteConversation(
             deleteType: 'forMe',
         });
 
-        console.log(`Conversation ${favorRequestID} deleted from view by ${senderID}`);
+        console.log(`Task ${favorRequestID} soft-deleted from view by ${senderID}`);
+    } else {
+        // === CHAT (non-task): HARD DELETE — remove FavorRequest + all messages permanently ===
+        console.log(`🗑️ Hard-deleting non-task chat ${favorRequestID} by ${senderID}`);
+
+        // Step 1: Delete all messages for this conversation
+        try {
+            const messagesResult = await ddb.send(new QueryCommand({
+                TableName: MESSAGES_TABLE,
+                KeyConditionExpression: 'favorRequestID = :fid',
+                ExpressionAttributeValues: { ':fid': favorRequestID },
+                ProjectionExpression: 'favorRequestID, #ts',
+                ExpressionAttributeNames: { '#ts': 'timestamp' },
+            }));
+            const messages = messagesResult.Items || [];
+            console.log(`🗑️ Found ${messages.length} messages to delete for ${favorRequestID}`);
+
+            // Batch delete messages (DynamoDB allows max 25 items per batch)
+            for (let i = 0; i < messages.length; i += 25) {
+                const batch = messages.slice(i, i + 25);
+                await ddb.send(new BatchWriteCommand({
+                    RequestItems: {
+                        [MESSAGES_TABLE]: batch.map((msg: any) => ({
+                            DeleteRequest: {
+                                Key: {
+                                    favorRequestID: msg.favorRequestID,
+                                    timestamp: msg.timestamp,
+                                },
+                            },
+                        })),
+                    },
+                }));
+            }
+        } catch (msgErr) {
+            console.error(`Failed to delete messages for ${favorRequestID}:`, msgErr);
+        }
+
+        // Step 2: Delete the FavorRequest record itself
+        await ddb.send(new DeleteCommand({
+            TableName: FAVORS_TABLE,
+            Key: { favorRequestID },
+        }));
+
+        // Notify the deleting user
+        await sendToClient(apiGwManagement, connectionId, {
+            type: 'conversationDeleted',
+            favorRequestID,
+            deletedBy: senderID,
+            deleteType: 'hardDelete',
+        });
+
+        console.log(`🗑️ Chat ${favorRequestID} hard-deleted (FavorRequest + messages) by ${senderID}`);
     }
 }
 
