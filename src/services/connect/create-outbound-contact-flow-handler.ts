@@ -180,6 +180,8 @@ function buildOutboundFlowContent(params: {
                 Parameters: {
                     RecordingBehavior: {
                         RecordedParticipants: ['Agent', 'Customer'],
+                        // Enable automated interaction (IVR/bot) recording for outbound AI calls.
+                        IVRRecordingBehavior: 'Enabled',
                     },
                 },
                 Transitions: {

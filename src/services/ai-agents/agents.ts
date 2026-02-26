@@ -435,13 +435,12 @@ EXAMPLE - Get clinic info:
 ══════════════════════════════════════════════════════════════════════════════
 
 ▸ scheduleAppointment - Schedule a new appointment
-  Required: PatNum, Reason, Date (YYYY-MM-DD HH:mm:ss), OpName
-  Optional: Note, ProvNum
-  OpName values:
-    - ONLINE_BOOKING_EXAM: New patient exams
-    - ONLINE_BOOKING_MINOR: Cleanings, fillings, minor work
-    - ONLINE_BOOKING_MAJOR: Crowns, root canals, extractions
-  IMPORTANT: Book the requested date/time - do NOT check availability
+  Required: Reason, Date (YYYY-MM-DD HH:mm:ss)
+  PatNum: Required unless already present in session attributes (PatNum).
+  Optional: Note, OpName, Op, ProvNum, AppointmentTypeNum, duration
+  IMPORTANT: For voice calls, ask the caller for the reason, the date, and the time first.
+  Then call scheduleAppointment ONCE with the requested date/time. Do NOT read tool output aloud.
+  If booking fails because the requested time is unavailable, use getAppointmentSlots to offer 1-3 alternatives.
 
 ▸ getUpcomingAppointments - Get future appointments for patient
   Required: PatNum

@@ -418,8 +418,10 @@ async function getCallAnalytics(
     // Hydrate latestTranscripts if missing/empty
     const existingLatest = Array.isArray(analytics.latestTranscripts) ? analytics.latestTranscripts : [];
     if (existingLatest.length === 0) {
+      // IMPORTANT: The PostCallAnalytics UI renders the full conversation from `latestTranscripts`
+      // when present. Do NOT truncate to the last N segments here, otherwise the transcript appears
+      // to "start in the middle of the call" for longer AI conversations.
       analytics.latestTranscripts = segments
-        .slice(-10)
         .map((seg: any, idx: number) => {
           const rawSpeaker = String(seg.speaker || 'CUSTOMER').toUpperCase();
           const speaker = rawSpeaker === 'AGENT' || rawSpeaker === 'ASSISTANT' ? 'AGENT' : 'CUSTOMER';
@@ -567,6 +569,24 @@ async function getCallAnalytics(
     };
   }
 
+  // Tag with isAiCall + callType — same logic as getClinicAnalytics — so the
+  // PostCallAnalytics detail view shows the correct AI badge for Connect/Lex calls.
+  const analyticsSourceRaw = analytics.analyticsSource as string | undefined;
+  const analyticsSource = typeof analyticsSourceRaw === 'string' ? analyticsSourceRaw.toLowerCase() : undefined;
+  const recordCallId = typeof analytics.callId === 'string' ? analytics.callId : callId;
+  const isConnectCallId = recordCallId.startsWith('connect-');
+  const callCategory = typeof (analytics as any).callCategory === 'string' ? (analytics as any).callCategory : undefined;
+
+  // Prefer explicit analyticsSource, but fall back to heuristics for legacy/malformed records.
+  // Connect/Lex calls use callIds prefixed with "connect-".
+  const isConnectLex = analyticsSource === 'connect_lex' || isConnectCallId;
+  const isVoiceAi =
+    analyticsSource === 'voice_ai' ||
+    (!analyticsSource && !isConnectCallId && (callCategory === 'ai_voice' || callCategory === 'ai_outbound'));
+
+  const isAiCall = isConnectLex || isVoiceAi;
+  const derivedCallType = isVoiceAi ? 'ai_chime' : isConnectLex ? 'ai_connect' : 'human';
+
   return {
     statusCode: 200,
     headers: {
@@ -577,6 +597,8 @@ async function getCallAnalytics(
     },
     body: JSON.stringify({
       ...analytics,
+      isAiCall,
+      callType: derivedCallType,
       etag
     })
   };
@@ -747,7 +769,32 @@ async function getClinicAnalytics(
   }
 
   const queryResult = await ddb.send(new QueryCommand(queryCommand));
-  const analytics = queryResult.Items || [];
+  const rawCalls = queryResult.Items || [];
+
+  // Tag each call with isAiCall + callType for frontend differentiation.
+  // Two AI sources write to this table:
+  //   - 'voice_ai'    → ToothFairy/Chime Voice AI handler (voice-ai-handler.ts)
+  //   - 'connect_lex' → Amazon Connect + Amazon Lex AI handler (lex-bedrock-hook.ts)
+  // Human agent calls have no analyticsSource (written by process-call-analytics-stream.ts).
+  const calls = rawCalls.map((call: any) => {
+    const analyticsSourceRaw = typeof call.analyticsSource === 'string' ? call.analyticsSource : undefined;
+    const analyticsSource = analyticsSourceRaw ? analyticsSourceRaw.toLowerCase() : undefined;
+    const callId = typeof call.callId === 'string' ? call.callId : '';
+    const callCategory = typeof call.callCategory === 'string' ? call.callCategory : undefined;
+    const isConnectCallId = callId.startsWith('connect-');
+
+    const isConnectLex = analyticsSource === 'connect_lex' || isConnectCallId;
+    const isVoiceAi =
+      analyticsSource === 'voice_ai' ||
+      (!analyticsSource && !isConnectCallId && (callCategory === 'ai_voice' || callCategory === 'ai_outbound'));
+
+    const isAiCall = isConnectLex || isVoiceAi;
+    const callType = isVoiceAi ? 'ai_chime' : isConnectLex ? 'ai_connect' : 'human';
+    return { ...call, isAiCall, callType };
+  });
+
+  const totalAiCalls = calls.filter(c => c.isAiCall).length;
+  const totalHumanCalls = calls.length - totalAiCalls;
 
   return {
     statusCode: 200,
@@ -756,10 +803,11 @@ async function getClinicAnalytics(
       clinicId,
       startTime,
       endTime,
-      totalCalls: analytics.length,
-      calls: analytics,
-      // **FLAW #10 FIX: Include signed pagination tokens**
-      // CRITICAL FIX #15: Sign tokens to prevent tampering
+      totalCalls: calls.length,
+      totalAiCalls,
+      totalHumanCalls,
+      calls,
+      // CRITICAL FIX #15: Signed pagination tokens to prevent tampering
       hasMore: !!queryResult.LastEvaluatedKey,
       lastEvaluatedKey: queryResult.LastEvaluatedKey
         ? signPaginationToken(queryResult.LastEvaluatedKey, `clinic:${clinicId}`)

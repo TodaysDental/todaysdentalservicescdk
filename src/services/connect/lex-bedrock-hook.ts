@@ -233,7 +233,7 @@ async function searchPatientByPhoneFast(params: {
   const phoneNumber = String(params.phoneNumber || '').trim();
   const clinicId = String(params.clinicId || '').trim();
   const budgetMsRaw = Number(params.budgetMs);
-  const budgetMs = Number.isFinite(budgetMsRaw) ? Math.max(200, Math.min(budgetMsRaw, 6000)) : 2500;
+  const budgetMs = Number.isFinite(budgetMsRaw) ? Math.max(200, Math.min(budgetMsRaw, 6000)) : 1200;
 
   if (!phoneNumber || !clinicId) {
     return { patient: null, matchCount: 0, usedFormat: '' };
@@ -766,15 +766,17 @@ async function getVoiceSettingsForClinic(clinicId: string): Promise<ClinicVoiceS
 
 interface ConnectCallAnalytics {
   callId: string;             // PK: connect-${contactId}
-  timestamp: number;          // SK: call start time in ms
+  timestamp: number;          // SK: call start time in epoch seconds
   clinicId: string;
   callCategory: 'ai_voice' | 'ai_outbound';
   callType: 'inbound' | 'outbound';
   callStatus: 'active' | 'completed' | 'error';
   outcome?: 'answered' | 'completed' | 'error';
   callerNumber?: string;
+  customerPhone?: string;     // Alias for frontend (expects customerPhone)
   dialedNumber?: string;
   callDirection?: CallDirection;
+  direction?: CallDirection;  // Unified field name for frontend
   scheduledCallId?: string;
   purpose?: string;
   patientName?: string;
@@ -785,6 +787,7 @@ interface ConnectCallAnalytics {
   contactId: string;          // Original Connect ContactId
   turnCount: number;
   transcriptCount: number;
+  callStartTime?: string;     // ISO string for frontend display
   lastActivityTime: string;
   lastCallerUtterance?: string;
   lastAiResponse?: string;
@@ -811,8 +814,8 @@ async function ensureAnalyticsRecord(params: {
 }): Promise<{ callId: string; timestamp: number }> {
   if (!CALL_ANALYTICS_TABLE) {
     console.warn('[LexBedrockHook] CALL_ANALYTICS_TABLE not configured, skipping analytics');
-    const ts = Number.isFinite(params.callStartMs) ? Math.floor(params.callStartMs) : Date.now();
-    return { callId: params.callId, timestamp: ts };
+    const tsMs = Number.isFinite(params.callStartMs) ? Math.floor(params.callStartMs) : Date.now();
+    return { callId: params.callId, timestamp: Math.floor(tsMs / 1000) };
   }
 
   const {
@@ -829,8 +832,11 @@ async function ensureAnalyticsRecord(params: {
     aiAgentId,
     aiAgentName,
   } = params;
-  const timestamp = Number.isFinite(callStartMs) ? Math.floor(callStartMs) : Date.now();
-  const ttl = Math.floor(timestamp / 1000) + (CONFIG.ANALYTICS_TTL_DAYS * 24 * 60 * 60);
+  // CRITICAL FIX: Store timestamp in epoch seconds (not ms) to match CallAnalyticsRecord schema
+  // and the clinicId-timestamp-index GSI used by getClinicAnalytics queries.
+  const timestampMs = Number.isFinite(callStartMs) ? Math.floor(callStartMs) : Date.now();
+  const timestamp = Math.floor(timestampMs / 1000);
+  const ttl = timestamp + (CONFIG.ANALYTICS_TTL_DAYS * 24 * 60 * 60);
 
   // Check if record already exists
   try {
@@ -853,6 +859,7 @@ async function ensureAnalyticsRecord(params: {
   // Create new record
   const callCategory: ConnectCallAnalytics['callCategory'] = callDirection === 'outbound' ? 'ai_outbound' : 'ai_voice';
   const callType: ConnectCallAnalytics['callType'] = callDirection === 'outbound' ? 'outbound' : 'inbound';
+  const callStartTimeIso = new Date(timestampMs).toISOString();
   const analytics: ConnectCallAnalytics = {
     callId,
     timestamp,
@@ -862,6 +869,7 @@ async function ensureAnalyticsRecord(params: {
     callStatus: 'active',
     outcome: 'answered',
     callerNumber,
+    customerPhone: callerNumber,             // Alias for frontend (expects customerPhone)
     dialedNumber,
     callDirection,
     scheduledCallId,
@@ -874,7 +882,9 @@ async function ensureAnalyticsRecord(params: {
     contactId,
     turnCount: 0,
     transcriptCount: 0,
-    lastActivityTime: new Date(timestamp).toISOString(),
+    callStartTime: callStartTimeIso,        // ISO string for frontend display
+    direction: callDirection,                // Unified field name for frontend
+    lastActivityTime: callStartTimeIso,
     toolsUsed: [],
     ttl,
   };

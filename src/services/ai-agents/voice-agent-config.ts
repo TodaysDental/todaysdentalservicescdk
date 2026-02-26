@@ -62,13 +62,19 @@ export interface VoiceSettings {
  * - It is NOT the same as "voice AI is available" — it is "what to do when CLOSED"
  */
 export type AfterHoursCallingMode =
-  | 'OFF'                 // Ignore clinic hours; always route to human agents
-  | 'FORWARD_TO_AI'       // When CLOSED, forward to clinic.aiPhoneNumber
-  | 'PLAY_CLOSED_MESSAGE' // When CLOSED, play "clinic is closed" message and hang up
+  | 'OFF'                    // Ignore clinic hours; always route to human agents
+  | 'FORWARD_TO_AI'          // When CLOSED, forward to clinic.aiPhoneNumber
+  | 'PLAY_CLOSED_MESSAGE'    // When CLOSED, play "clinic is closed" message and hang up
+  | 'FORWARD_TO_AI_ALWAYS'   // ALWAYS forward to AI, ignoring clinic hours & agent availability
   ;
 
 function normalizeAfterHoursCallingMode(value: unknown): AfterHoursCallingMode | undefined {
-  if (value === 'OFF' || value === 'FORWARD_TO_AI' || value === 'PLAY_CLOSED_MESSAGE') return value;
+  if (
+    value === 'OFF' ||
+    value === 'FORWARD_TO_AI' ||
+    value === 'PLAY_CLOSED_MESSAGE' ||
+    value === 'FORWARD_TO_AI_ALWAYS'
+  ) return value as AfterHoursCallingMode;
   return undefined;
 }
 
@@ -91,7 +97,7 @@ export const AVAILABLE_VOICES = [
 
 export interface VoiceAgentConfig {
   clinicId: string;
-  
+
   // ========================================
   // INBOUND AI CALLING TOGGLE
   // ========================================
@@ -109,11 +115,11 @@ export interface VoiceAgentConfig {
    * - If this field is missing, routing derives a mode from `aiInboundEnabled` and `inboundAgentId`.
    */
   afterHoursCallingMode?: AfterHoursCallingMode;
-  
+
   // Current agent for after-hours inbound calls
   inboundAgentId: string;
   inboundAgentName?: string;
-  
+
   // ========================================
   // OUTBOUND AI CALLING TOGGLE
   // ========================================
@@ -123,17 +129,17 @@ export interface VoiceAgentConfig {
    * Default: true (enabled) if outboundAgentId is set.
    */
   aiOutboundEnabled?: boolean;
-  
+
   // Current agent for outbound calls (optional default)
   outboundAgentId?: string;
   outboundAgentName?: string;
-  
+
   // Voice customization per clinic
   voiceSettings?: VoiceSettings;
-  
+
   // Custom filler phrases (optional - defaults used if not set)
   customFillerPhrases?: string[];
-  
+
   // Custom greetings (optional)
   afterHoursGreeting?: string;
   outboundGreetings?: {
@@ -143,7 +149,7 @@ export interface VoiceAgentConfig {
     reengagement?: string;
     custom?: string;
   };
-  
+
   // Audit
   updatedAt: string;
   updatedBy: string;
@@ -386,7 +392,7 @@ async function getConfig(
   return {
     statusCode: 200,
     headers: getCorsHeaders(event),
-    body: JSON.stringify({ 
+    body: JSON.stringify({
       config: configForResponse,
       status, // Computed active states (enabled AND agent configured)
     }),
@@ -422,14 +428,14 @@ async function updateConfig(
       statusCode: 400,
       headers: getCorsHeaders(event),
       body: JSON.stringify({
-        error: 'Invalid afterHoursCallingMode. Must be one of: OFF, FORWARD_TO_AI, PLAY_CLOSED_MESSAGE',
+        error: 'Invalid afterHoursCallingMode. Must be one of: OFF, FORWARD_TO_AI, PLAY_CLOSED_MESSAGE, FORWARD_TO_AI_ALWAYS',
       }),
     };
   }
 
   // Check if this is just a toggle update (no agent change)
   const isToggleOnly = (
-    typeof body.aiInboundEnabled === 'boolean' || 
+    typeof body.aiInboundEnabled === 'boolean' ||
     typeof body.aiOutboundEnabled === 'boolean' ||
     typeof body.afterHoursCallingMode === 'string'
   ) && !body.inboundAgentId && !body.outboundAgentId;
@@ -439,8 +445,8 @@ async function updateConfig(
     return {
       statusCode: 400,
       headers: getCorsHeaders(event),
-      body: JSON.stringify({ 
-        error: 'At least inboundAgentId, outboundAgentId, aiInboundEnabled, aiOutboundEnabled, or afterHoursCallingMode is required' 
+      body: JSON.stringify({
+        error: 'At least inboundAgentId, outboundAgentId, aiInboundEnabled, aiOutboundEnabled, or afterHoursCallingMode is required'
       }),
     };
   }
@@ -504,9 +510,9 @@ async function updateConfig(
     typeof body.aiInboundEnabled === 'boolean'
       ? body.aiInboundEnabled
       : (normalizedAfterHoursMode
-        ? normalizedAfterHoursMode === 'FORWARD_TO_AI'
+        ? (normalizedAfterHoursMode === 'FORWARD_TO_AI' || normalizedAfterHoursMode === 'FORWARD_TO_AI_ALWAYS')
         : (existing?.aiInboundEnabled ?? true));
-  
+
   const aiOutboundEnabled = typeof body.aiOutboundEnabled === 'boolean'
     ? body.aiOutboundEnabled
     : (existing?.aiOutboundEnabled ?? true);
@@ -654,7 +660,7 @@ async function updateClinicHours(
   // Validate hours format
   const validDays = ['monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday', 'sunday'];
   const timeRegex = /^([01]?[0-9]|2[0-3]):([0-5][0-9])$/; // Valid 24-hour format HH:mm
-  
+
   for (const [day, schedule] of Object.entries(body.hours)) {
     if (!validDays.includes(day.toLowerCase())) {
       return {
@@ -671,15 +677,15 @@ async function updateClinicHours(
         body: JSON.stringify({ error: `Day ${day} must have open/close times or be marked closed` }),
       };
     }
-    
+
     // VALIDATION FIX: Validate time format (HH:mm in 24-hour format)
     if (!sched.closed) {
       if (!timeRegex.test(sched.open)) {
         return {
           statusCode: 400,
           headers: getCorsHeaders(event),
-          body: JSON.stringify({ 
-            error: `Invalid open time for ${day}: "${sched.open}". Must be in HH:mm format (e.g., "09:00", "17:30")` 
+          body: JSON.stringify({
+            error: `Invalid open time for ${day}: "${sched.open}". Must be in HH:mm format (e.g., "09:00", "17:30")`
           }),
         };
       }
@@ -687,24 +693,24 @@ async function updateClinicHours(
         return {
           statusCode: 400,
           headers: getCorsHeaders(event),
-          body: JSON.stringify({ 
-            error: `Invalid close time for ${day}: "${sched.close}". Must be in HH:mm format (e.g., "09:00", "17:30")` 
+          body: JSON.stringify({
+            error: `Invalid close time for ${day}: "${sched.close}". Must be in HH:mm format (e.g., "09:00", "17:30")`
           }),
         };
       }
-      
+
       // VALIDATION FIX: Ensure open time is before close time
       const [openHour, openMin] = sched.open.split(':').map(Number);
       const [closeHour, closeMin] = sched.close.split(':').map(Number);
       const openMinutes = openHour * 60 + openMin;
       const closeMinutes = closeHour * 60 + closeMin;
-      
+
       if (openMinutes >= closeMinutes) {
         return {
           statusCode: 400,
           headers: getCorsHeaders(event),
-          body: JSON.stringify({ 
-            error: `Invalid hours for ${day}: open time (${sched.open}) must be before close time (${sched.close})` 
+          body: JSON.stringify({
+            error: `Invalid hours for ${day}: open time (${sched.open}) must be before close time (${sched.close})`
           }),
         };
       }

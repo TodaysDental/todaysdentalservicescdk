@@ -39,12 +39,15 @@ const dynamodb = new DynamoDBClient({});
 
 // Environment variables
 const CALL_ANALYTICS_TABLE = process.env.CALL_ANALYTICS_TABLE_NAME || '';
-const AI_AGENTS_METRICS_TABLE = process.env.AI_AGENTS_METRICS_TABLE_NAME || '';
+// AI_AGENTS_METRICS_TABLE is no longer used - AI agent data is now queried directly
+// from the shared CALL_ANALYTICS_TABLE where voice AI writes records with analyticsSource='voice_ai'
 const PATIENT_PORTAL_METRICS_TABLE = process.env.PATIENT_PORTAL_METRICS_TABLE_NAME || '';
 const CLINIC_CONFIG_TABLE = process.env.CLINIC_CONFIG_TABLE_NAME || '';
 const CLINIC_SECRETS_TABLE = process.env.CLINIC_SECRETS_TABLE_NAME || '';
 const GLOBAL_SECRETS_TABLE = process.env.GLOBAL_SECRETS_TABLE_NAME || '';
 const CONSOLIDATED_SFTP_HOST = process.env.CONSOLIDATED_SFTP_HOST || '';
+const CALLBACK_TABLE_PREFIX = process.env.CALLBACK_TABLE_PREFIX || 'todaysdentalinsights-callback-';
+const CALLBACK_DEFAULT_TABLE = process.env.CALLBACK_DEFAULT_TABLE || '';
 
 // Module permission configuration
 const MODULE_NAME = 'Operations';
@@ -280,6 +283,14 @@ interface AIAgentsData {
     error?: string;
 }
 
+interface CallbacksData {
+    totalSubmitted: number;
+    pending: number;
+    completed: number;
+    status: 'success' | 'error';
+    error?: string;
+}
+
 interface OpenDentalProductionData {
     grossProduction: number;
     netProduction: number;
@@ -295,6 +306,7 @@ interface OpenDentalProductionData {
     completedAppointments: number;
     brokenAppointments: number;
     newPatients: number;
+    nextSevenDaysAppointments: number;
     status: 'success' | 'error' | 'not_configured' | 'no_data';
     error?: string;
 }
@@ -309,6 +321,7 @@ interface ClinicDailyAnalytics {
     calls: CallsData;
     patientPortal: PatientPortalData;
     aiAgents: AIAgentsData;
+    callbacks: CallbacksData;
     openDentalProduction: OpenDentalProductionData;
     fetchedAt: string;
 }
@@ -513,18 +526,20 @@ async function fetchClinicAnalytics(
             completedAppointments: 0,
             brokenAppointments: 0,
             newPatients: 0,
+            nextSevenDaysAppointments: 0,
             status: 'error',
             error: error.message,
         };
     });
 
-    const [ga4, googleAds, clarity, calls, patientPortal, aiAgents, openDental] = await Promise.all([
+    const [ga4, googleAds, clarity, calls, patientPortal, aiAgents, callbacks, openDental] = await Promise.all([
         fetchGA4Data(clinicConfig.ga4PropertyId, date),
         fetchGoogleAdsData(clinicConfig.googleAds?.customerId, date),
         fetchClarityData(clinicId, clinicConfig.microsoftClarityProjectId, date),
         fetchCallsData(clinicId, date),
         fetchPatientPortalData(clinicId, date),
         fetchAIAgentsData(clinicId, date),
+        fetchCallbacksData(clinicId, date),
         openDentalWithTimeout,
     ]);
 
@@ -538,6 +553,7 @@ async function fetchClinicAnalytics(
         calls,
         patientPortal,
         aiAgents,
+        callbacks,
         openDentalProduction: openDental,
         fetchedAt: new Date().toISOString(),
     };
@@ -949,11 +965,14 @@ async function fetchCallsData(clinicId: string, date: string): Promise<CallsData
             TableName: CALL_ANALYTICS_TABLE,
             IndexName: 'clinicId-timestamp-index',
             KeyConditionExpression: 'clinicId = :clinicId AND #ts BETWEEN :start AND :end',
+            // Exclude AI voice calls - they are counted in the AI Agents section
+            FilterExpression: 'attribute_not_exists(analyticsSource) OR analyticsSource <> :voiceAi',
             ExpressionAttributeNames: { '#ts': 'timestamp' },
             ExpressionAttributeValues: {
                 ':clinicId': { S: clinicId },
                 ':start': { N: startOfDay.toString() },
                 ':end': { N: endOfDay.toString() },
+                ':voiceAi': { S: 'voice_ai' },
             },
         }));
 
@@ -1071,7 +1090,10 @@ async function fetchPatientPortalData(clinicId: string, date: string): Promise<P
 // ============================================
 
 async function fetchAIAgentsData(clinicId: string, date: string): Promise<AIAgentsData> {
-    if (!AI_AGENTS_METRICS_TABLE) {
+    // Query the shared CallAnalytics table for Voice AI calls.
+    // Voice AI handler writes records with analyticsSource='voice_ai' and
+    // callCategory='ai_voice'/'ai_outbound' to the CallAnalytics table.
+    if (!CALL_ANALYTICS_TABLE) {
         return {
             totalCalls: 0,
             answeredCalls: 0,
@@ -1083,22 +1105,32 @@ async function fetchAIAgentsData(clinicId: string, date: string): Promise<AIAgen
             resolutionRate: 0,
             transferredToHuman: 0,
             status: 'error',
-            error: 'AI agents metrics table not configured',
+            error: 'Call analytics table not configured',
         };
     }
 
     try {
-        // Query AI agents metrics table
-        // Schema: clinicId (PK), metricDate (SK)
-        const result = await dynamodb.send(new GetItemCommand({
-            TableName: AI_AGENTS_METRICS_TABLE,
-            Key: {
-                clinicId: { S: clinicId },
-                metricDate: { S: date },
+        const startOfDay = new Date(`${date}T00:00:00Z`).getTime();
+        const endOfDay = new Date(`${date}T23:59:59Z`).getTime();
+
+        // Query CallAnalytics table for AI voice calls using clinicId-timestamp GSI
+        const result = await dynamodb.send(new QueryCommand({
+            TableName: CALL_ANALYTICS_TABLE,
+            IndexName: 'clinicId-timestamp-index',
+            KeyConditionExpression: 'clinicId = :clinicId AND #ts BETWEEN :start AND :end',
+            FilterExpression: 'analyticsSource = :voiceAi',
+            ExpressionAttributeNames: { '#ts': 'timestamp' },
+            ExpressionAttributeValues: {
+                ':clinicId': { S: clinicId },
+                ':start': { N: startOfDay.toString() },
+                ':end': { N: endOfDay.toString() },
+                ':voiceAi': { S: 'voice_ai' },
             },
         }));
 
-        if (!result.Item) {
+        const aiCalls = (result.Items || []).map(item => unmarshall(item));
+
+        if (aiCalls.length === 0) {
             return {
                 totalCalls: 0,
                 answeredCalls: 0,
@@ -1113,18 +1145,66 @@ async function fetchAIAgentsData(clinicId: string, date: string): Promise<AIAgen
             };
         }
 
-        const metrics = unmarshall(result.Item);
+        // Aggregate metrics from individual call records
+        let answeredCalls = 0;
+        let appointmentsBooked = 0;
+        let appointmentsCancelled = 0;
+        let appointmentsRescheduled = 0;
+        let totalDuration = 0;
+        let transferredToHuman = 0;
+        let durationCount = 0;
+
+        aiCalls.forEach(call => {
+            // Count answered/completed calls
+            if (call.outcome === 'completed' || call.outcome === 'answered') {
+                answeredCalls++;
+            }
+
+            // Count transferred calls
+            if (call.outcome === 'transferred') {
+                transferredToHuman++;
+            }
+
+            // Count appointments booked (tracked by voice AI handler)
+            if (call.appointmentBooked) {
+                appointmentsBooked++;
+            }
+
+            // Detect cancellations and reschedules from toolsUsed array
+            const tools: string[] = call.toolsUsed || [];
+            if (tools.some((t: string) => t.toLowerCase().includes('cancel'))) {
+                appointmentsCancelled++;
+            }
+            if (tools.some((t: string) => t.toLowerCase().includes('reschedule'))) {
+                appointmentsRescheduled++;
+            }
+
+            // Sum duration for average calculation
+            if (call.duration && call.duration > 0) {
+                totalDuration += call.duration;
+                durationCount++;
+            }
+        });
+
+        const totalCalls = aiCalls.length;
+        const avgCallDuration = durationCount > 0 ? Math.round(totalDuration / durationCount) : 0;
+        // Resolution rate: calls resolved without transfer to human
+        const resolutionRate = totalCalls > 0
+            ? (totalCalls - transferredToHuman) / totalCalls
+            : 0;
+
+        console.log(`[AIAgents] Aggregated ${totalCalls} AI calls for clinic ${clinicId}: ${answeredCalls} answered, ${appointmentsBooked} booked, ${transferredToHuman} transferred`);
 
         return {
-            totalCalls: metrics.totalCalls || 0,
-            answeredCalls: metrics.answeredCalls || 0,
-            appointmentsBooked: metrics.appointmentsBooked || 0,
-            appointmentsUsed: metrics.appointmentsUsed || 0,
-            appointmentsCancelled: metrics.appointmentsCancelled || 0,
-            appointmentsRescheduled: metrics.appointmentsRescheduled || 0,
-            avgCallDuration: metrics.avgCallDuration || 0,
-            resolutionRate: metrics.resolutionRate || 0,
-            transferredToHuman: metrics.transferredToHuman || 0,
+            totalCalls,
+            answeredCalls,
+            appointmentsBooked,
+            appointmentsUsed: 0, // Requires OpenDental cross-reference (future enhancement)
+            appointmentsCancelled,
+            appointmentsRescheduled,
+            avgCallDuration,
+            resolutionRate,
+            transferredToHuman,
             status: 'success',
         };
     } catch (error: any) {
@@ -1139,6 +1219,119 @@ async function fetchAIAgentsData(clinicId: string, date: string): Promise<AIAgen
             avgCallDuration: 0,
             resolutionRate: 0,
             transferredToHuman: 0,
+            status: 'error',
+            error: error.message,
+        };
+    }
+}
+
+// ============================================
+// CALLBACKS DATA FETCHER
+// ============================================
+
+async function fetchCallbacksData(clinicId: string, date: string): Promise<CallbacksData> {
+    if (!CALLBACK_TABLE_PREFIX && !CALLBACK_DEFAULT_TABLE) {
+        return {
+            totalSubmitted: 0,
+            pending: 0,
+            completed: 0,
+            status: 'error',
+            error: 'Callback tables not configured',
+        };
+    }
+
+    try {
+        // Callback tables use per-clinic naming: todaysdentalinsights-callback-{clinicId}
+        const clinicTableName = `${CALLBACK_TABLE_PREFIX}${clinicId}`;
+
+        // Query using CreatedAtIndex GSI (PK=clinicId, SK=createdAt) for the selected date
+        const startOfDay = `${date}T00:00:00`;
+        const endOfDay = `${date}T23:59:59`;
+
+        let items: any[] = [];
+        let effectiveTableName = clinicTableName;
+
+        try {
+            const result = await dynamodb.send(new QueryCommand({
+                TableName: clinicTableName,
+                IndexName: 'CreatedAtIndex',
+                KeyConditionExpression: 'clinicId = :clinicId AND createdAt BETWEEN :start AND :end',
+                ExpressionAttributeValues: {
+                    ':clinicId': { S: clinicId },
+                    ':start': { S: startOfDay },
+                    ':end': { S: endOfDay },
+                },
+            }));
+            items = (result.Items || []).map(item => unmarshall(item));
+        } catch (tableError: any) {
+            // If clinic-specific table doesn't exist, try the default table
+            if (tableError.name === 'ResourceNotFoundException' && CALLBACK_DEFAULT_TABLE) {
+                effectiveTableName = CALLBACK_DEFAULT_TABLE;
+                const result = await dynamodb.send(new QueryCommand({
+                    TableName: CALLBACK_DEFAULT_TABLE,
+                    IndexName: 'CreatedAtIndex',
+                    KeyConditionExpression: 'clinicId = :clinicId AND createdAt BETWEEN :start AND :end',
+                    ExpressionAttributeValues: {
+                        ':clinicId': { S: clinicId },
+                        ':start': { S: startOfDay },
+                        ':end': { S: endOfDay },
+                    },
+                }));
+                items = (result.Items || []).map(item => unmarshall(item));
+            } else {
+                throw tableError;
+            }
+        }
+
+        // Also count ALL currently pending callbacks (not just today's)
+        let allPending = 0;
+        try {
+            const pendingResult = await dynamodb.send(new QueryCommand({
+                TableName: effectiveTableName,
+                IndexName: 'StatusIndex',
+                KeyConditionExpression: 'clinicId = :clinicId AND calledBack = :no',
+                ExpressionAttributeValues: {
+                    ':clinicId': { S: clinicId },
+                    ':no': { S: 'NO' },
+                },
+                Select: 'COUNT',
+            }));
+            allPending = pendingResult.Count || 0;
+        } catch (pendingError: any) {
+            // If the clinic table didn't exist, try default for pending count too
+            if (pendingError.name === 'ResourceNotFoundException' && CALLBACK_DEFAULT_TABLE) {
+                const pendingResult = await dynamodb.send(new QueryCommand({
+                    TableName: CALLBACK_DEFAULT_TABLE,
+                    IndexName: 'StatusIndex',
+                    KeyConditionExpression: 'clinicId = :clinicId AND calledBack = :no',
+                    ExpressionAttributeValues: {
+                        ':clinicId': { S: clinicId },
+                        ':no': { S: 'NO' },
+                    },
+                    Select: 'COUNT',
+                }));
+                allPending = pendingResult.Count || 0;
+            }
+            // Silently ignore other errors for pending count
+        }
+
+        const totalSubmitted = items.length;
+        const completed = items.filter(item => item.calledBack === 'YES').length;
+
+        console.log(`[Callbacks] Clinic ${clinicId}: ${totalSubmitted} submitted on ${date}, ${allPending} total pending`);
+
+        return {
+            totalSubmitted,
+            pending: allPending,
+            completed,
+            status: 'success',
+        };
+    } catch (error: any) {
+        console.error(`[Callbacks] Error fetching data for clinic ${clinicId}:`, error);
+        return {
+            totalSubmitted: 0,
+            pending: 0,
+            completed: 0,
             status: 'error',
             error: error.message,
         };
@@ -1171,6 +1364,7 @@ async function fetchOpenDentalProduction(clinicId: string, date: string): Promis
                 completedAppointments: 0,
                 brokenAppointments: 0,
                 newPatients: 0,
+                nextSevenDaysAppointments: 0,
                 status: 'not_configured',
             };
         }
@@ -1209,6 +1403,7 @@ async function fetchOpenDentalProduction(clinicId: string, date: string): Promis
                 completedAppointments: 0,
                 brokenAppointments: 0,
                 newPatients: 0,
+                nextSevenDaysAppointments: 0,
                 status: 'no_data',
             };
         }
@@ -1230,6 +1425,7 @@ async function fetchOpenDentalProduction(clinicId: string, date: string): Promis
             completedAppointments: parseInt(todayRow.Total_Complete_2 || '0', 10),
             brokenAppointments: parseInt(todayRow.Total_Broken_5 || '0', 10),
             newPatients: parseInt(todayRow.Total_New_Patients || '0', 10),
+            nextSevenDaysAppointments: parseInt(todayRow.Next_7_Days_Appts || '0', 10),
             status: 'success',
         };
     } catch (error: any) {
@@ -1249,6 +1445,7 @@ async function fetchOpenDentalProduction(clinicId: string, date: string): Promis
             completedAppointments: 0,
             brokenAppointments: 0,
             newPatients: 0,
+            nextSevenDaysAppointments: 0,
             status: 'error',
             error: error.message,
         };
@@ -1362,7 +1559,14 @@ function generateDailyReportQuery(selectedDate: string): string {
         WHERE a.AptStatus = 1
           AND DATE(a.AptDateTime) = DATE_ADD(d.report_date, INTERVAL 1 DAY)
           AND cp.Status = 6
-    ), 2), 0) AS Next_Day_Ins_Estimate
+    ), 2), 0) AS Next_Day_Ins_Estimate,
+
+    COALESCE((SELECT COUNT(*)
+        FROM appointment
+        WHERE AptStatus = 1
+          AND DATE(AptDateTime) > d.report_date
+          AND DATE(AptDateTime) <= DATE_ADD(d.report_date, INTERVAL 7 DAY)
+    ), 0) AS Next_7_Days_Appts
 
 FROM (
     SELECT '${selectedDate}' AS report_date
@@ -1577,6 +1781,11 @@ function calculateTotals(clinics: ClinicDailyAnalytics[]): any {
             totalCalls: clinics.reduce((sum, c) => sum + c.aiAgents.totalCalls, 0),
             appointmentsBooked: clinics.reduce((sum, c) => sum + c.aiAgents.appointmentsBooked, 0),
             transferredToHuman: clinics.reduce((sum, c) => sum + c.aiAgents.transferredToHuman, 0),
+        },
+        callbacks: {
+            totalSubmitted: clinics.reduce((sum, c) => sum + c.callbacks.totalSubmitted, 0),
+            pending: clinics.reduce((sum, c) => sum + c.callbacks.pending, 0),
+            completed: clinics.reduce((sum, c) => sum + c.callbacks.completed, 0),
         },
         openDentalProduction: {
             grossProduction: clinics.reduce((sum, c) => sum + c.openDentalProduction.grossProduction, 0),
