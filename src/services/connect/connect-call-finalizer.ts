@@ -97,6 +97,7 @@ async function findAnalyticsRecord(callId: string): Promise<{ callId: string; ti
       KeyConditionExpression: 'callId = :callId',
       ExpressionAttributeValues: { ':callId': callId },
       Limit: 1,
+      ScanIndexForward: false, // Most recent first (defensive; some callIds may have multiple rows)
     }));
 
     if (result.Items && result.Items.length > 0) {
@@ -112,6 +113,137 @@ async function findAnalyticsRecord(callId: string): Promise<{ callId: string; ti
   } catch (error) {
     console.error('[ConnectFinalizer] Error finding analytics record:', error);
     return null;
+  }
+}
+
+function buildTranscriptArtifactsFromSegments(params: {
+  segments: any[];
+}): {
+  latestTranscripts: Array<{ timestamp: number; speaker: 'AGENT' | 'CUSTOMER'; text: string; confidence?: number }>;
+  latestTranscriptsTruncated: boolean;
+  fullTranscript: string;
+  fullTranscriptTruncated: boolean;
+  segmentCount: number;
+} {
+  const MAX_LATEST_SEGMENTS = 400;
+  const MAX_FULL_CHARS = 20000;
+
+  const rawSegments = Array.isArray(params.segments) ? params.segments : [];
+
+  const normalized = rawSegments
+    .map((seg: any, idx: number) => {
+      const rawSpeaker = String(seg?.speaker || 'CUSTOMER').toUpperCase();
+      const speaker: 'AGENT' | 'CUSTOMER' =
+        rawSpeaker === 'AGENT' || rawSpeaker === 'ASSISTANT' ? 'AGENT' : 'CUSTOMER';
+
+      const timestamp =
+        typeof seg?.startTime === 'number'
+          ? seg.startTime
+          : (typeof seg?.timestamp === 'number' ? seg.timestamp : idx);
+
+      const text = String(seg?.content ?? seg?.text ?? seg?.message ?? '').trim();
+      const confidence = typeof seg?.confidence === 'number' ? seg.confidence : undefined;
+
+      return { timestamp, speaker, text, confidence };
+    })
+    .filter((t: any) => typeof t.text === 'string' && t.text.trim().length > 0);
+
+  const segmentCount = normalized.length;
+
+  const latestTranscriptsTruncated = normalized.length > MAX_LATEST_SEGMENTS;
+  const latestTranscripts = latestTranscriptsTruncated
+    ? normalized.slice(-MAX_LATEST_SEGMENTS)
+    : normalized;
+
+  const fullLines = normalized.map((t) => `${t.speaker}: ${t.text}`);
+  let fullTranscript = fullLines.join('\n');
+  let fullTranscriptTruncated = false;
+
+  if (fullTranscript.length > MAX_FULL_CHARS) {
+    fullTranscript = fullTranscript.substring(fullTranscript.length - MAX_FULL_CHARS);
+    fullTranscriptTruncated = true;
+  }
+
+  return {
+    latestTranscripts,
+    latestTranscriptsTruncated,
+    fullTranscript,
+    fullTranscriptTruncated,
+    segmentCount,
+  };
+}
+
+async function persistTranscriptToAnalytics(params: {
+  callId: string;
+  timestamp: number;
+  existingTranscriptCount?: number;
+  hasTranscriptAlready?: boolean;
+}): Promise<void> {
+  if (!CALL_ANALYTICS_TABLE) return;
+  if (!TRANSCRIPT_BUFFER_TABLE) return;
+
+  const { callId, timestamp, existingTranscriptCount, hasTranscriptAlready } = params;
+
+  if (hasTranscriptAlready) {
+    return;
+  }
+
+  try {
+    const bufferResult = await docClient.send(new GetCommand({
+      TableName: TRANSCRIPT_BUFFER_TABLE,
+      Key: { callId },
+    }));
+
+    const buffer: any = bufferResult.Item;
+    const segments: any[] = Array.isArray(buffer?.segments) ? buffer.segments : [];
+
+    if (segments.length === 0) {
+      console.log('[ConnectFinalizer] No transcript segments found to persist:', { callId });
+      return;
+    }
+
+    const artifacts = buildTranscriptArtifactsFromSegments({ segments });
+
+    // Keep transcriptCount consistent and non-decreasing
+    const existingCount = typeof existingTranscriptCount === 'number' ? existingTranscriptCount : 0;
+    const transcriptCount = Math.max(existingCount, artifacts.segmentCount);
+
+    const nowIso = new Date().toISOString();
+
+    await docClient.send(new UpdateCommand({
+      TableName: CALL_ANALYTICS_TABLE,
+      Key: { callId, timestamp },
+      UpdateExpression: `
+        SET latestTranscripts = :latest,
+            fullTranscript = :full,
+            transcriptCount = :count,
+            latestTranscriptsTruncated = :latestTrunc,
+            fullTranscriptTruncated = :fullTrunc,
+            transcriptPersistedAt = :now
+      `,
+      ExpressionAttributeValues: {
+        ':latest': artifacts.latestTranscripts,
+        ':full': artifacts.fullTranscript,
+        ':count': transcriptCount,
+        ':latestTrunc': artifacts.latestTranscriptsTruncated,
+        ':fullTrunc': artifacts.fullTranscriptTruncated,
+        ':now': nowIso,
+      },
+    }));
+
+    console.log('[ConnectFinalizer] Persisted transcript into CallAnalytics:', {
+      callId,
+      timestamp,
+      segmentCount: artifacts.segmentCount,
+      latestTruncated: artifacts.latestTranscriptsTruncated,
+      fullTruncated: artifacts.fullTranscriptTruncated,
+    });
+  } catch (error: any) {
+    console.warn('[ConnectFinalizer] Failed to persist transcript (non-fatal):', {
+      callId,
+      errorName: error?.name,
+      errorMessage: error?.message,
+    });
   }
 }
 
@@ -329,6 +461,10 @@ export const handler = async (event: ConnectLambdaEvent): Promise<ConnectLambdaR
   const analyticsInfo = await findAnalyticsRecord(callId);
 
   if (analyticsInfo) {
+    const hasTranscriptAlready =
+      (typeof analyticsInfo.record?.fullTranscript === 'string' && analyticsInfo.record.fullTranscript.trim().length > 0) ||
+      (Array.isArray(analyticsInfo.record?.latestTranscripts) && analyticsInfo.record.latestTranscripts.length > 0);
+
     // Check if already finalized
     if (analyticsInfo.record.callStatus === 'completed') {
       console.log('[ConnectFinalizer] Call already finalized:', callId);
@@ -340,6 +476,17 @@ export const handler = async (event: ConnectLambdaEvent): Promise<ConnectLambdaR
         timestamp: analyticsInfo.timestamp,
         callStartMs: startMs,
         disconnectReason,
+      });
+
+      // Persist transcript from TranscriptBuffersV2 into CallAnalytics so PostCallAnalytics
+      // can show transcripts beyond the buffer TTL (Connect/Lex AI does not otherwise persist it).
+      await persistTranscriptToAnalytics({
+        callId,
+        timestamp: analyticsInfo.timestamp,
+        existingTranscriptCount: typeof analyticsInfo.record?.transcriptCount === 'number'
+          ? analyticsInfo.record.transcriptCount
+          : undefined,
+        hasTranscriptAlready,
       });
 
       // Optionally shorten transcript buffer TTL

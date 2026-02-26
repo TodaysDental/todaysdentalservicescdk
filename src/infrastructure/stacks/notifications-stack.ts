@@ -804,6 +804,19 @@ export class NotificationsStack extends Stack {
     this.smsIncomingMessageFn.addToRolePolicy(clinicConfigReadPolicy);
     this.smsAutoReplyFn.addToRolePolicy(clinicConfigReadPolicy);
 
+    // Clinic config/secrets values are encrypted with the shared secrets KMS key in this account.
+    // Grant decrypt so the SMS inbound/auto-reply Lambdas can read clinic config safely.
+    if (props.secretsEncryptionKeyArn) {
+      this.smsIncomingMessageFn.addToRolePolicy(new iam.PolicyStatement({
+        actions: ['kms:Decrypt', 'kms:DescribeKey'],
+        resources: [props.secretsEncryptionKeyArn],
+      }));
+      this.smsAutoReplyFn.addToRolePolicy(new iam.PolicyStatement({
+        actions: ['kms:Decrypt', 'kms:DescribeKey'],
+        resources: [props.secretsEncryptionKeyArn],
+      }));
+    }
+
     // AI Agents tables permissions (resolve agent config + write conversation logs)
     const importedAiAgentsTable = dynamodb.Table.fromTableArn(this, 'ImportedAiAgentsTableForSms', aiAgentsTableArn);
     importedAiAgentsTable.grantReadData(this.smsAutoReplyFn);

@@ -187,96 +187,24 @@ async function findConnectRecordingObject(params: {
   contactId: string;
   timestampMs: number;
 }): Promise<{ bucket: string; key: string; size?: number; lastModified?: string } | null> {
-  if (!CONNECT_RECORDINGS_BUCKET || !CONNECT_RECORDINGS_PREFIX) return null;
+  if (!CONNECT_RECORDINGS_BUCKET) return null;
 
   const { contactId, timestampMs } = params;
   const basePrefix = normalizeS3Prefix(CONNECT_RECORDINGS_PREFIX);
 
-  // Try a small window around the call date to handle timezone boundaries.
-  const base = new Date(timestampMs);
-  const dayOffsets = [-1, 0, 1];
-
-  for (const delta of dayOffsets) {
-    const d = new Date(Date.UTC(base.getUTCFullYear(), base.getUTCMonth(), base.getUTCDate() + delta));
-    const yyyy = String(d.getUTCFullYear());
-    const mm = String(d.getUTCMonth() + 1).padStart(2, '0');
-    const dd = String(d.getUTCDate()).padStart(2, '0');
-
-    const candidatePrefixes = [
-      `${joinS3Prefix(basePrefix, yyyy, mm, dd)}/`,
-      `${joinS3Prefix(basePrefix, `${yyyy}-${mm}-${dd}`)}/`,
-    ];
-
-    for (const prefix of candidatePrefixes) {
-      let continuationToken: string | undefined = undefined;
-      let page = 0;
-      const MAX_PAGES = 5;
-
-      const matches: Array<{ key: string; size?: number; lastModified?: string }> = [];
-
-      while (page < MAX_PAGES) {
-        const resp: ListObjectsV2CommandOutput = await s3.send(new ListObjectsV2Command({
-          Bucket: CONNECT_RECORDINGS_BUCKET,
-          Prefix: prefix,
-          ContinuationToken: continuationToken,
-          MaxKeys: 1000,
-        }));
-
-        const contents = resp.Contents || [];
-        for (const obj of contents) {
-          const key = obj.Key || '';
-          if (!key) continue;
-          if (!key.includes(contactId)) continue;
-          if (!/\.(wav|mp3)$/i.test(key)) continue;
-
-          matches.push({
-            key,
-            size: typeof obj.Size === 'number' ? obj.Size : undefined,
-            lastModified: obj.LastModified ? obj.LastModified.toISOString() : undefined,
-          });
-        }
-
-        continuationToken = resp.NextContinuationToken;
-        if (!continuationToken) break;
-        page++;
-      }
-
-      if (matches.length > 0) {
-        // Prefer the largest file (most complete), then newest.
-        matches.sort((a, b) => {
-          const as = typeof a.size === 'number' ? a.size : 0;
-          const bs = typeof b.size === 'number' ? b.size : 0;
-          if (as !== bs) return bs - as;
-
-          const at = Date.parse(a.lastModified || '') || 0;
-          const bt = Date.parse(b.lastModified || '') || 0;
-          return bt - at;
-        });
-
-        const best = matches[0];
-        return {
-          bucket: CONNECT_RECORDINGS_BUCKET,
-          key: best.key,
-          size: best.size,
-          lastModified: best.lastModified,
-        };
-      }
-    }
-  }
-
-  // Fallback (bounded): if the bucket layout differs from the expected date partitioning,
-  // try a few pages under the base prefix and look for the contactId.
-  try {
-    const baseListPrefix = `${basePrefix}/`;
+  const listBestMatchUnderPrefix = async (prefix: string, maxPages: number): Promise<{
+    key: string;
+    size?: number;
+    lastModified?: string;
+  } | null> => {
     let continuationToken: string | undefined = undefined;
     let page = 0;
-    const MAX_PAGES = 5;
     const matches: Array<{ key: string; size?: number; lastModified?: string }> = [];
 
-    while (page < MAX_PAGES) {
+    while (page < maxPages) {
       const resp: ListObjectsV2CommandOutput = await s3.send(new ListObjectsV2Command({
         Bucket: CONNECT_RECORDINGS_BUCKET,
-        Prefix: baseListPrefix,
+        Prefix: prefix,
         ContinuationToken: continuationToken,
         MaxKeys: 1000,
       }));
@@ -300,18 +228,81 @@ async function findConnectRecordingObject(params: {
       page++;
     }
 
-    if (matches.length > 0) {
-      matches.sort((a, b) => {
-        const as = typeof a.size === 'number' ? a.size : 0;
-        const bs = typeof b.size === 'number' ? b.size : 0;
-        if (as !== bs) return bs - as;
+    if (matches.length === 0) return null;
 
-        const at = Date.parse(a.lastModified || '') || 0;
-        const bt = Date.parse(b.lastModified || '') || 0;
-        return bt - at;
-      });
+    // Prefer the largest file (most complete), then newest.
+    matches.sort((a, b) => {
+      const as = typeof a.size === 'number' ? a.size : 0;
+      const bs = typeof b.size === 'number' ? b.size : 0;
+      if (as !== bs) return bs - as;
 
-      const best = matches[0];
+      const at = Date.parse(a.lastModified || '') || 0;
+      const bt = Date.parse(b.lastModified || '') || 0;
+      return bt - at;
+    });
+
+    return matches[0];
+  };
+
+  // Try a small window around the call date to handle timezone boundaries.
+  const base = new Date(timestampMs);
+  const dayOffsets = [-1, 0, 1];
+
+  for (const delta of dayOffsets) {
+    const d = new Date(Date.UTC(base.getUTCFullYear(), base.getUTCMonth(), base.getUTCDate() + delta));
+    const yyyy = String(d.getUTCFullYear());
+    const mm = String(d.getUTCMonth() + 1).padStart(2, '0');
+    const dd = String(d.getUTCDate()).padStart(2, '0');
+    const m = String(d.getUTCMonth() + 1); // non-padded fallback
+    const day = String(d.getUTCDate()); // non-padded fallback
+
+    // Connect S3 layouts vary slightly by configuration; try the most common patterns first.
+    const candidatePrefixes = [
+      // Common: .../<YYYY>/<MM>/<DD>/...
+      `${joinS3Prefix(basePrefix, yyyy, mm, dd)}/`,
+      // Common: .../<YYYY>-<MM>-<DD>/...
+      `${joinS3Prefix(basePrefix, `${yyyy}-${mm}-${dd}`)}/`,
+      // Fallback (some prefixes omit zero-padding)
+      `${joinS3Prefix(basePrefix, yyyy, m, day)}/`,
+      `${joinS3Prefix(basePrefix, `${yyyy}-${m}-${day}`)}/`,
+    ];
+
+    for (const prefix of candidatePrefixes) {
+      const best = await listBestMatchUnderPrefix(prefix, 5);
+      if (best) {
+        return {
+          bucket: CONNECT_RECORDINGS_BUCKET,
+          key: best.key,
+          size: best.size,
+          lastModified: best.lastModified,
+        };
+      }
+    }
+
+    // Additional fallback: search one directory higher (month) with a smaller bound.
+    const monthPrefixes = [
+      `${joinS3Prefix(basePrefix, yyyy, mm)}/`,
+      `${joinS3Prefix(basePrefix, yyyy, m)}/`,
+    ];
+    for (const prefix of monthPrefixes) {
+      const best = await listBestMatchUnderPrefix(prefix, 2);
+      if (best) {
+        return {
+          bucket: CONNECT_RECORDINGS_BUCKET,
+          key: best.key,
+          size: best.size,
+          lastModified: best.lastModified,
+        };
+      }
+    }
+  }
+
+  // Fallback (bounded): if the bucket layout differs from the expected date partitioning,
+  // try a few pages under the base prefix and look for the contactId.
+  try {
+    const baseListPrefix = basePrefix ? `${basePrefix}/` : '';
+    const best = await listBestMatchUnderPrefix(baseListPrefix, 5);
+    if (best) {
       return {
         bucket: CONNECT_RECORDINGS_BUCKET,
         key: best.key,
