@@ -927,6 +927,7 @@ analyticsStack.addDependency(coreStack);
 // Cross-service dependencies for services that need data from other services
 notificationsStack.addDependency(coreStack); // Explicit - imports AuthorizerFunctionArn
 notificationsStack.addDependency(templatesStack); // Explicit - uses table name
+notificationsStack.addDependency(aiAgentsStack); // Explicit - imports AiAgents table outputs for SMS AI auto-replies
 adminStack.addDependency(coreStack); // Explicit - imports AuthorizerFunctionArn
 adminStack.addDependency(secretsStack); // Explicit - uses GlobalSecrets for cPanel credentials
 schedulesStack.addDependency(coreStack); // Explicit - imports AuthorizerFunctionArn

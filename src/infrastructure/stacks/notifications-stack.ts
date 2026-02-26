@@ -11,6 +11,7 @@ import * as snsSubscriptions from 'aws-cdk-lib/aws-sns-subscriptions';
 import * as ses from 'aws-cdk-lib/aws-ses';
 import * as cloudwatch from 'aws-cdk-lib/aws-cloudwatch';
 import { getCdkCorsConfig, getCorsErrorHeaders } from '../../shared/utils/cors';
+import clinicConfigData from '../configs/clinic-config.json';
 
 export interface NotificationsStackProps extends StackProps {
   templatesTableName: string;
@@ -35,6 +36,11 @@ export class NotificationsStack extends Stack {
   public readonly emailStatsTable: dynamodb.Table;
   public readonly voiceCallAnalyticsTable: dynamodb.Table;
   public readonly unsubscribeTable: dynamodb.Table;
+  public readonly smsMessagesTable: dynamodb.Table;
+  public readonly smsTwoWayInboundTopic: sns.Topic;
+  public readonly smsIncomingMessageFn: lambdaNode.NodejsFunction;
+  public readonly smsAutoReplyFn: lambdaNode.NodejsFunction;
+  public readonly smsAutoReplyConfigFn: lambdaNode.NodejsFunction;
   public readonly emailAnalyticsFn: lambdaNode.NodejsFunction;
   public readonly emailEventProcessorFn: lambdaNode.NodejsFunction;
   public readonly unsubscribeFn: lambdaNode.NodejsFunction;
@@ -235,6 +241,47 @@ export class NotificationsStack extends Stack {
       projectionType: dynamodb.ProjectionType.ALL,
     });
     applyTags(this.unsubscribeTable, { Table: 'unsubscribe-preferences' });
+
+    // ========================================
+    // SMS MESSAGING (TWO-WAY + AI AUTO-REPLY)
+    // ========================================
+    // Stores inbound/outbound SMS messages and per-clinic AI auto-reply config.
+    // Inbound SMS is delivered via AWS End User Messaging SMS two-way SNS payload.
+    this.smsMessagesTable = new dynamodb.Table(this, 'SmsMessagesTable', {
+      tableName: `${id}-SmsMessages`,
+      partitionKey: { name: 'pk', type: dynamodb.AttributeType.STRING }, // CLINIC#<clinicId>
+      sortKey: { name: 'sk', type: dynamodb.AttributeType.STRING }, // MSG#... / OUTBOUND#... / CONFIG#...
+      billingMode: dynamodb.BillingMode.PAY_PER_REQUEST,
+      removalPolicy: RemovalPolicy.RETAIN,
+      timeToLiveAttribute: 'ttl',
+      pointInTimeRecoverySpecification: { pointInTimeRecoveryEnabled: true },
+    });
+    applyTags(this.smsMessagesTable, { Table: 'sms-messages' });
+
+    // SNS topic that receives inbound SMS (two-way messaging) payloads.
+    // Must be referenced when enabling two-way SMS on each phone number.
+    this.smsTwoWayInboundTopic = new sns.Topic(this, 'SmsTwoWayInboundTopic', {
+      topicName: `${id}-SmsTwoWayInbound`,
+      displayName: 'Inbound SMS (Two-way) - triggers AI auto-reply',
+    });
+    applyTags(this.smsTwoWayInboundTopic, { Resource: 'sms-two-way-inbound-topic' });
+
+    // Allow the SMS service to publish inbound messages to this SNS topic.
+    // Ref: https://docs.aws.amazon.com/sms-voice/latest/userguide/two-way-sms-iam-policy-auto.html
+    this.smsTwoWayInboundTopic.addToResourcePolicy(new iam.PolicyStatement({
+      effect: iam.Effect.ALLOW,
+      principals: [new iam.ServicePrincipal('sms-voice.amazonaws.com')],
+      actions: ['sns:Publish'],
+      resources: [this.smsTwoWayInboundTopic.topicArn],
+      conditions: {
+        StringEquals: {
+          'aws:SourceAccount': this.account,
+        },
+        ArnLike: {
+          'aws:SourceArn': `arn:aws:sms-voice:${this.region}:${this.account}:*`,
+        },
+      },
+    }));
 
     // ========================================
     // SES CONFIGURATION SET FOR EVENT TRACKING
@@ -633,6 +680,155 @@ export class NotificationsStack extends Stack {
     }));
 
     // ========================================
+    // SMS TWO-WAY INBOUND + AI AUTO-REPLY (Bedrock Agents)
+    // ========================================
+
+    // Import AI Agents stack outputs for agent resolution + conversation logging.
+    // NOTE: Infra adds an explicit dependency on AiAgentsStack for deployment order.
+    const AI_AGENTS_STACK_NAME = 'TodaysDentalInsightsAiAgentsN1';
+    const aiAgentsTableName = Fn.importValue(`${AI_AGENTS_STACK_NAME}-AiAgentsTableName`);
+    const aiAgentsTableArn = Fn.importValue(`${AI_AGENTS_STACK_NAME}-AiAgentsTableArn`);
+    const conversationsTableName = Fn.importValue(`${AI_AGENTS_STACK_NAME}-ConversationsTableName`);
+    const conversationsTableArn = Fn.importValue(`${AI_AGENTS_STACK_NAME}-ConversationsTableArn`);
+
+    const clinicConfigTableName = props.clinicConfigTableName || 'TodaysDentalInsights-ClinicConfig';
+
+    // Async Bedrock-agent auto-reply processor (invoked by inbound SNS handler)
+    this.smsAutoReplyFn = new lambdaNode.NodejsFunction(this, 'SmsAutoReplyFn', {
+      entry: path.join(__dirname, '..', '..', 'services', 'sms', 'sms-auto-reply.ts'),
+      handler: 'handler',
+      runtime: lambda.Runtime.NODEJS_22_X,
+      memorySize: 1024,
+      timeout: Duration.seconds(90),
+      bundling: { format: lambdaNode.OutputFormat.CJS, target: 'node22' },
+      environment: {
+        SMS_MESSAGES_TABLE: this.smsMessagesTable.tableName,
+        UNSUBSCRIBE_TABLE: this.unsubscribeTable.tableName,
+        CLINIC_CONFIG_TABLE: clinicConfigTableName,
+        AI_AGENTS_TABLE: aiAgentsTableName.toString(),
+        AI_AGENT_CONVERSATIONS_TABLE: conversationsTableName.toString(),
+        // Optional routing/config (set at deploy time)
+        SMS_REPLY_ENABLED: process.env.SMS_REPLY_ENABLED || 'true',
+        SMS_REPLY_AGENT_ID: process.env.SMS_REPLY_AGENT_ID || '',
+        SMS_REPLY_AGENT_TAG: process.env.SMS_REPLY_AGENT_TAG || 'sms',
+        SMS_REPLY_AGENT_ID_MAP_JSON: process.env.SMS_REPLY_AGENT_ID_MAP_JSON || '',
+        // Optional fallback when clinic resolution fails
+        SMS_DEFAULT_ORIGINATION_ARN: process.env.SMS_DEFAULT_ORIGINATION_ARN || '',
+      },
+    });
+    applyTags(this.smsAutoReplyFn, { Function: 'sms-auto-reply' });
+
+    // Two-way inbound SNS handler: stores inbound SMS and triggers async auto-reply
+    this.smsIncomingMessageFn = new lambdaNode.NodejsFunction(this, 'SmsIncomingMessageFn', {
+      entry: path.join(__dirname, '..', '..', 'services', 'sms', 'incoming-message.ts'),
+      handler: 'handler',
+      runtime: lambda.Runtime.NODEJS_22_X,
+      memorySize: 256,
+      timeout: Duration.seconds(30),
+      bundling: { format: lambdaNode.OutputFormat.CJS, target: 'node22' },
+      environment: {
+        SMS_MESSAGES_TABLE: this.smsMessagesTable.tableName,
+        SMS_AUTO_REPLY_FUNCTION_ARN: this.smsAutoReplyFn.functionArn,
+        ENABLE_SMS_AUTO_REPLY: process.env.ENABLE_SMS_AUTO_REPLY || 'true',
+        CLINIC_CONFIG_TABLE: clinicConfigTableName,
+        UNSUBSCRIBE_TABLE: this.unsubscribeTable.tableName,
+        // Optional fallback when clinic resolution fails (STOP/START confirmations, etc.)
+        SMS_DEFAULT_ORIGINATION_ARN: process.env.SMS_DEFAULT_ORIGINATION_ARN || '',
+      },
+    });
+    applyTags(this.smsIncomingMessageFn, { Function: 'sms-incoming' });
+
+    // Subscribe inbound handler to the two-way SMS topic
+    this.smsTwoWayInboundTopic.addSubscription(new snsSubscriptions.LambdaSubscription(this.smsIncomingMessageFn));
+
+    // Also subscribe inbound handler to any existing per-clinic two-way SMS topics listed in clinic-config.json.
+    // This matches setups where each SMS phone number publishes inbound messages to its own SNS topic.
+    const clinicSmsInboundTopicArns = Array.from(new Set(
+      (clinicConfigData as any[])
+        .map((c) => String(c?.smsIncomingSnsTopicArn || '').trim())
+        .filter((arn) => arn.length > 0)
+    )).sort();
+
+    clinicSmsInboundTopicArns.forEach((topicArn, idx) => {
+      // Avoid double-subscribe if someone points a clinic at the shared topic.
+      if (topicArn === this.smsTwoWayInboundTopic.topicArn) return;
+
+      const importedTopic = sns.Topic.fromTopicArn(this, `ImportedSmsTwoWayInboundTopic${idx + 1}`, topicArn);
+      importedTopic.addSubscription(new snsSubscriptions.LambdaSubscription(this.smsIncomingMessageFn));
+    });
+
+    // Permissions: store messages + idempotency in the SMS messages table
+    this.smsMessagesTable.grantReadWriteData(this.smsIncomingMessageFn);
+    this.smsMessagesTable.grantReadWriteData(this.smsAutoReplyFn);
+
+    // Inbound handler needs to manage unsubscribe preferences (STOP/START)
+    this.unsubscribeTable.grantReadWriteData(this.smsIncomingMessageFn);
+
+    // Auto-reply reads unsubscribe status
+    this.unsubscribeTable.grantReadData(this.smsAutoReplyFn);
+
+    // Inbound handler must invoke the auto-reply processor
+    this.smsAutoReplyFn.grantInvoke(this.smsIncomingMessageFn);
+
+    // Inbound handler may send SMS confirmations (STOP/START)
+    this.smsIncomingMessageFn.addToRolePolicy(new iam.PolicyStatement({
+      actions: ['sms-voice:SendTextMessage'],
+      resources: ['*'],
+    }));
+
+    // Auto-reply must send SMS via End User Messaging SMS
+    this.smsAutoReplyFn.addToRolePolicy(new iam.PolicyStatement({
+      actions: ['sms-voice:SendTextMessage'],
+      resources: ['*'],
+    }));
+
+    // Auto-reply Bedrock Agent invocation permissions
+    this.smsAutoReplyFn.addToRolePolicy(new iam.PolicyStatement({
+      effect: iam.Effect.ALLOW,
+      actions: [
+        'bedrock:InvokeAgent',
+        'bedrock:GetAgent',
+        'bedrock:GetAgentAlias',
+      ],
+      resources: ['*'],
+    }));
+
+    // Read clinic config table for SMS origination identity (smsOriginationArn) + clinic metadata
+    const clinicConfigReadPolicy = new iam.PolicyStatement({
+      actions: ['dynamodb:GetItem', 'dynamodb:Query', 'dynamodb:Scan'],
+      resources: [
+        `arn:aws:dynamodb:${this.region}:${this.account}:table/${clinicConfigTableName}`,
+        `arn:aws:dynamodb:${this.region}:${this.account}:table/${clinicConfigTableName}/index/*`,
+      ],
+    });
+    this.smsIncomingMessageFn.addToRolePolicy(clinicConfigReadPolicy);
+    this.smsAutoReplyFn.addToRolePolicy(clinicConfigReadPolicy);
+
+    // AI Agents tables permissions (resolve agent config + write conversation logs)
+    const importedAiAgentsTable = dynamodb.Table.fromTableArn(this, 'ImportedAiAgentsTableForSms', aiAgentsTableArn);
+    importedAiAgentsTable.grantReadData(this.smsAutoReplyFn);
+
+    const importedConversationsTable = dynamodb.Table.fromTableArn(this, 'ImportedAiConversationsTableForSms', conversationsTableArn);
+    importedConversationsTable.grantWriteData(this.smsAutoReplyFn);
+
+    // Protected API: configure per-clinic SMS AI auto-reply settings
+    this.smsAutoReplyConfigFn = new lambdaNode.NodejsFunction(this, 'SmsAutoReplyConfigFn', {
+      entry: path.join(__dirname, '..', '..', 'services', 'sms', 'sms-auto-reply-config.ts'),
+      handler: 'handler',
+      runtime: lambda.Runtime.NODEJS_22_X,
+      memorySize: 256,
+      timeout: Duration.seconds(30),
+      bundling: { format: lambdaNode.OutputFormat.CJS, target: 'node22' },
+      environment: {
+        SMS_MESSAGES_TABLE: this.smsMessagesTable.tableName,
+        AI_AGENTS_TABLE: aiAgentsTableName.toString(),
+      },
+    });
+    applyTags(this.smsAutoReplyConfigFn, { Function: 'sms-auto-reply-config' });
+    this.smsMessagesTable.grantReadWriteData(this.smsAutoReplyConfigFn);
+    importedAiAgentsTable.grantReadData(this.smsAutoReplyConfigFn);
+
+    // ========================================
     // API ROUTES
     // ========================================
 
@@ -790,6 +986,29 @@ export class NotificationsStack extends Stack {
         { statusCode: '401' },
         { statusCode: '403' }
       ],
+    });
+
+    // ========================================
+    // SMS AI AUTO-REPLY CONFIG API ROUTES
+    // ========================================
+
+    // GET/PUT /sms/{clinicId}/ai/auto-reply (authenticated)
+    const smsRoot = this.notificationsApi.root.addResource('sms');
+    const smsClinic = smsRoot.addResource('{clinicId}');
+    const smsAi = smsClinic.addResource('ai');
+    const smsAutoReply = smsAi.addResource('auto-reply');
+    const smsAutoReplyIntegration = new apigw.LambdaIntegration(this.smsAutoReplyConfigFn);
+
+    smsAutoReply.addMethod('GET', smsAutoReplyIntegration, {
+      authorizer: this.authorizer,
+      authorizationType: apigw.AuthorizationType.CUSTOM,
+      methodResponses: [{ statusCode: '200' }, { statusCode: '400' }, { statusCode: '401' }, { statusCode: '403' }],
+    });
+
+    smsAutoReply.addMethod('PUT', smsAutoReplyIntegration, {
+      authorizer: this.authorizer,
+      authorizationType: apigw.AuthorizationType.CUSTOM,
+      methodResponses: [{ statusCode: '200' }, { statusCode: '400' }, { statusCode: '401' }, { statusCode: '403' }],
     });
 
     // ========================================
@@ -1191,6 +1410,9 @@ export class NotificationsStack extends Stack {
     // ========================================
     [
       { fn: this.notifyFn, name: 'notifications', durationMs: Math.floor(Duration.seconds(20).toMilliseconds() * 0.8) },
+      { fn: this.smsIncomingMessageFn, name: 'sms-incoming', durationMs: Math.floor(Duration.seconds(30).toMilliseconds() * 0.8) },
+      { fn: this.smsAutoReplyFn, name: 'sms-auto-reply', durationMs: Math.floor(Duration.seconds(90).toMilliseconds() * 0.8) },
+      { fn: this.smsAutoReplyConfigFn, name: 'sms-auto-reply-config', durationMs: Math.floor(Duration.seconds(30).toMilliseconds() * 0.8) },
       { fn: this.emailAnalyticsFn, name: 'email-analytics-api', durationMs: Math.floor(Duration.seconds(20).toMilliseconds() * 0.8) },
       { fn: this.voiceCallAnalyticsFn, name: 'voice-call-analytics-api', durationMs: Math.floor(Duration.seconds(20).toMilliseconds() * 0.8) },
       { fn: this.emailEventProcessorFn, name: 'email-event-processor', durationMs: Math.floor(Duration.seconds(30).toMilliseconds() * 0.8) },
@@ -1203,6 +1425,7 @@ export class NotificationsStack extends Stack {
     });
 
     createDynamoThrottleAlarm(this.notificationsTable.tableName, 'NotificationsTable');
+    createDynamoThrottleAlarm(this.smsMessagesTable.tableName, 'SmsMessagesTable');
     createDynamoThrottleAlarm(this.emailAnalyticsTable.tableName, 'EmailAnalyticsTable');
     createDynamoThrottleAlarm(this.emailStatsTable.tableName, 'EmailStatsTable');
     createDynamoThrottleAlarm(this.voiceCallAnalyticsTable.tableName, 'VoiceCallAnalyticsTable');
@@ -1276,6 +1499,18 @@ export class NotificationsStack extends Stack {
       value: 'https://apig.todaysdentalinsights.com/notifications/sms-analytics/',
       description: 'SMS Analytics API Endpoint (authenticated)',
       exportName: `${Stack.of(this).stackName}-SmsAnalyticsApiEndpoint`,
+    });
+
+    new CfnOutput(this, 'SmsTwoWayInboundTopicArn', {
+      value: this.smsTwoWayInboundTopic.topicArn,
+      description: 'Shared SNS Topic ARN for inbound two-way SMS payloads (optional; per-clinic topics can also be used via clinic-config.json)',
+      exportName: `${Stack.of(this).stackName}-SmsTwoWayInboundTopicArn`,
+    });
+
+    new CfnOutput(this, 'SmsAiAutoReplyConfigEndpoint', {
+      value: 'https://apig.todaysdentalinsights.com/notifications/sms/{clinicId}/ai/auto-reply',
+      description: 'SMS AI Auto-Reply Config API Endpoint (authenticated)',
+      exportName: `${Stack.of(this).stackName}-SmsAiAutoReplyConfigEndpoint`,
     });
   }
 }
