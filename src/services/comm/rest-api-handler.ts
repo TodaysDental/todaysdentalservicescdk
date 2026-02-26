@@ -1181,7 +1181,7 @@ async function findOrCreateConversation(userID: string, body: any, logCtx?: LogC
             unreadCount: 0,
             initialMessage: initialMessage || '',
             ...(deadline && { deadline: String(deadline) }),
-            ...(requestType === 'Assign Task' && { isTask: true }),
+            ...((requestType === 'Assign Task' || requestType === 'IT Ticket' || requestType === 'Ask a Favor') && { isTask: true }),
         };
 
         const dbStart = Date.now();
@@ -1377,10 +1377,11 @@ async function getTasksByStatus(userID: string, params: any, logCtx?: LogContext
         log.dbResult('Query', FAVORS_TABLE, result.Items?.length || 0, Date.now() - dbStart, fnCtx);
         items = (result.Items || []) as FavorRequest[];
     } else {
-        // Get all for user
+        // Get all for user — query Sender, Receiver, AND CurrentAssignee indexes
+        // to catch forwarded tasks where the user is the current assignee
         const dbStart = Date.now();
-        log.dbOperation('Query', FAVORS_TABLE, { indexes: ['SenderIndex', 'ReceiverIndex'], userID }, fnCtx);
-        const [sentResult, recvResult] = await Promise.all([
+        log.dbOperation('Query', FAVORS_TABLE, { indexes: ['SenderIndex', 'ReceiverIndex', 'CurrentAssigneeIndex'], userID }, fnCtx);
+        const [sentResult, recvResult, assigneeResult] = await Promise.all([
             ddb.send(new QueryCommand({
                 TableName: FAVORS_TABLE,
                 IndexName: 'SenderIndex',
@@ -1393,9 +1394,15 @@ async function getTasksByStatus(userID: string, params: any, logCtx?: LogContext
                 KeyConditionExpression: 'receiverID = :uid',
                 ExpressionAttributeValues: { ':uid': userID },
             })),
+            ddb.send(new QueryCommand({
+                TableName: FAVORS_TABLE,
+                IndexName: 'CurrentAssigneeIndex',
+                KeyConditionExpression: 'currentAssigneeID = :uid',
+                ExpressionAttributeValues: { ':uid': userID },
+            })),
         ]);
-        log.dbResult('Query', FAVORS_TABLE, (sentResult.Items?.length || 0) + (recvResult.Items?.length || 0), Date.now() - dbStart, fnCtx);
-        items = [...(sentResult.Items || []), ...(recvResult.Items || [])] as FavorRequest[];
+        log.dbResult('Query', FAVORS_TABLE, (sentResult.Items?.length || 0) + (recvResult.Items?.length || 0) + (assigneeResult.Items?.length || 0), Date.now() - dbStart, fnCtx);
+        items = [...(sentResult.Items || []), ...(recvResult.Items || []), ...(assigneeResult.Items || [])] as FavorRequest[];
     }
     log.flowCount('getTasksByStatus', 'rawResults', items.length, fnCtx);
 
@@ -1411,7 +1418,10 @@ async function getTasksByStatus(userID: string, params: any, logCtx?: LogContext
     log.flowCount('getTasksByStatus', 'afterDedupe', items.length, fnCtx);
 
     // Filter to only actual tasks (exclude regular chats)
-    items = items.filter(i => i.isTask === true);
+    // Include items with isTask flag OR with task-like requestTypes (fallback for older data
+    // that was created before isTask flag was consistently set)
+    const TASK_REQUEST_TYPES = ['Assign Task', 'IT Ticket', 'Ask a Favor'];
+    items = items.filter(i => i.isTask === true || TASK_REQUEST_TYPES.includes(i.requestType));
     log.flowCount('getTasksByStatus', 'afterIsTaskFilter', items.length, fnCtx);
 
     // Additional filters

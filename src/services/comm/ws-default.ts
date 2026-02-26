@@ -1851,6 +1851,14 @@ async function startFavorRequest(
         // Overwriting would cause the entire group to render with task card UI.
         if (requestType && !isGroupRequest) { updateExprParts.push('requestType = :rt'); exprValues[':rt'] = requestType; }
 
+        // Ensure the isTask flag is set when a task is assigned into an existing conversation
+        // so that getTasksByStatus REST API can find it.
+        const shouldMarkAsTask = requestType === 'Assign Task' || requestType === 'IT Ticket' || requestType === 'Ask a Favor';
+        if (shouldMarkAsTask && !existingFavor.isTask) {
+            updateExprParts.push('isTask = :isTask');
+            exprValues[':isTask'] = true;
+        }
+
         // Increment unread count
         updateExprParts.push('unreadCount = if_not_exists(unreadCount, :zero) + :incr');
         exprValues[':incr'] = recipients.length;
