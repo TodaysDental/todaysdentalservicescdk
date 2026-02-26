@@ -157,7 +157,7 @@ async function getConnectCallInfo(callId: string): Promise<{ clinicId: string; t
     const clinicId = String(item.clinicId || '').trim();
     const ts = item.timestamp;
 
-    // Connect/Lex analytics stores timestamp in ms (SK). Guard if seconds slip in.
+    // Connect/Lex analytics stores timestamp in epoch seconds (SK). Convert to ms for S3 date lookup.
     const timestampMs =
       typeof ts === 'number' && Number.isFinite(ts)
         ? (ts > 2_000_000_000_000 ? ts : ts * 1000)
@@ -622,7 +622,6 @@ async function getConnectRecordingForCall(
   });
 
   if (!obj) {
-    // Recording not available yet (or recording disabled in the flow)
     return null;
   }
 
@@ -641,6 +640,38 @@ async function getConnectRecordingForCall(
     { expiresIn: 3600 }
   );
 
+  // Enrich Connect recording with transcript/sentiment from CallAnalytics
+  let transcriptionText: string | undefined;
+  let sentiment: string | undefined;
+  let sentimentScore: number | undefined;
+  let duration: number | undefined;
+
+  if (CALL_ANALYTICS_TABLE_NAME) {
+    try {
+      const analyticsResult = await ddb.send(new QueryCommand({
+        TableName: CALL_ANALYTICS_TABLE_NAME,
+        KeyConditionExpression: 'callId = :callId',
+        ExpressionAttributeValues: { ':callId': callId },
+        ScanIndexForward: false,
+        Limit: 1,
+      }));
+
+      const analytics: any = analyticsResult.Items?.[0];
+      if (analytics) {
+        transcriptionText = analytics.fullTranscript || undefined;
+        sentiment = analytics.overallSentiment || undefined;
+        sentimentScore = typeof analytics.sentimentScore === 'number' ? analytics.sentimentScore : undefined;
+        duration = analytics.totalDuration || analytics.callDuration || undefined;
+      }
+    } catch (err: any) {
+      console.warn('[GetRecording] Failed to enrich Connect recording with analytics (non-fatal)', {
+        callId,
+        errorName: err?.name,
+        errorMessage: err?.message,
+      });
+    }
+  }
+
   return {
     statusCode: 200,
     headers: corsHeaders,
@@ -652,7 +683,11 @@ async function getConnectRecordingForCall(
           callId,
           uploadedAt: obj.lastModified,
           fileSize: obj.size,
-          transcriptionStatus: undefined,
+          duration,
+          transcriptionStatus: transcriptionText ? 'COMPLETED' : undefined,
+          transcriptionText,
+          sentiment,
+          sentimentScore,
           downloadUrl: presignedUrl
         }
       ],

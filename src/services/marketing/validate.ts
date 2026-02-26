@@ -1,5 +1,5 @@
 import { APIGatewayProxyEvent, APIGatewayProxyResult } from 'aws-lambda';
-import { buildCorsHeaders } from '../../shared/utils/cors';
+import { buildCorsHeadersAsync } from '../../shared/utils/cors';
 import {
   ayrshareValidatePost,
   ayrshareValidateMedia,
@@ -59,7 +59,7 @@ const PLATFORM_MEDIA_REQUIREMENTS: Record<string, any> = {
 };
 
 export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayProxyResult> => {
-  const corsHeaders = buildCorsHeaders({ allowMethods: ['OPTIONS', 'POST'] });
+  const corsHeaders = await buildCorsHeadersAsync({ allowMethods: ['OPTIONS', 'POST'] }, event.headers?.origin || event.headers?.Origin);
 
   if (event.httpMethod === 'OPTIONS') {
     return { statusCode: 200, headers: corsHeaders, body: '' };

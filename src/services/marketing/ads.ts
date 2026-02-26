@@ -21,11 +21,11 @@ import {
   CreateLeadFormParams,
   FullCampaignParams
 } from './ayrshare-client';
-import { buildCorsHeaders } from '../../shared/utils/cors';
-import { 
-  getClinicConfig as getClinicConfigFromDynamo, 
+import { buildCorsHeadersAsync } from '../../shared/utils/cors';
+import {
+  getClinicConfig as getClinicConfigFromDynamo,
   getClinicSecrets,
-  ClinicConfig 
+  ClinicConfig
 } from '../../shared/utils/secrets-helper';
 
 const ddb = DynamoDBDocumentClient.from(new DynamoDBClient({}), {
@@ -172,7 +172,7 @@ async function getProfileKey(clinicId: string): Promise<string | null> {
 }
 
 export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayProxyResult> => {
-  const corsHeaders = buildCorsHeaders({ allowMethods: ['OPTIONS', 'POST', 'GET', 'PUT', 'DELETE'] });
+  const corsHeaders = await buildCorsHeadersAsync({ allowMethods: ['OPTIONS', 'POST', 'GET', 'PUT', 'DELETE'] }, event.headers?.origin || event.headers?.Origin);
 
   if (event.httpMethod === 'OPTIONS') {
     return { statusCode: 200, headers: corsHeaders, body: '' };
@@ -211,9 +211,9 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
         return {
           statusCode: 400,
           headers: corsHeaders,
-          body: JSON.stringify({ 
-            success: false, 
-            error: 'postId, budget, and durationDays are required' 
+          body: JSON.stringify({
+            success: false,
+            error: 'postId, budget, and durationDays are required'
           })
         };
       }
@@ -271,9 +271,9 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
         return {
           statusCode: 400,
           headers: corsHeaders,
-          body: JSON.stringify({ 
-            success: false, 
-            error: 'name, objective, budget, startDate, platforms, and creative are required' 
+          body: JSON.stringify({
+            success: false,
+            error: 'name, objective, budget, startDate, platforms, and creative are required'
           })
         };
       }
@@ -567,7 +567,7 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
     // ---------------------------------------------------------
     if (path.match(/\/meta\/ads\/drafts\/?$/) && method === 'GET') {
       const userId = event.requestContext?.authorizer?.claims?.sub || event.headers['x-user-id'] || 'anonymous';
-      
+
       const result = await ddb.send(new QueryCommand({
         TableName: META_AD_DRAFTS_TABLE,
         IndexName: 'userId-index',
@@ -823,9 +823,9 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
         return {
           statusCode: 400,
           headers: corsHeaders,
-          body: JSON.stringify({ 
-            success: false, 
-            error: 'name and questions are required' 
+          body: JSON.stringify({
+            success: false,
+            error: 'name and questions are required'
           })
         };
       }
@@ -1039,9 +1039,9 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
         return {
           statusCode: 404,
           headers: corsHeaders,
-          body: JSON.stringify({ 
-            success: false, 
-            error: 'Clinic not connected to Meta Ads. Please connect in Settings.' 
+          body: JSON.stringify({
+            success: false,
+            error: 'Clinic not connected to Meta Ads. Please connect in Settings.'
           })
         };
       }
@@ -1052,7 +1052,7 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
 
       // Validate required fields
       const { campaignName, objective, budgetType, dailyBudget, startDate, targeting, identity, destination, creative } = body;
-      
+
       if (!campaignName || !objective || !dailyBudget || !startDate || !creative) {
         return {
           statusCode: 400,
@@ -1114,8 +1114,8 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
         objective,
         budgetType,
         dailyBudget: Number(dailyBudget),
-        totalBudget: body.endDate ? 
-          Math.ceil((new Date(body.endDate).getTime() - new Date(startDate).getTime()) / (1000 * 60 * 60 * 24)) * Number(dailyBudget) 
+        totalBudget: body.endDate ?
+          Math.ceil((new Date(body.endDate).getTime() - new Date(startDate).getTime()) / (1000 * 60 * 60 * 24)) * Number(dailyBudget)
           : null,
         startDate,
         endDate: body.endDate,
@@ -1188,9 +1188,9 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
         return {
           statusCode: 400,
           headers: corsHeaders,
-          body: JSON.stringify({ 
-            success: false, 
-            error: 'selectedClinicIds is required and must not be empty' 
+          body: JSON.stringify({
+            success: false,
+            error: 'selectedClinicIds is required and must not be empty'
           })
         };
       }
@@ -1312,8 +1312,8 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
       }));
 
       const job = jobResult.Item as BulkPublishJob;
-      const progressPercentage = job.totalClinics > 0 
-        ? ((job.completedClinics + job.failedClinics) / job.totalClinics) * 100 
+      const progressPercentage = job.totalClinics > 0
+        ? ((job.completedClinics + job.failedClinics) / job.totalClinics) * 100
         : 0;
 
       return {
@@ -1348,9 +1348,9 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
         return {
           statusCode: 400,
           headers: corsHeaders,
-          body: JSON.stringify({ 
-            success: false, 
-            error: 'scheduledStartDate and campaignData are required' 
+          body: JSON.stringify({
+            success: false,
+            error: 'scheduledStartDate and campaignData are required'
           })
         };
       }
@@ -1360,9 +1360,9 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
         return {
           statusCode: 400,
           headers: corsHeaders,
-          body: JSON.stringify({ 
-            success: false, 
-            error: 'scheduledStartDate must be in the future' 
+          body: JSON.stringify({
+            success: false,
+            error: 'scheduledStartDate must be in the future'
           })
         };
       }
@@ -1494,7 +1494,7 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
       const campaigns = campaignsResult.Items || [];
       const activeCampaigns = campaigns.filter((c: any) => c.status === 'ACTIVE').length;
       const totalSpend = campaigns.reduce((sum: number, c: any) => sum + (c.metrics?.spend || 0), 0);
-      
+
       // Get leads count
       const leadsResult = await ddb.send(new QueryCommand({
         TableName: META_LEADS_TABLE,

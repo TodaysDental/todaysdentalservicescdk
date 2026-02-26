@@ -842,6 +842,69 @@ export class NotificationsStack extends Stack {
     importedAiAgentsTable.grantReadData(this.smsAutoReplyConfigFn);
 
     // ========================================
+    // SMS CONVERSATIONS + MANUAL REPLY
+    // ========================================
+
+    const smsConversationsFn = new lambdaNode.NodejsFunction(this, 'SmsConversationsFn', {
+      entry: path.join(__dirname, '..', '..', 'services', 'sms', 'get-sms-conversations.ts'),
+      handler: 'handler',
+      runtime: lambda.Runtime.NODEJS_22_X,
+      memorySize: 512,
+      timeout: Duration.seconds(30),
+      bundling: { format: lambdaNode.OutputFormat.CJS, target: 'node22' },
+      environment: {
+        SMS_MESSAGES_TABLE: this.smsMessagesTable.tableName,
+        NOTIFICATIONS_TABLE: this.notificationsTable.tableName,
+      },
+    });
+    applyTags(smsConversationsFn, { Function: 'sms-conversations' });
+    this.smsMessagesTable.grantReadData(smsConversationsFn);
+    this.notificationsTable.grantReadData(smsConversationsFn);
+
+    const smsReplyFn = new lambdaNode.NodejsFunction(this, 'SmsReplyFn', {
+      entry: path.join(__dirname, '..', '..', 'services', 'sms', 'send-sms-reply.ts'),
+      handler: 'handler',
+      runtime: lambda.Runtime.NODEJS_22_X,
+      memorySize: 256,
+      timeout: Duration.seconds(30),
+      bundling: { format: lambdaNode.OutputFormat.CJS, target: 'node22' },
+      environment: {
+        SMS_MESSAGES_TABLE: this.smsMessagesTable.tableName,
+        CLINIC_CONFIG_TABLE: clinicConfigTableName,
+        SMS_DEFAULT_ORIGINATION_ARN: process.env.SMS_DEFAULT_ORIGINATION_ARN || '',
+      },
+    });
+    applyTags(smsReplyFn, { Function: 'sms-reply' });
+    this.smsMessagesTable.grantReadWriteData(smsReplyFn);
+
+    smsReplyFn.addToRolePolicy(new iam.PolicyStatement({
+      actions: ['sms-voice:SendTextMessage'],
+      resources: ['*'],
+    }));
+
+    smsReplyFn.addToRolePolicy(new iam.PolicyStatement({
+      actions: ['dynamodb:GetItem', 'dynamodb:Query'],
+      resources: [
+        `arn:aws:dynamodb:${this.region}:${this.account}:table/${clinicConfigTableName}`,
+        `arn:aws:dynamodb:${this.region}:${this.account}:table/${clinicConfigTableName}/*`,
+      ],
+    }));
+
+    if (props.secretsEncryptionKeyArn) {
+      smsReplyFn.addToRolePolicy(new iam.PolicyStatement({
+        actions: ['kms:Decrypt', 'kms:DescribeKey'],
+        resources: [props.secretsEncryptionKeyArn],
+      }));
+      smsConversationsFn.addToRolePolicy(new iam.PolicyStatement({
+        actions: ['kms:Decrypt', 'kms:DescribeKey'],
+        resources: [props.secretsEncryptionKeyArn],
+      }));
+    }
+
+    createLambdaErrorAlarm(smsConversationsFn, 'sms-conversations');
+    createLambdaErrorAlarm(smsReplyFn, 'sms-reply');
+
+    // ========================================
     // API ROUTES
     // ========================================
 
@@ -1022,6 +1085,37 @@ export class NotificationsStack extends Stack {
       authorizer: this.authorizer,
       authorizationType: apigw.AuthorizationType.CUSTOM,
       methodResponses: [{ statusCode: '200' }, { statusCode: '400' }, { statusCode: '401' }, { statusCode: '403' }],
+    });
+
+    // ========================================
+    // SMS CONVERSATIONS + REPLY API ROUTES
+    // ========================================
+
+    const smsConversationsIntegration = new apigw.LambdaIntegration(smsConversationsFn);
+    const smsReplyIntegration = new apigw.LambdaIntegration(smsReplyFn);
+
+    // GET /sms/{clinicId}/conversations
+    const smsConversationsResource = smsClinic.addResource('conversations');
+    smsConversationsResource.addMethod('GET', smsConversationsIntegration, {
+      authorizer: this.authorizer,
+      authorizationType: apigw.AuthorizationType.CUSTOM,
+      methodResponses: [{ statusCode: '200' }, { statusCode: '400' }, { statusCode: '401' }, { statusCode: '403' }],
+    });
+
+    // GET /sms/{clinicId}/conversations/{phone}
+    const smsConversationThreadResource = smsConversationsResource.addResource('{phone}');
+    smsConversationThreadResource.addMethod('GET', smsConversationsIntegration, {
+      authorizer: this.authorizer,
+      authorizationType: apigw.AuthorizationType.CUSTOM,
+      methodResponses: [{ statusCode: '200' }, { statusCode: '400' }, { statusCode: '401' }, { statusCode: '403' }],
+    });
+
+    // POST /sms/{clinicId}/reply
+    const smsReplyResource = smsClinic.addResource('reply');
+    smsReplyResource.addMethod('POST', smsReplyIntegration, {
+      authorizer: this.authorizer,
+      authorizationType: apigw.AuthorizationType.CUSTOM,
+      methodResponses: [{ statusCode: '200' }, { statusCode: '400' }, { statusCode: '401' }, { statusCode: '403' }, { statusCode: '409' }],
     });
 
     // ========================================

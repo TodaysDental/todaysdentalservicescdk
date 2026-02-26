@@ -205,15 +205,27 @@ async function downloadTranscript(transcriptUri: string): Promise<string | null>
     const s3Match = transcriptUri.match(/s3:\/\/([^\/]+)\/(.+)/);
     if (s3Match) {
       [, bucket, key] = s3Match;
-    } 
-    // Parse HTTPS URL (https://s3.region.amazonaws.com/bucket/key format)
+    }
+    // Virtual-hosted style: https://bucket.s3.region.amazonaws.com/key
+    // or                    https://bucket.s3.amazonaws.com/key
     else {
-      const httpsMatch = transcriptUri.match(/https:\/\/s3[.-]([^.]+)\.amazonaws\.com\/([^\/]+)\/(.+)/);
-      if (httpsMatch) {
-        [, , bucket, key] = httpsMatch;
+      const virtualHostedMatch = transcriptUri.match(
+        /https:\/\/([^.]+)\.s3(?:[.-][^.]+)?\.amazonaws\.com\/(.+)/
+      );
+      // Path-style: https://s3.region.amazonaws.com/bucket/key
+      //          or https://s3-region.amazonaws.com/bucket/key
+      //          or https://s3.amazonaws.com/bucket/key
+      const pathStyleMatch = !virtualHostedMatch
+        ? transcriptUri.match(/https:\/\/s3[^.]*\.amazonaws\.com\/([^\/]+)\/(.+)/)
+        : null;
+
+      if (virtualHostedMatch) {
+        [, bucket, key] = virtualHostedMatch;
+      } else if (pathStyleMatch) {
+        [, bucket, key] = pathStyleMatch;
       } else {
         console.error('[TranscriptionComplete] Invalid transcript URI format:', transcriptUri);
-        console.error('[TranscriptionComplete] Expected s3:// or https://s3.*.amazonaws.com/ format');
+        console.error('[TranscriptionComplete] Expected s3://, virtual-hosted, or path-style S3 URL');
         return null;
       }
     }

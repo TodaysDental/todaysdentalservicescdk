@@ -16,7 +16,7 @@
 import { APIGatewayProxyEvent, APIGatewayProxyResult } from 'aws-lambda';
 import { DynamoDBClient } from '@aws-sdk/client-dynamodb';
 import { DynamoDBDocumentClient, PutCommand, DeleteCommand } from '@aws-sdk/lib-dynamodb';
-import { buildCorsHeaders } from '../../shared/utils/cors';
+import { buildCorsHeadersAsync } from '../../shared/utils/cors';
 import {
   getUserPermissions,
   hasModulePermission,
@@ -95,7 +95,7 @@ const DENTAL_NEGATIVE_KEYWORD_TEMPLATES = {
 // ============================================
 
 export async function handler(event: APIGatewayProxyEvent): Promise<APIGatewayProxyResult> {
-  const corsHeaders = buildCorsHeaders({}, event.headers?.origin || event.headers?.Origin);
+  const corsHeaders = await buildCorsHeadersAsync({}, event.headers?.origin || event.headers?.Origin);
   const method = event.httpMethod;
   const path = event.path;
 

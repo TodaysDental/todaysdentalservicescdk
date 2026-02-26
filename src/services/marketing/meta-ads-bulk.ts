@@ -10,7 +10,7 @@ import { APIGatewayProxyEvent, APIGatewayProxyResult } from 'aws-lambda';
 import { DynamoDBClient } from '@aws-sdk/client-dynamodb';
 import { DynamoDBDocumentClient, PutCommand, GetCommand } from '@aws-sdk/lib-dynamodb';
 import { v4 as uuidv4 } from 'uuid';
-import { buildCorsHeaders } from '../../shared/utils/cors';
+import { buildCorsHeadersAsync } from '../../shared/utils/cors';
 import {
     getUserPermissions, hasModulePermission,
 } from '../../shared/utils/permissions-helper';
@@ -28,7 +28,7 @@ const ddb = DynamoDBDocumentClient.from(new DynamoDBClient({}), {
 const META_ADS_CAMPAIGNS_TABLE = process.env.META_ADS_CAMPAIGNS_TABLE || 'MetaAdsCampaigns';
 
 export async function handler(event: APIGatewayProxyEvent): Promise<APIGatewayProxyResult> {
-    const corsHeaders = buildCorsHeaders({}, event.headers?.origin || event.headers?.Origin);
+    const corsHeaders = await buildCorsHeadersAsync({}, event.headers?.origin || event.headers?.Origin);
     const method = event.httpMethod;
     const path = event.path;
 

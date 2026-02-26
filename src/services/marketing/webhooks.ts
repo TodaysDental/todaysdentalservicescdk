@@ -3,7 +3,7 @@ import { DynamoDBClient } from '@aws-sdk/client-dynamodb';
 import { DynamoDBDocumentClient, PutCommand, GetCommand, QueryCommand, ScanCommand } from '@aws-sdk/lib-dynamodb';
 import { v4 as uuidv4 } from 'uuid';
 import { createHmac, timingSafeEqual } from 'crypto';
-import { buildCorsHeaders } from '../../shared/utils/cors';
+import { buildCorsHeadersAsync } from '../../shared/utils/cors';
 import { ayrshareRegisterWebhook, ayrshareUnregisterWebhook, ayrshareGetWebhooks, WebhookAction } from './ayrshare-client';
 
 const ddb = DynamoDBDocumentClient.from(new DynamoDBClient({}), {
@@ -50,11 +50,11 @@ function verifyAyrshareWebhookSignature(
   try {
     const sigBuffer = Buffer.from(signature, 'hex');
     const expectedBuffer = Buffer.from(expectedSignature, 'hex');
-    
+
     if (sigBuffer.length !== expectedBuffer.length) {
       return false;
     }
-    
+
     return timingSafeEqual(sigBuffer, expectedBuffer);
   } catch (err) {
     console.error('Error comparing signatures:', err);
@@ -63,7 +63,7 @@ function verifyAyrshareWebhookSignature(
 }
 
 export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayProxyResult> => {
-  const corsHeaders = buildCorsHeaders({ allowMethods: ['OPTIONS', 'GET', 'POST', 'DELETE'] });
+  const corsHeaders = await buildCorsHeadersAsync({ allowMethods: ['OPTIONS', 'GET', 'POST', 'DELETE'] }, event.headers?.origin || event.headers?.Origin);
 
   if (event.httpMethod === 'OPTIONS') {
     return { statusCode: 200, headers: corsHeaders, body: '' };
@@ -224,19 +224,19 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
     // ---------------------------------------------------------
     if (path.includes('/ayrshare') && method === 'POST') {
       const rawBody = event.body || '';
-      
+
       // Verify webhook signature if secret is configured
       if (AYRSHARE_WEBHOOK_SECRET) {
         const signature = event.headers['x-ayrshare-signature'] || event.headers['X-Ayrshare-Signature'];
         const timestamp = event.headers['x-ayrshare-timestamp'] || event.headers['X-Ayrshare-Timestamp'];
-        
+
         const isValid = verifyAyrshareWebhookSignature(
           rawBody,
           signature,
           timestamp,
           AYRSHARE_WEBHOOK_SECRET
         );
-        
+
         if (!isValid) {
           console.error('Webhook signature verification failed');
           return {
@@ -248,12 +248,12 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
             })
           };
         }
-        
+
         console.log('Webhook signature verified successfully');
       } else {
         console.warn('AYRSHARE_WEBHOOK_SECRET not configured - skipping signature verification');
       }
-      
+
       const body = JSON.parse(rawBody);
       console.log('Ayrshare webhook received:', JSON.stringify(body));
 

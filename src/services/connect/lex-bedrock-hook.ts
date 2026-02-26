@@ -1706,24 +1706,26 @@ async function handleConnectDirectEvent(event: ConnectLambdaEvent): Promise<Conn
     timeoutMs: CONNECT_BEDROCK_TIMEOUT_MS,
   });
 
-  // FIX: Make analytics and transcript updates fire-and-forget to reduce response time
-  // These are non-critical for the voice response and shouldn't block the caller
-  // The Lambda will continue running after we return the response
-  updateAnalyticsTurn({
-    callId: session.callId,
-    timestamp: analyticsInfo.timestamp,
-    callerUtterance: trimmedInput,
-    aiResponse,
-    toolsUsed,
-  }).catch(err => console.error('[LexBedrockHook] Analytics update failed (non-blocking):', err));
-
-  addTranscriptTurn({
-    callId: session.callId,
-    callerUtterance: trimmedInput,
-    aiResponse,
-    callStartMs: session.callStartMs,
-    confidence: safeConfidence,
-  }).catch(err => console.error('[LexBedrockHook] Transcript buffer update failed (non-blocking):', err));
+  // Await analytics + transcript writes to guarantee persistence before the Lambda
+  // freezes. The previous fire-and-forget pattern caused transcript loss when the caller
+  // hung up quickly, because the Lambda runtime could freeze before DynamoDB writes completed.
+  // Running both in parallel keeps latency minimal (~10-30ms for DynamoDB).
+  await Promise.allSettled([
+    updateAnalyticsTurn({
+      callId: session.callId,
+      timestamp: analyticsInfo.timestamp,
+      callerUtterance: trimmedInput,
+      aiResponse,
+      toolsUsed,
+    }).catch(err => console.error('[LexBedrockHook] Analytics update failed:', err)),
+    addTranscriptTurn({
+      callId: session.callId,
+      callerUtterance: trimmedInput,
+      aiResponse,
+      callStartMs: session.callStartMs,
+      confidence: safeConfidence,
+    }).catch(err => console.error('[LexBedrockHook] Transcript buffer update failed:', err)),
+  ]);
 
   console.log('[LexBedrockHook] Connect direct: Returning response:', {
     clinicId,
@@ -1936,23 +1938,23 @@ async function handleLexEvent(event: LexV2Event): Promise<LexV2Response> {
     timeoutMs: event.inputMode === 'Speech' ? CONNECT_BEDROCK_TIMEOUT_MS : CONFIG.BEDROCK_TIMEOUT_MS,
   });
 
-  // FIX: Make analytics and transcript updates fire-and-forget to reduce response time
-  // These are non-critical for the voice response and shouldn't block the caller
-  updateAnalyticsTurn({
-    callId: session.callId,
-    timestamp: analyticsInfo.timestamp,
-    callerUtterance: trimmedInput,
-    aiResponse,
-    toolsUsed,
-  }).catch(err => console.error('[LexBedrockHook] Lex analytics update failed (non-blocking):', err));
-
-  addTranscriptTurn({
-    callId: session.callId,
-    callerUtterance: trimmedInput,
-    aiResponse,
-    callStartMs: session.callStartMs,
-    confidence: transcriptionConfidence,
-  }).catch(err => console.error('[LexBedrockHook] Lex transcript buffer update failed (non-blocking):', err));
+  // Await analytics + transcript writes to guarantee persistence before the Lambda freezes.
+  await Promise.allSettled([
+    updateAnalyticsTurn({
+      callId: session.callId,
+      timestamp: analyticsInfo.timestamp,
+      callerUtterance: trimmedInput,
+      aiResponse,
+      toolsUsed,
+    }).catch(err => console.error('[LexBedrockHook] Lex analytics update failed:', err)),
+    addTranscriptTurn({
+      callId: session.callId,
+      callerUtterance: trimmedInput,
+      aiResponse,
+      callStartMs: session.callStartMs,
+      confidence: transcriptionConfidence,
+    }).catch(err => console.error('[LexBedrockHook] Lex transcript buffer update failed:', err)),
+  ]);
 
   // Build Lex response
   // IMPORTANT: Store lastUtterance in session attributes so Connect can read it

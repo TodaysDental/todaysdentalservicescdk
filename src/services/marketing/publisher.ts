@@ -26,7 +26,7 @@ import {
   ayrshareValidateMedia,
   ayrshareVerifyMediaUrl,
 } from './ayrshare-client';
-import { buildCorsHeaders } from '../../shared/utils/cors';
+import { buildCorsHeadersAsync } from '../../shared/utils/cors';
 import { getAyrshareApiKey } from '../../shared/utils/secrets-helper';
 
 const ddb = DynamoDBDocumentClient.from(new DynamoDBClient({}), {
@@ -337,7 +337,7 @@ export const handler = async (event: any): Promise<any> => {
   // ============================================
   const apiGwEvent = event as APIGatewayProxyEvent;
   const origin = apiGwEvent.headers?.origin || apiGwEvent.headers?.Origin;
-  const corsHeaders = buildCorsHeaders({ allowMethods: ['OPTIONS', 'POST', 'GET', 'DELETE'] }, origin);
+  const corsHeaders = await buildCorsHeadersAsync({ allowMethods: ['OPTIONS', 'POST', 'GET', 'DELETE'] }, origin);
 
   if (apiGwEvent.httpMethod === 'OPTIONS') {
     return { statusCode: 200, headers: corsHeaders, body: '' };
