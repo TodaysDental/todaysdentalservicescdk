@@ -25,7 +25,7 @@ import {
     handleMarkDelivered, handleMarkMessagesRead,
     handleGetVoiceUploadUrl, handleSendVoiceMessage,
     handleUpdateConversationSettings, handleMuteConversation, handleUnmuteConversation,
-    handleArchiveConversation, handlePinConversation,
+    handleArchiveConversation, handlePinConversation, handleUnpinConversation,
     handleGetConversationAnalytics,
     handleSearchGifs, handleGetTrendingGifs, handleSendGif,
     handleGetStickerPacks, handleGetStickers, handleSendSticker,
@@ -488,6 +488,9 @@ export const handler = async (event: APIGatewayEvent): Promise<APIGatewayProxyRe
                 break;
             case 'pinConversation':
                 await handlePinConversation(senderID, payload, connectionId, apiGwManagement);
+                break;
+            case 'unpinConversation':
+                await handleUnpinConversation(senderID, payload, connectionId, apiGwManagement);
                 break;
 
             // Disappearing Messages

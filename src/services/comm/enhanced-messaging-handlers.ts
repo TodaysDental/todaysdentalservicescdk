@@ -608,7 +608,7 @@ export async function handleArchiveConversation(
 }
 
 /**
- * Pin a conversation
+ * Pin a conversation — saves pinnedBy array on the FavorRequest record
  */
 export async function handlePinConversation(
     senderID: string,
@@ -616,10 +616,69 @@ export async function handlePinConversation(
     connectionId: string,
     apiGwManagement: ApiGatewayManagementApiClient
 ): Promise<void> {
-    await handleUpdateConversationSettings(senderID, {
-        favorRequestID: payload.favorRequestID,
-        settings: { pinned: true },
-    }, connectionId, apiGwManagement);
+    const { favorRequestID } = payload;
+    if (!favorRequestID) {
+        await sendToClient(apiGwManagement, connectionId, { type: 'error', message: 'Missing favorRequestID' });
+        return;
+    }
+
+    try {
+        // Add senderID to the pinnedBy set on the FavorRequest record
+        await ddb.send(new UpdateCommand({
+            TableName: FAVORS_TABLE,
+            Key: { favorRequestID },
+            UpdateExpression: 'ADD pinnedBy :userSet',
+            ExpressionAttributeValues: {
+                ':userSet': new Set([senderID]),
+            },
+        }));
+
+        await sendToClient(apiGwManagement, connectionId, {
+            type: 'conversationPinned',
+            favorRequestID,
+            pinned: true,
+        });
+    } catch (e) {
+        console.error('Error pinning conversation:', e);
+        await sendToClient(apiGwManagement, connectionId, { type: 'error', message: 'Failed to pin conversation' });
+    }
+}
+
+/**
+ * Unpin a conversation — removes user from pinnedBy array on the FavorRequest record
+ */
+export async function handleUnpinConversation(
+    senderID: string,
+    payload: { favorRequestID: string },
+    connectionId: string,
+    apiGwManagement: ApiGatewayManagementApiClient
+): Promise<void> {
+    const { favorRequestID } = payload;
+    if (!favorRequestID) {
+        await sendToClient(apiGwManagement, connectionId, { type: 'error', message: 'Missing favorRequestID' });
+        return;
+    }
+
+    try {
+        // Remove senderID from the pinnedBy set on the FavorRequest record
+        await ddb.send(new UpdateCommand({
+            TableName: FAVORS_TABLE,
+            Key: { favorRequestID },
+            UpdateExpression: 'DELETE pinnedBy :userSet',
+            ExpressionAttributeValues: {
+                ':userSet': new Set([senderID]),
+            },
+        }));
+
+        await sendToClient(apiGwManagement, connectionId, {
+            type: 'conversationPinned',
+            favorRequestID,
+            pinned: false,
+        });
+    } catch (e) {
+        console.error('Error unpinning conversation:', e);
+        await sendToClient(apiGwManagement, connectionId, { type: 'error', message: 'Failed to unpin conversation' });
+    }
 }
 
 // ========================================
