@@ -37,7 +37,7 @@ const METHOD_PERMISSIONS: Record<string, PermissionType> = {
 
 const CONFIG = {
   AWS_REGION: process.env.AWS_REGION || 'us-east-1',
-  MODEL_ID: 'anthropic.claude-3-5-sonnet-20241022-v2:0',
+  MODEL_ID: 'us.anthropic.claude-3-5-sonnet-20241022-v2:0',
   MAX_TOKENS: 4096,
   TEMPERATURE: 0.7,
 };
