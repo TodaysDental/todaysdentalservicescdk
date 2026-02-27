@@ -37,12 +37,12 @@ const METHOD_PERMISSIONS: Record<string, PermissionType> = {
 
 const CONFIG = {
   AWS_REGION: process.env.AWS_REGION || 'us-east-1',
-  MODEL_ID: 'anthropic.claude-3-sonnet-20240229-v1:0',
+  MODEL_ID: 'anthropic.claude-3-5-sonnet-20241022-v2:0',
   MAX_TOKENS: 4096,
   TEMPERATURE: 0.7,
 };
 
-const bedrockClient = new BedrockRuntimeClient({ 
+const bedrockClient = new BedrockRuntimeClient({
   region: CONFIG.AWS_REGION,
   maxAttempts: 3,
 });
@@ -343,7 +343,7 @@ async function invokeClaudeModel(systemPrompt: string, userPrompt: string): Prom
 
   // Extract the text content from Claude's response
   const textContent = responseBody.content?.find((c: any) => c.type === 'text')?.text;
-  
+
   if (!textContent) {
     throw new Error('No text content in Claude response');
   }
@@ -393,7 +393,7 @@ Remember: Each headline must be 30 characters or less. Generate exactly 15 headl
 
   try {
     const result = await invokeClaudeModel(SYSTEM_PROMPTS.HEADLINES, userPrompt);
-    
+
     // Validate headline lengths
     const validatedHeadlines = (result.headlines || []).map((h: HeadlineSuggestion) => ({
       ...h,
@@ -453,7 +453,7 @@ Remember: Each description must be 90 characters or less. Generate exactly 4 des
 
   try {
     const result = await invokeClaudeModel(SYSTEM_PROMPTS.DESCRIPTIONS, userPrompt);
-    
+
     // Validate description lengths
     const validatedDescriptions = (result.descriptions || []).map((d: DescriptionSuggestion) => ({
       ...d,
@@ -513,7 +513,7 @@ Generate 50 high-intent keywords with appropriate match types. Focus on local se
 
   try {
     const result = await invokeClaudeModel(SYSTEM_PROMPTS.KEYWORDS, userPrompt);
-    
+
     // Group keywords by category and match type
     const keywords = result.keywords || [];
     const byCategory: Record<string, KeywordSuggestion[]> = {};
@@ -524,11 +524,11 @@ Generate 50 high-intent keywords with appropriate match types. Focus on local se
       // Group by category
       if (!byCategory[kw.category]) byCategory[kw.category] = [];
       byCategory[kw.category].push(kw);
-      
+
       // Group by match type
       if (!byMatchType[kw.matchType]) byMatchType[kw.matchType] = [];
       byMatchType[kw.matchType].push(kw);
-      
+
       // Group by intent
       if (!byIntent[kw.intent]) byIntent[kw.intent] = [];
       byIntent[kw.intent].push(kw);
@@ -606,7 +606,7 @@ Identify queries that are wasting ad spend and should be excluded. Focus on:
 
   try {
     const result = await invokeClaudeModel(SYSTEM_PROMPTS.NEGATIVE_KEYWORDS, userPrompt);
-    
+
     // Group negative keywords by category
     const negativeKeywords = result.negativeKeywords || [];
     const byCategory: Record<string, NegativeKeywordSuggestion[]> = {};

@@ -336,13 +336,20 @@ async function addKeywords(
     const response = await addKeywordsToGoogle(customerId, adGroupResourceName, keywords);
     console.log('[GoogleAdsKeywords] Successfully added keywords, response:', JSON.stringify(response));
 
+    // The utility now returns { addedCount, failedKeywords, addedKeywords? }
+    const addedCount = response?.addedCount ?? keywords.length;
+    const failedKeywords = response?.failedKeywords || [];
+
     return {
       statusCode: 201,
       headers: corsHeaders,
       body: JSON.stringify({
         success: true,
-        addedCount: keywords.length,
-        message: `Successfully added ${keywords.length} keywords`,
+        addedCount,
+        failedKeywords,
+        message: failedKeywords.length > 0
+          ? `Added ${addedCount} keyword(s). ${failedKeywords.length} keyword(s) failed: ${failedKeywords.map((f: any) => `"${f.text}" — ${f.reason}`).join('; ')}`
+          : `Successfully added ${addedCount} keywords`,
         response,
       }),
     };
@@ -363,6 +370,11 @@ async function addKeywords(
         location: e.location,
       }));
       errorMessage = error.errors.map((e: any) => e.message).join('; ');
+    }
+
+    // Include failed keywords details
+    if (error.failedKeywords) {
+      errorDetails.failedKeywords = error.failedKeywords;
     }
 
     // Check for request validation errors

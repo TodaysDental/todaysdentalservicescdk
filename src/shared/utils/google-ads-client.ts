@@ -682,6 +682,9 @@ export async function getSearchQueryReport(
  * NOTE: The google-ads-api library's create() method expects an array of
  * resource objects directly (IAdGroupCriterion), NOT wrapped in operation
  * objects like { create: { ... } }. The library handles operation types internally.
+ * 
+ * When a batch fails (e.g. policy violation), retries each keyword individually
+ * so one failure doesn't block the entire batch.
  */
 export async function addKeywords(
   customerId: string,
@@ -706,10 +709,60 @@ export async function addKeywords(
     console.log(`[GoogleAdsClient] Creating ${resources.length} keywords`);
     console.log('[GoogleAdsClient] Resources:', JSON.stringify(resources, null, 2));
 
-    const result = await (client as any).adGroupCriteria.create(resources);
+    // Try batch first
+    try {
+      const result = await (client as any).adGroupCriteria.create(resources);
+      console.log('[GoogleAdsClient] Successfully created keywords:', JSON.stringify(result, null, 2));
+      return { addedCount: keywords.length, failedKeywords: [], result };
+    } catch (batchError: any) {
+      console.warn('[GoogleAdsClient] Batch keyword add failed, falling back to individual adds:', batchError.message);
 
-    console.log('[GoogleAdsClient] Successfully created keywords:', JSON.stringify(result, null, 2));
-    return result;
+      // If only one keyword, no point retrying individually
+      if (keywords.length === 1) {
+        // Extract a more user-friendly error message
+        const policyMsg = batchError.errors?.map((e: any) => e.message).join('; ') || batchError.message;
+        const err: any = new Error(policyMsg);
+        err.errors = batchError.errors;
+        err.code = batchError.code;
+        err.failedKeywords = [{ text: keywords[0].text, reason: policyMsg }];
+        throw err;
+      }
+
+      // Retry each keyword individually
+      const added: string[] = [];
+      const failed: Array<{ text: string; reason: string }> = [];
+
+      for (const kw of keywords) {
+        try {
+          const singleResource = [{
+            ad_group: adGroupResourceName,
+            status: 'ENABLED',
+            keyword: {
+              text: kw.text.trim(),
+              match_type: kw.matchType,
+            },
+          }];
+          await (client as any).adGroupCriteria.create(singleResource);
+          added.push(kw.text);
+        } catch (singleError: any) {
+          const reason = singleError.errors?.map((e: any) => e.message).join('; ') || singleError.message || 'Unknown error';
+          console.warn(`[GoogleAdsClient] Failed to add keyword "${kw.text}": ${reason}`);
+          failed.push({ text: kw.text, reason });
+        }
+      }
+
+      console.log(`[GoogleAdsClient] Individual results: ${added.length} added, ${failed.length} failed`);
+
+      if (added.length === 0) {
+        // All failed — throw with details
+        const err: any = new Error(`All ${failed.length} keyword(s) failed to add. ${failed.map(f => `"${f.text}": ${f.reason}`).join('; ')}`);
+        err.failedKeywords = failed;
+        throw err;
+      }
+
+      // Some succeeded — return partial success
+      return { addedCount: added.length, failedKeywords: failed, addedKeywords: added };
+    }
   } catch (error: any) {
     console.error('[GoogleAdsClient] Error adding keywords:', error);
     console.error('[GoogleAdsClient] Error details:', JSON.stringify({
@@ -717,6 +770,7 @@ export async function addKeywords(
       code: error.code,
       errors: error.errors,
       details: error.details,
+      failedKeywords: error.failedKeywords,
     }, null, 2));
 
     // Re-throw with more context
