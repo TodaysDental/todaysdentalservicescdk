@@ -772,23 +772,38 @@ export async function addKeywords(
       const errorMsg = restError.message || 'Unknown REST API error';
       const errorDetails = restError.details;
 
-      // Check if it's a policy violation in the REST error response
-      const policyViolationKeys: any[] = [];
-      if (errorDetails?.error?.details) {
-        for (const d of errorDetails.error.details) {
-          if (d.errors) {
-            for (const err of d.errors) {
-              if (err.details?.policyViolationDetails?.key) {
-                policyViolationKeys.push(err.details.policyViolationDetails.key);
-              }
-            }
-          }
-        }
+      console.log(`[GoogleAdsClient] REST error for "${keywordText}":`, JSON.stringify(errorDetails, null, 2));
+
+      // Check for duplicate/already exists errors first
+      const isDuplicate = errorMsg.toLowerCase().includes('already exists') ||
+        errorMsg.toLowerCase().includes('duplicate') ||
+        JSON.stringify(errorDetails || '').toLowerCase().includes('already exists') ||
+        JSON.stringify(errorDetails || '').toLowerCase().includes('criterion_error');
+
+      if (isDuplicate) {
+        console.log(`[GoogleAdsClient] Keyword "${keywordText}" already exists in ad group, skipping`);
+        added.push(keywordText); // Count as success since it already exists
+        continue;
       }
+
+      // Deep search for policy violation keys in the error response
+      const policyViolationKeys: any[] = [];
+      const searchForPolicyKeys = (obj: any) => {
+        if (!obj || typeof obj !== 'object') return;
+        if (obj.policyViolationDetails?.key) {
+          policyViolationKeys.push(obj.policyViolationDetails.key);
+        }
+        if (Array.isArray(obj)) {
+          obj.forEach(searchForPolicyKeys);
+        } else {
+          Object.values(obj).forEach(searchForPolicyKeys);
+        }
+      };
+      searchForPolicyKeys(errorDetails);
 
       if (policyViolationKeys.length > 0) {
         // Retry with policy exemptions
-        console.log(`[GoogleAdsClient] Policy violation (error) for "${keywordText}", retrying with ${policyViolationKeys.length} exemption key(s)`);
+        console.log(`[GoogleAdsClient] Policy violation (error) for "${keywordText}", retrying with ${policyViolationKeys.length} exemption key(s):`, JSON.stringify(policyViolationKeys));
         body.operations[0].exemptPolicyViolationKeys = policyViolationKeys;
         try {
           await googleAdsRestCall(customerId, 'adGroupCriteria:mutate', body);
@@ -796,11 +811,20 @@ export async function addKeywords(
           added.push(keywordText);
         } catch (retryError: any) {
           console.warn(`[GoogleAdsClient] Retry with exemption failed for "${keywordText}": ${retryError.message}`);
-          failed.push({ text: keywordText, reason: retryError.message });
+          // Provide a user-friendly error message
+          const friendlyReason = retryError.message?.includes('policy')
+            ? `This keyword violates a Google Ads policy that cannot be exempted. Try a different keyword variation.`
+            : retryError.message;
+          failed.push({ text: keywordText, reason: friendlyReason });
         }
       } else {
+        // Provide a user-friendly error message
+        let friendlyReason = errorMsg;
+        if (errorMsg.includes('policy')) {
+          friendlyReason = `Google Ads policy violation — this keyword may already exist or is restricted. Try adding it directly in Google Ads.`;
+        }
         console.warn(`[GoogleAdsClient] Failed to add keyword "${keywordText}": ${errorMsg}`);
-        failed.push({ text: keywordText, reason: errorMsg });
+        failed.push({ text: keywordText, reason: friendlyReason });
       }
     }
   }
