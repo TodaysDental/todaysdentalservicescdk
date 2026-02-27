@@ -47,6 +47,7 @@ import { EmailStack } from './stacks/email-stack';
 import { AccountingStack } from './stacks/accounting-stack';
 import { InsuranceAutomationStack } from './stacks/insurance-automation-stack';
 import { PaymentPostingSalaryStack } from './stacks/payment-posting-salary-stack';
+import { ClaimsSalaryStack } from './stacks/claims-salary-stack';
 import { SecretsStack } from './stacks/secrets-stack';
 import { ItTicketStack } from './stacks/it-ticket-stack';
 import { PushNotificationsStack } from './stacks/push-notifications-stack';
@@ -1044,6 +1045,20 @@ const paymentPostingSalaryStack = new PaymentPostingSalaryStack(app, 'TodaysDent
 paymentPostingSalaryStack.addDependency(coreStack); // Explicit - imports AuthorizerFunctionArn + StaffUser table export
 paymentPostingSalaryStack.addDependency(openDentalStack); // Explicit - uses consolidated Transfer server ID
 paymentPostingSalaryStack.addDependency(secretsStack); // Explicit - uses secrets tables for OpenDental creds + SFTP password
+
+// Claims Salary Analytics (Finance workflow)
+// Computes salary earnings for Claims team by assignee and location using OpenDental SQL queries delivered via SFTP
+const claimsSalaryStack = new ClaimsSalaryStack(app, 'TodaysDentalInsightsClaimsSalaryN1', {
+  env,
+  consolidatedTransferServerId: openDentalStack.consolidatedTransferServer.attrServerId,
+  globalSecretsTableName: secretsStack.globalSecretsTable.tableName,
+  clinicSecretsTableName: secretsStack.clinicSecretsTable.tableName,
+  clinicConfigTableName: secretsStack.clinicConfigTable.tableName,
+  secretsEncryptionKeyArn: secretsStack.secretsEncryptionKey.keyArn,
+});
+claimsSalaryStack.addDependency(coreStack); // Explicit - imports AuthorizerFunctionArn + StaffUser table export
+claimsSalaryStack.addDependency(openDentalStack); // Explicit - uses consolidated Transfer server ID
+claimsSalaryStack.addDependency(secretsStack); // Explicit - uses secrets tables for OpenDental creds + SFTP password
 
 // Insurance Automation Stack - Commission tracking and document processing for insurance team
 // Features: Commission tracking, Textract document processing, Note copying between patients

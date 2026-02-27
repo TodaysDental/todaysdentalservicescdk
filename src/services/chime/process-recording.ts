@@ -158,7 +158,7 @@ async function processRecordingEvent(record: S3EventRecord): Promise<void> {
       clinicName: callRecord?.clinicName || '',
       agentId: metadata.agentId,
       recordingId: metadata.recordingId,
-      durationSeconds: metadata.durationSeconds,
+      durationSeconds: metadata.duration,
       hasTranscription: AUTO_TRANSCRIBE,
       timestamp: new Date().toISOString(),
     }).catch(err => console.warn('[RecordingProcessor] Recording-ready push failed (non-fatal):', err.message));
