@@ -595,6 +595,20 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
             result = await restSaveUserPreference(authedUserID, parsedBody, logCtx);
         }
 
+        // Audit Logs endpoint
+        else if (path.match(/^\/api\/audit-logs$/) && httpMethod === 'GET') {
+            log.info('Routing to getAuditLogs', logCtx);
+            routeMatched = true;
+            const limit = parseInt(queryStringParameters?.limit || '50', 10);
+            try {
+                const logs = await AuditService.getUserAuditLogs(authedUserID, limit);
+                result = response(200, { success: true, auditLogs: logs });
+            } catch (err) {
+                log.error('Failed to fetch audit logs', logCtx, err as Error);
+                result = response(500, { success: false, message: 'Failed to fetch audit logs' });
+            }
+        }
+
         if (!routeMatched) {
             log.warn('No route matched', logCtx);
             log.response(404, false, Date.now() - handlerStartTime, logCtx);

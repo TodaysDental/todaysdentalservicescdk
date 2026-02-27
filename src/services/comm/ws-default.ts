@@ -2169,6 +2169,33 @@ async function sendMessage(
     const recipientIDs = await getRecipientIDs(favor, senderID);
     console.log(`📤 [sendMessage] recipientIDs=[${recipientIDs.join(', ')}], count=${recipientIDs.length}`);
 
+    // ── Admin-only messaging check (group chats) ──
+    if (favor.teamID) {
+        try {
+            const teamResult = await ddb.send(new GetCommand({
+                TableName: TEAMS_TABLE!,
+                Key: { teamID: favor.teamID },
+            }));
+            const teamData = teamResult.Item;
+            if (teamData && teamData.adminOnlyMessages) {
+                const isOwner = teamData.ownerID === senderID;
+                const isAdmin = isOwner || (teamData.admins || []).includes(senderID);
+                if (!isAdmin) {
+                    console.log(`🚫 [sendMessage] BLOCKED: adminOnlyMessages is ON and senderID=${senderID} is not an admin/owner`);
+                    if (senderConnectionId) {
+                        await sendToClient(apiGwManagement, senderConnectionId, {
+                            type: 'error',
+                            message: 'Only admins can send messages in this group.',
+                        });
+                    }
+                    return;
+                }
+            }
+        } catch (e) {
+            console.error('Error checking adminOnlyMessages:', e);
+        }
+    }
+
     // Allow messaging for active workflows (pending/active/in_progress/forwarded).
     // Only block messaging for closed tasks.
     const isClosed = favor.status === 'completed' || favor.status === 'rejected';
