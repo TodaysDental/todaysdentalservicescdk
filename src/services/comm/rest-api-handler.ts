@@ -241,6 +241,8 @@ interface Team {
     description?: string;
     members: string[];
     admins?: string[];  // Users with admin privileges
+    adminOnlyMessages?: boolean;  // Only admins can send messages
+    groupImageUrl?: string;       // Shared group profile image (S3 URL)
     category?: SystemModule;
     createdAt: string;
     updatedAt: string;
@@ -3141,7 +3143,9 @@ async function addGroupMember(userID: string, teamID: string, body: any, logCtx?
         return response(404, { success: false, message: 'Group not found' });
     }
 
-    if (team.ownerID !== userID) {
+    const isOwner = team.ownerID === userID;
+    const isAdmin = (team.admins || []).includes(userID);
+    if (!isOwner && !isAdmin) {
         log.warn('Unauthorized add member attempt', { ...fnCtx, ownerID: team.ownerID });
         AuditService.logAction({
             userID,
@@ -3152,10 +3156,10 @@ async function addGroupMember(userID: string, teamID: string, body: any, logCtx?
             endpoint: `/api/groups/${teamID}/members`,
             status: 'failure',
             statusCode: 403,
-            errorMessage: 'Only the group owner can add members',
+            errorMessage: 'Only the group owner or admins can add members',
             durationMs: Date.now() - startTime,
         });
-        return response(403, { success: false, message: 'Only the group owner can add members' });
+        return response(403, { success: false, message: 'Only the group owner or admins can add members' });
     }
 
     // ========================================
@@ -3290,7 +3294,10 @@ async function removeGroupMember(userID: string, teamID: string, memberUserID: s
         return response(404, { success: false, message: 'Group not found' });
     }
 
-    if (team.ownerID !== userID && userID !== memberUserID) {
+    const isOwner = team.ownerID === userID;
+    const isAdmin = (team.admins || []).includes(userID);
+    const isSelfLeave = userID === memberUserID;
+    if (!isSelfLeave && !isOwner && !isAdmin) {
         log.warn('Unauthorized remove member attempt', { ...fnCtx, ownerID: team.ownerID });
         AuditService.logAction({
             userID,
@@ -3301,10 +3308,18 @@ async function removeGroupMember(userID: string, teamID: string, memberUserID: s
             endpoint: `/api/groups/${teamID}/members/${memberUserID}`,
             status: 'failure',
             statusCode: 403,
-            errorMessage: 'Only the group owner can remove other members',
+            errorMessage: 'Only the group owner or admins can remove other members',
             durationMs: Date.now() - startTime,
         });
-        return response(403, { success: false, message: 'Only the group owner can remove other members' });
+        return response(403, { success: false, message: 'Only the group owner or admins can remove other members' });
+    }
+
+    // Admins cannot remove other admins or the owner
+    if (!isOwner && !isSelfLeave) {
+        const targetIsAdmin = (team.admins || []).includes(memberUserID);
+        if (targetIsAdmin || memberUserID === team.ownerID) {
+            return response(403, { success: false, message: 'Only the owner can remove admins.' });
+        }
     }
 
     // ========================================

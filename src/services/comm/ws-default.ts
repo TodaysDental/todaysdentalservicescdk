@@ -81,6 +81,8 @@ interface Team {
     description?: string;
     members: string[]; // Set of userID strings
     admins: string[];  // Users with admin privileges (owner is always admin)
+    adminOnlyMessages?: boolean;  // Only admins can send messages
+    groupImageUrl?: string;       // Shared group profile image (S3 URL)
     createdAt: string;
     updatedAt: string;
 }
@@ -849,9 +851,13 @@ async function listTeams(
             teams: teams.map(t => ({
                 teamID: t.teamID,
                 name: t.name,
+                description: t.description,
                 ownerID: t.ownerID,
                 memberCount: t.members.length,
                 members: t.members,
+                admins: t.admins,
+                adminOnlyMessages: t.adminOnlyMessages,
+                groupImageUrl: (t as any).groupImageUrl || null,
                 createdAt: t.createdAt,
                 updatedAt: t.updatedAt,
             })),
@@ -893,9 +899,11 @@ async function addUserToTeam(
             return;
         }
 
-        // 2. Check if caller is the owner
-        if (team.ownerID !== callerID) {
-            await sendToClient(apiGwManagement, connectionId, { type: 'error', message: 'Unauthorized: Only the team owner can add members.' });
+        // 2. Check if caller is the owner or an admin
+        const isOwner = team.ownerID === callerID;
+        const isAdmin = (team.admins || []).includes(callerID);
+        if (!isOwner && !isAdmin) {
+            await sendToClient(apiGwManagement, connectionId, { type: 'error', message: 'Unauthorized: Only the team owner or admins can add members.' });
             return;
         }
 
@@ -976,11 +984,22 @@ async function removeUserFromTeam(
             return;
         }
 
-        // 2. Authorization: owner can remove others, any member can remove themselves (self-leave)
+        // 2. Authorization: owner or admin can remove others, any member can remove themselves (self-leave)
         const isSelfLeave = callerID === userID;
-        if (!isSelfLeave && team.ownerID !== callerID) {
-            await sendToClient(apiGwManagement, connectionId, { type: 'error', message: 'Unauthorized: Only the team owner can remove other members.' });
+        const isOwner = team.ownerID === callerID;
+        const isAdmin = (team.admins || []).includes(callerID);
+        if (!isSelfLeave && !isOwner && !isAdmin) {
+            await sendToClient(apiGwManagement, connectionId, { type: 'error', message: 'Unauthorized: Only the team owner or admins can remove other members.' });
             return;
+        }
+
+        // Admins cannot remove other admins or the owner — only owner can
+        if (!isOwner && !isSelfLeave) {
+            const targetIsAdmin = (team.admins || []).includes(userID);
+            if (targetIsAdmin || userID === team.ownerID) {
+                await sendToClient(apiGwManagement, connectionId, { type: 'error', message: 'Only the owner can remove admins.' });
+                return;
+            }
         }
 
         // 3. Prevent owner from removing themselves
@@ -1048,7 +1067,7 @@ async function handleUpdateGroupSettings(
     connectionId: string,
     apiGwManagement: ApiGatewayManagementApiClient
 ): Promise<void> {
-    const { teamID, description, adminOnlyMessages, makeAdmin, dismissAdmin } = payload;
+    const { teamID, description, adminOnlyMessages, makeAdmin, dismissAdmin, groupImageUrl } = payload;
 
     if (!teamID) {
         await sendToClient(apiGwManagement, connectionId, { type: 'error', message: 'Missing teamID.' });
@@ -1069,17 +1088,27 @@ async function handleUpdateGroupSettings(
             return;
         }
 
-        // 2. Check if caller is owner or admin
+        // 2. Check if caller is owner or admin (for most settings)
+        //    Allow any member to update groupImageUrl
         const isOwner = team.ownerID === callerID;
         const isAdmin = (team.admins || []).includes(callerID);
-        if (!isOwner && !isAdmin) {
+        const isMember = team.members.includes(callerID);
+
+        // groupImageUrl can be updated by any member; other settings require admin
+        const isGroupImageOnly = groupImageUrl !== undefined && description === undefined && adminOnlyMessages === undefined && !makeAdmin && !dismissAdmin;
+        if (!isGroupImageOnly && !isOwner && !isAdmin) {
             await sendToClient(apiGwManagement, connectionId, { type: 'error', message: 'Unauthorized: Only admins can update group settings.' });
+            return;
+        }
+        if (isGroupImageOnly && !isMember) {
+            await sendToClient(apiGwManagement, connectionId, { type: 'error', message: 'Unauthorized: Only members can update group image.' });
             return;
         }
 
         const nowIso = new Date().toISOString();
         const updateExprParts: string[] = ['updatedAt = :updatedAt'];
         const exprValues: Record<string, any> = { ':updatedAt': nowIso };
+        const exprNames: Record<string, string> = {};
         const systemMessages: string[] = [];
 
         // 3. Update description if provided
@@ -1087,6 +1116,13 @@ async function handleUpdateGroupSettings(
             updateExprParts.push('description = :desc');
             exprValues[':desc'] = description || null;
             systemMessages.push(`Group description updated`);
+        }
+
+        // 3b. Update groupImageUrl if provided
+        if (groupImageUrl !== undefined) {
+            updateExprParts.push('groupImageUrl = :gimg');
+            exprValues[':gimg'] = groupImageUrl || null;
+            systemMessages.push(groupImageUrl ? `Group image updated` : `Group image removed`);
         }
 
         // 4. Update adminOnlyMessages if provided
@@ -1150,6 +1186,7 @@ async function handleUpdateGroupSettings(
             ...team,
             ...(description !== undefined && { description }),
             ...(adminOnlyMessages !== undefined && { adminOnlyMessages }),
+            ...(groupImageUrl !== undefined && { groupImageUrl }),
             admins: updatedAdmins,
             updatedAt: nowIso,
         };
