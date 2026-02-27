@@ -552,7 +552,8 @@ export class ConnectLexAiStack extends Stack {
 
     this.connectFinalizerFn.addToRolePolicy(new iam.PolicyStatement({
       effect: iam.Effect.ALLOW,
-      actions: ['dynamodb:UpdateItem'],
+      // Finalizer persists transcript from TranscriptBuffersV2 into CallAnalytics on disconnect.
+      actions: ['dynamodb:GetItem', 'dynamodb:UpdateItem'],
       resources: [props.transcriptBufferTableArn],
     }));
 

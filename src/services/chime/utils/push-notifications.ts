@@ -87,6 +87,41 @@ export interface CallAnsweredNotification extends CallNotificationData {
   meetingId?: string;
 }
 
+export interface CallHoldNotification extends CallNotificationData {
+  agentId: string;
+  direction?: string;
+}
+
+export interface CallResumedNotification extends CallNotificationData {
+  agentId: string;
+  direction?: string;
+}
+
+export interface TransferIncomingNotification extends CallNotificationData {
+  fromAgentId: string;
+  fromAgentName?: string;
+  transferNotes?: string;
+  transferType?: 'warm' | 'cold' | 'conference';
+}
+
+export interface RecordingReadyNotification {
+  callId: string;
+  clinicId: string;
+  clinicName: string;
+  agentId: string;
+  recordingId: string;
+  durationSeconds?: number;
+  hasTranscription?: boolean;
+  timestamp: string;
+}
+
+export interface ConferenceInviteNotification extends CallNotificationData {
+  conferenceId: string;
+  initiatorAgentId: string;
+  initiatorName?: string;
+  participantCount?: number;
+}
+
 export interface SendPushResult {
   success: boolean;
   sent?: number;
@@ -471,8 +506,6 @@ export async function sendCallCancelledToAgents(
   const result = await invokeSendPushLambdaWithRetry({
     userIds: targetIds,
     notification: {
-      // Data-only (silent push) — include title/body for send-push validation.
-      // Clients should treat call_cancelled as silent state-sync (no banner).
       title: 'Call Update',
       body: 'Call is no longer available.',
       type: 'call_cancelled',
@@ -490,9 +523,9 @@ export async function sendCallCancelledToAgents(
       category: 'CALL_CANCELLED',
     },
   }, {
-    sync: false,
+    sync: true,
     skipPreferenceCheck: true,
-    maxRetries: 1,
+    maxRetries: 2,
   });
 
   if (result.success) {
@@ -895,8 +928,6 @@ export async function sendCallAnsweredToAgent(
   const result = await invokeSendPushLambdaWithRetry({
     userId: notification.agentId,
     notification: {
-      // Data-only (silent push) for state-sync — include title/body for send-push validation.
-      // Clients should treat call_answered as a silent state transition.
       title: 'Call Answered',
       body: 'Outbound call answered.',
       type: 'call_answered',
@@ -927,5 +958,289 @@ export async function sendCallAnsweredToAgent(
   } else {
     console.error(`[ChimePush] ❌ Failed to send call-answered push to agent ${notification.agentId}:`, result.error);
     emitPushMetric('PushFailed', { notificationType: 'call_answered' });
+  }
+}
+
+// ========================================
+// CALL HOLD STATE-SYNC NOTIFICATIONS
+// ========================================
+
+/**
+ * Send call_hold push to the agent who placed a call on hold.
+ * Data-only silent push so the mobile app transitions its UI to the
+ * "On Hold" state without the agent needing to poll.
+ */
+export async function sendCallHoldToAgent(
+  notification: CallHoldNotification
+): Promise<void> {
+  if (!PUSH_NOTIFICATIONS_ENABLED) return;
+
+  const idempotencyKey = `call_hold:${notification.callId}:${notification.agentId}:${notification.timestamp}`;
+
+  console.log(`[ChimePush] ⏸️ Sending call_hold push to agent ${notification.agentId}`, {
+    callId: notification.callId,
+  });
+
+  const result = await invokeSendPushLambdaWithRetry({
+    userId: notification.agentId,
+    notification: {
+      title: 'Call On Hold',
+      body: 'Call placed on hold.',
+      type: 'call_hold',
+      contentAvailable: true,
+      idempotencyKey,
+      data: {
+        callId: notification.callId,
+        clinicId: notification.clinicId,
+        clinicName: notification.clinicName,
+        direction: notification.direction || 'inbound',
+        action: 'call_hold',
+        timestamp: notification.timestamp,
+      },
+      category: 'CALL_HOLD',
+    },
+  }, {
+    sync: false,
+    skipPreferenceCheck: true,
+    maxRetries: 1,
+  });
+
+  if (result.success) {
+    console.log(`[ChimePush] ✅ Call-hold push sent to agent ${notification.agentId}`);
+    emitPushMetric('PushDelivered', { notificationType: 'call_hold' });
+  } else {
+    console.error(`[ChimePush] ❌ Failed to send call-hold push:`, result.error);
+    emitPushMetric('PushFailed', { notificationType: 'call_hold' });
+  }
+}
+
+// ========================================
+// CALL RESUMED STATE-SYNC NOTIFICATIONS
+// ========================================
+
+/**
+ * Send call_resumed push to the agent who resumed a call from hold.
+ * Data-only silent push so the mobile app transitions back to the
+ * active "In Call" UI immediately.
+ */
+export async function sendCallResumedToAgent(
+  notification: CallResumedNotification
+): Promise<void> {
+  if (!PUSH_NOTIFICATIONS_ENABLED) return;
+
+  const idempotencyKey = `call_resumed:${notification.callId}:${notification.agentId}:${notification.timestamp}`;
+
+  console.log(`[ChimePush] ▶️ Sending call_resumed push to agent ${notification.agentId}`, {
+    callId: notification.callId,
+  });
+
+  const result = await invokeSendPushLambdaWithRetry({
+    userId: notification.agentId,
+    notification: {
+      title: 'Call Resumed',
+      body: 'Call resumed from hold.',
+      type: 'call_resumed',
+      contentAvailable: true,
+      idempotencyKey,
+      data: {
+        callId: notification.callId,
+        clinicId: notification.clinicId,
+        clinicName: notification.clinicName,
+        direction: notification.direction || 'inbound',
+        action: 'call_resumed',
+        timestamp: notification.timestamp,
+      },
+      category: 'CALL_RESUMED',
+    },
+  }, {
+    sync: false,
+    skipPreferenceCheck: true,
+    maxRetries: 1,
+  });
+
+  if (result.success) {
+    console.log(`[ChimePush] ✅ Call-resumed push sent to agent ${notification.agentId}`);
+    emitPushMetric('PushDelivered', { notificationType: 'call_resumed' });
+  } else {
+    console.error(`[ChimePush] ❌ Failed to send call-resumed push:`, result.error);
+    emitPushMetric('PushFailed', { notificationType: 'call_resumed' });
+  }
+}
+
+// ========================================
+// TRANSFER INCOMING NOTIFICATIONS
+// ========================================
+
+/**
+ * Send transfer_incoming push to the agent receiving a transferred call.
+ * Unlike a regular incoming_call, this includes transfer context (who
+ * transferred, notes, transfer type) so the UI can show a richer prompt
+ * like "Transfer from Dr. Smith — patient needs follow-up".
+ */
+export async function sendTransferIncomingToAgent(
+  toAgentId: string,
+  notification: TransferIncomingNotification
+): Promise<void> {
+  if (!PUSH_NOTIFICATIONS_ENABLED) return;
+
+  const fromDisplay = notification.fromAgentName || notification.fromAgentId;
+  const callerDisplay = getCallerDisplay(notification);
+  const idempotencyKey = `transfer_incoming:${notification.callId}:${toAgentId}:${notification.timestamp}`;
+
+  console.log(`[ChimePush] 🔀 Sending transfer_incoming push to agent ${toAgentId}`, {
+    callId: notification.callId,
+    fromAgent: notification.fromAgentId,
+    transferType: notification.transferType,
+  });
+
+  const bodyParts = [`Transfer from ${fromDisplay}`];
+  if (callerDisplay !== 'Unknown') bodyParts.push(`Caller: ${callerDisplay}`);
+  if (notification.transferNotes) bodyParts.push(notification.transferNotes);
+
+  const result = await invokeSendPushLambdaWithRetry({
+    userId: toAgentId,
+    notification: {
+      title: 'Incoming Transfer',
+      body: bodyParts.join(' — '),
+      type: 'transfer_incoming',
+      sound: 'default',
+      idempotencyKey,
+      data: {
+        callId: notification.callId,
+        clinicId: notification.clinicId,
+        clinicName: notification.clinicName,
+        callerPhoneNumber: notification.callerPhoneNumber,
+        callerName: notification.callerName,
+        fromAgentId: notification.fromAgentId,
+        fromAgentName: notification.fromAgentName || '',
+        transferNotes: notification.transferNotes || '',
+        transferType: notification.transferType || 'warm',
+        action: 'answer_transfer',
+        timestamp: notification.timestamp,
+      },
+      category: 'TRANSFER_INCOMING',
+    },
+  }, {
+    sync: true,
+    skipPreferenceCheck: true,
+    maxRetries: 2,
+  });
+
+  if (result.success) {
+    console.log(`[ChimePush] ✅ Transfer-incoming push sent to agent ${toAgentId}`);
+    emitPushMetric('PushDelivered', { notificationType: 'transfer_incoming' });
+  } else {
+    console.error(`[ChimePush] ❌ Failed to send transfer-incoming push:`, result.error);
+    emitPushMetric('PushFailed', { notificationType: 'transfer_incoming' });
+  }
+}
+
+// ========================================
+// RECORDING READY NOTIFICATIONS
+// ========================================
+
+/**
+ * Send recording_ready push to the agent who handled a call when the
+ * recording has been processed and is available for playback/review.
+ */
+export async function sendRecordingReadyToAgent(
+  notification: RecordingReadyNotification
+): Promise<void> {
+  if (!PUSH_NOTIFICATIONS_ENABLED) return;
+
+  const durationStr = notification.durationSeconds
+    ? notification.durationSeconds > 60
+      ? `${Math.floor(notification.durationSeconds / 60)}:${String(notification.durationSeconds % 60).padStart(2, '0')}`
+      : `${notification.durationSeconds}s`
+    : '';
+
+  const bodyParts = ['Call recording ready'];
+  if (durationStr) bodyParts.push(`(${durationStr})`);
+  if (notification.hasTranscription) bodyParts.push('— transcript available');
+
+  const result = await invokeSendPushLambda({
+    userId: notification.agentId,
+    notification: {
+      title: 'Recording Ready',
+      body: bodyParts.join(' '),
+      type: 'recording_ready',
+      data: {
+        callId: notification.callId,
+        clinicId: notification.clinicId,
+        clinicName: notification.clinicName,
+        recordingId: notification.recordingId,
+        durationSeconds: notification.durationSeconds,
+        hasTranscription: notification.hasTranscription,
+        action: 'view_recording',
+        timestamp: notification.timestamp,
+      },
+    },
+  });
+
+  if (result.success) {
+    console.log(`[ChimePush] ✅ Recording-ready push sent to agent ${notification.agentId}`);
+    emitPushMetric('PushDelivered', { notificationType: 'recording_ready' });
+  } else {
+    console.error(`[ChimePush] ❌ Failed to send recording-ready push:`, result.error);
+    emitPushMetric('PushFailed', { notificationType: 'recording_ready' });
+  }
+}
+
+// ========================================
+// CONFERENCE INVITE NOTIFICATIONS
+// ========================================
+
+/**
+ * Send conference_invite push when an agent is being added to a
+ * conference call. Richer than a generic staff_alert — includes
+ * conference context so the UI can render a dedicated conference prompt.
+ */
+export async function sendConferenceInviteToAgent(
+  agentId: string,
+  notification: ConferenceInviteNotification
+): Promise<void> {
+  if (!PUSH_NOTIFICATIONS_ENABLED) return;
+
+  const initiator = notification.initiatorName || notification.initiatorAgentId;
+  const idempotencyKey = `conference_invite:${notification.conferenceId}:${agentId}:${notification.timestamp}`;
+
+  console.log(`[ChimePush] 👥 Sending conference_invite push to agent ${agentId}`, {
+    conferenceId: notification.conferenceId,
+    initiator: notification.initiatorAgentId,
+  });
+
+  const result = await invokeSendPushLambdaWithRetry({
+    userId: agentId,
+    notification: {
+      title: 'Conference Call',
+      body: `${initiator} added you to a conference${notification.participantCount ? ` (${notification.participantCount} participants)` : ''}`,
+      type: 'conference_invite',
+      sound: 'default',
+      idempotencyKey,
+      data: {
+        callId: notification.callId,
+        clinicId: notification.clinicId,
+        clinicName: notification.clinicName,
+        conferenceId: notification.conferenceId,
+        initiatorAgentId: notification.initiatorAgentId,
+        initiatorName: notification.initiatorName || '',
+        participantCount: notification.participantCount,
+        action: 'join_conference',
+        timestamp: notification.timestamp,
+      },
+      category: 'CONFERENCE_INVITE',
+    },
+  }, {
+    sync: true,
+    skipPreferenceCheck: true,
+    maxRetries: 2,
+  });
+
+  if (result.success) {
+    console.log(`[ChimePush] ✅ Conference-invite push sent to agent ${agentId}`);
+    emitPushMetric('PushDelivered', { notificationType: 'conference_invite' });
+  } else {
+    console.error(`[ChimePush] ❌ Failed to send conference-invite push:`, result.error);
+    emitPushMetric('PushFailed', { notificationType: 'conference_invite' });
   }
 }

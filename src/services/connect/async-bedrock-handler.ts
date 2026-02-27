@@ -433,6 +433,9 @@ interface ConnectCallAnalytics {
   customerPhone?: string;
   dialedNumber?: string;
   callDirection?: 'inbound' | 'outbound';
+  scheduledCallId?: string;
+  purpose?: string;
+  patientName?: string;
   aiAgentId?: string;
   agentId?: string; // alias for dashboards
   aiAgentName?: string;
@@ -447,6 +450,8 @@ interface ConnectCallAnalytics {
   ttl?: number;
 }
 
+type CallDirection = 'inbound' | 'outbound';
+
 async function ensureAnalyticsRecord(params: {
   callId: string;
   contactId: string;
@@ -454,6 +459,10 @@ async function ensureAnalyticsRecord(params: {
   callStartMs: number;
   callerNumber?: string;
   dialedNumber?: string;
+  callDirection?: CallDirection;
+  scheduledCallId?: string;
+  purpose?: string;
+  patientName?: string;
   aiAgentId?: string;
   aiAgentName?: string;
 }): Promise<{ callId: string; timestamp: number }> {
@@ -464,6 +473,10 @@ async function ensureAnalyticsRecord(params: {
     callStartMs,
     callerNumber,
     dialedNumber,
+    callDirection = 'inbound',
+    scheduledCallId,
+    purpose,
+    patientName,
     aiAgentId,
     aiAgentName,
   } = params;
@@ -479,19 +492,24 @@ async function ensureAnalyticsRecord(params: {
   const effectiveClinicId = clinicId || DEFAULT_CLINIC_ID;
   const ttl = timestamp + (ANALYTICS_TTL_DAYS * 24 * 60 * 60);
   const callStartTimeIso = new Date(timestampMs).toISOString();
+  const callCategory: ConnectCallAnalytics['callCategory'] = callDirection === 'outbound' ? 'ai_outbound' : 'ai_voice';
+  const callType: ConnectCallAnalytics['callType'] = callDirection === 'outbound' ? 'outbound' : 'inbound';
 
   const analytics: ConnectCallAnalytics = {
     callId,
     timestamp,
     clinicId: effectiveClinicId,
-    callCategory: 'ai_voice',
-    callType: 'inbound',
+    callCategory,
+    callType,
     callStatus: 'active',
     outcome: 'answered',
     callerNumber: callerNumber || '',
     customerPhone: callerNumber || '',
     dialedNumber: dialedNumber || '',
-    callDirection: 'inbound',
+    callDirection,
+    scheduledCallId,
+    purpose,
+    patientName,
     aiAgentId: aiAgentId || '',
     agentId: aiAgentId || '',
     aiAgentName: aiAgentName || '',
@@ -500,7 +518,7 @@ async function ensureAnalyticsRecord(params: {
     turnCount: 0,
     transcriptCount: 0,
     callStartTime: callStartTimeIso,
-    direction: 'inbound',
+    direction: callDirection,
     lastActivityTime: callStartTimeIso,
     toolsUsed: [],
     ttl,
@@ -722,11 +740,13 @@ async function startAsync(event: any): Promise<{ requestId: string; status: stri
           clinicId,
           callerNumber,
           dialedNumber,
+          callDirection: String(contactAttributes.callDirection || '').trim(),
+          scheduledCallId: String(contactAttributes.scheduledCallId || '').trim(),
+          purpose: String(contactAttributes.purpose || '').trim(),
           timezone: String(contactAttributes.timezone || 'UTC'),
           ttsSpeakingRate: prosody.speakingRate,
           ttsPitch: prosody.pitch,
           ttsVolume: prosody.volume,
-          // Patient identity from the welcome lookup (if present)
           PatNum: String(contactAttributes.PatNum || '').trim(),
           FName: String(contactAttributes.FName || '').trim(),
           LName: String(contactAttributes.LName || '').trim(),
@@ -774,11 +794,13 @@ async function processBedrockInvocation(params: {
   clinicId: string;
   callerNumber?: string;
   dialedNumber?: string;
+  callDirection?: string;
+  scheduledCallId?: string;
+  purpose?: string;
   timezone?: string;
   ttsSpeakingRate?: string;
   ttsPitch?: string;
   ttsVolume?: string;
-  // Patient identity from welcome lookup (optional)
   PatNum?: string;
   FName?: string;
   LName?: string;
@@ -791,6 +813,11 @@ async function processBedrockInvocation(params: {
   const { requestId, contactId, inputText, clinicId } = params;
   const callerNumber = String(params.callerNumber || '').trim();
   const dialedNumber = String(params.dialedNumber || '').trim();
+  const callDirectionRaw = String(params.callDirection || '').trim().toLowerCase();
+  const callDirection: CallDirection = callDirectionRaw === 'outbound' ? 'outbound' : 'inbound';
+  const scheduledCallId = String(params.scheduledCallId || '').trim() || undefined;
+  const purpose = String(params.purpose || '').trim() || undefined;
+  const patientNameFromParams = String(params.patientName || '').trim() || undefined;
   const confidence = (() => {
     const raw = String(params.confidence || '').trim();
     if (!raw) return undefined;
@@ -825,6 +852,10 @@ async function processBedrockInvocation(params: {
         callStartMs,
         callerNumber,
         dialedNumber,
+        callDirection,
+        scheduledCallId,
+        purpose,
+        patientName: patientNameFromParams,
         aiAgentId: aiAgentIdForAnalytics,
         aiAgentName: aiAgentNameForAnalytics,
       });
@@ -847,6 +878,10 @@ async function processBedrockInvocation(params: {
       callStartMs,
       callerNumber,
       dialedNumber,
+      callDirection,
+      scheduledCallId,
+      purpose,
+      patientName: patientNameFromParams,
       aiAgentId: aiAgentIdForAnalytics,
       aiAgentName: aiAgentNameForAnalytics,
     });
@@ -1054,6 +1089,10 @@ async function processBedrockInvocation(params: {
         callStartMs: fallbackCallStartMs,
         callerNumber,
         dialedNumber,
+        callDirection,
+        scheduledCallId,
+        purpose,
+        patientName: patientNameFromParams,
         aiAgentId: aiAgentIdForAnalytics,
         aiAgentName: aiAgentNameForAnalytics,
       });

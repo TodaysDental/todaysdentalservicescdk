@@ -13,7 +13,7 @@ import { DynamoDBClient } from '@aws-sdk/client-dynamodb';
 import { DynamoDBDocumentClient, GetCommand, BatchGetCommand } from '@aws-sdk/lib-dynamodb';
 import { S3Client, PutObjectCommand, GetObjectCommand } from '@aws-sdk/client-s3';
 import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
-import { buildCorsHeaders } from '../../shared/utils/cors';
+import { buildCorsHeadersAsync } from '../../shared/utils/cors';
 
 // Try to import sharp, but provide fallback if not available
 let sharp: any = null;
@@ -117,7 +117,7 @@ interface GeneratedImage {
  */
 async function getClinicData(clinicIds: string[]): Promise<Record<string, any>> {
   const keys = clinicIds.map(id => ({ clinicId: id }));
-  
+
   const response = await ddb.send(new BatchGetCommand({
     RequestItems: {
       [CLINIC_TABLE]: { Keys: keys }
@@ -126,7 +126,7 @@ async function getClinicData(clinicIds: string[]): Promise<Record<string, any>> 
 
   const clinics: Record<string, any> = {};
   const items = response.Responses?.[CLINIC_TABLE] || [];
-  
+
   for (const item of items) {
     clinics[item.clinicId] = item;
   }
@@ -138,7 +138,7 @@ async function getClinicData(clinicIds: string[]): Promise<Record<string, any>> 
  * Resolve placeholders in canvas elements with clinic data
  */
 function resolveCanvasPlaceholders(
-  canvasJson: any, 
+  canvasJson: any,
   clinicData: any
 ): { resolved: any; placeholdersResolved: string[] } {
   const resolved = JSON.parse(JSON.stringify(canvasJson));
@@ -250,7 +250,7 @@ function hexToRgba(hex: string): { r: number; g: number; b: number; alpha: numbe
 
   // Remove # if present
   hex = hex.replace('#', '');
-  
+
   // Handle shorthand
   if (hex.length === 3) {
     hex = hex.split('').map(c => c + c).join('');
@@ -300,7 +300,7 @@ async function uploadToS3(
 }
 
 export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayProxyResult> => {
-  const corsHeaders = buildCorsHeaders({ allowMethods: ['OPTIONS', 'POST'] });
+  const corsHeaders = await buildCorsHeadersAsync({ allowMethods: ['OPTIONS', 'POST'] }, event.headers?.origin || event.headers?.Origin);
 
   if (event.httpMethod === 'OPTIONS') {
     return { statusCode: 200, headers: corsHeaders, body: '' };
@@ -342,7 +342,7 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
         for (const clinicId of clinicIds) {
           try {
             const clinic = clinicData[clinicId];
-            
+
             if (!clinic) {
               errors.push({ clinicId, error: 'Clinic not found' });
               continue;
@@ -384,7 +384,7 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
       for (const clinicId of clinicIds) {
         try {
           const clinic = clinicData[clinicId];
-          
+
           if (!clinic) {
             errors.push({ clinicId, error: 'Clinic not found' });
             continue;

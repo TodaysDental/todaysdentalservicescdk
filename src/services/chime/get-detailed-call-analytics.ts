@@ -16,6 +16,7 @@ import {
   hasClinicAccess,
   UserPermissions,
 } from '../../shared/utils/permissions-helper';
+import { buildCorsHeaders } from '../../shared/utils/cors';
 import { S3Client, GetObjectCommand } from '@aws-sdk/client-s3';
 
 const dynamodbClient = new DynamoDBClient({});
@@ -82,11 +83,14 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
     pathParameters: event.pathParameters
   });
 
-  const corsHeaders = {
-    'Access-Control-Allow-Origin': '*',
-    'Access-Control-Allow-Methods': 'GET,OPTIONS',
-    'Access-Control-Allow-Headers': 'Content-Type,Authorization',
-  };
+  const requestOrigin = event.headers?.origin || event.headers?.Origin;
+  const corsHeaders = buildCorsHeaders(
+    {
+      allowMethods: ['GET', 'OPTIONS'],
+      allowHeaders: ['Content-Type', 'Authorization', 'X-Requested-With'],
+    },
+    requestOrigin
+  );
 
   if (event.httpMethod === 'OPTIONS') {
     return { statusCode: 200, headers: corsHeaders, body: '' };
@@ -146,20 +150,25 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
     // Get recording and transcript
     const recordingData = await getRecordingData(callId);
 
-    // Get chat session for insights
-    const sessionInsights = await getSessionInsights(callRecord.sessionId);
+    // For LexAI/Connect calls, derive insights from analytics data + transcript
+    // since they don't have chat history sessions (sessions are in AiAgentSessions, not ChatHistory)
+    let sessionInsights: any;
+    if (callRecord.isAiCall) {
+      sessionInsights = deriveAiCallInsights(callRecord, recordingData.transcript);
+    } else {
+      sessionInsights = await getSessionInsights(callRecord.sessionId);
+    }
 
-    // Extract caller name from session or patient lookup
-    const callerName = sessionInsights.patientName || null;
+    const callerName = callRecord.patientName || sessionInsights.patientName || null;
 
-    // Build response
+    const normalizedDirection = String(callRecord.direction || 'inbound').toLowerCase();
     const response: CallAnalyticsResponse = {
       clinicId: callRecord.clinicId,
       clinicName: clinicName,
       callerName: callerName,
-      direction: callRecord.direction?.toUpperCase() as 'INBOUND' | 'OUTBOUND' || 'INBOUND',
-      to: callRecord.direction === 'inbound' ? callRecord.clinicPhoneNumber : callRecord.phoneNumber,
-      from: callRecord.direction === 'inbound' ? callRecord.phoneNumber : callRecord.clinicPhoneNumber,
+      direction: normalizedDirection === 'outbound' ? 'OUTBOUND' : 'INBOUND',
+      to: normalizedDirection === 'inbound' ? (callRecord.clinicPhoneNumber || '') : (callRecord.phoneNumber || ''),
+      from: normalizedDirection === 'inbound' ? (callRecord.phoneNumber || '') : (callRecord.clinicPhoneNumber || ''),
       callLength: callRecord.callDuration || 0,
       callHistory: callHistory,
       insights: {
@@ -249,21 +258,35 @@ async function getCallRecord(callId: string): Promise<any> {
         const record = analyticsResult.Items[0];
         console.log('[getCallRecord] Found in CallAnalytics:', { callId, clinicId: record.clinicId });
 
-        // Normalize schema to match CallQueue structure
         return {
           callId: record.callId,
           clinicId: record.clinicId,
-          phoneNumber: record.callerPhoneNumber || record.phoneNumber || record.from,
-          clinicPhoneNumber: record.clinicPhoneNumber || record.to,
-          direction: record.direction || 'inbound',
-          callDuration: record.callDuration || record.durationSeconds || 0,
-          queueEntryTime: record.timestamp || record.startTime,
-          status: record.status || record.callStatus,
+          phoneNumber: record.customerPhone || record.callerNumber || record.callerPhoneNumber || record.phoneNumber || '',
+          clinicPhoneNumber: record.dialedNumber || record.clinicPhoneNumber || '',
+          direction: record.direction || record.callDirection || 'inbound',
+          callDuration: record.duration || record.totalDuration || record.callDuration || record.durationSeconds || 0,
+          queueEntryTime: record.callStartTime || (typeof record.timestamp === 'number' ? record.timestamp : undefined),
+          status: record.callStatus || record.status,
           sessionId: record.sessionId,
-          // LexAI specific fields
           contactId: record.contactId,
           isAiCall: true,
-          aiType: record.aiType || 'lexai',
+          aiType: record.analyticsSource === 'connect_lex' ? 'lexai' : (record.aiType || 'lexai'),
+          aiAgentId: record.aiAgentId || record.agentId,
+          aiAgentName: record.aiAgentName,
+          analyticsSource: record.analyticsSource,
+          callCategory: record.callCategory,
+          toolsUsed: record.toolsUsed,
+          outcome: record.outcome,
+          disconnectReason: record.disconnectReason,
+          lastCallerUtterance: record.lastCallerUtterance,
+          lastAiResponse: record.lastAiResponse,
+          turnCount: record.turnCount,
+          transcriptCount: record.transcriptCount,
+          fullTranscript: record.fullTranscript,
+          latestTranscripts: record.latestTranscripts,
+          patientName: record.patientName,
+          purpose: record.purpose,
+          scheduledCallId: record.scheduledCallId,
           _source: 'callAnalytics'
         };
       }
@@ -307,6 +330,10 @@ async function getCallHistory(
   clinicId: string,
   currentCallId: string
 ): Promise<CallHistoryEntry[]> {
+  if (!CALL_QUEUE_TABLE || !phoneNumber) {
+    return [];
+  }
+
   try {
     // Query last 30 days of calls from this number
     const thirtyDaysAgo = Math.floor((Date.now() - 30 * 24 * 60 * 60 * 1000) / 1000);
@@ -431,12 +458,14 @@ async function getRecordingData(callId: string): Promise<{ transcript: Transcrip
       }));
 
       const analytics = analyticsResult.Items?.[0];
-      if (analytics?.transcript) {
-        // Transcript might be stored as array of segments or as text
-        if (Array.isArray(analytics.transcript)) {
-          return { transcript: analytics.transcript as TranscriptEntry[] };
-        } else if (typeof analytics.transcript === 'string') {
-          return parseTranscriptText(analytics.transcript);
+      if (analytics) {
+        // latestTranscripts: structured array with speaker/text/timestamp (preferred)
+        if (Array.isArray(analytics.latestTranscripts) && analytics.latestTranscripts.length > 0) {
+          return parseTranscriptSegments(analytics.latestTranscripts);
+        }
+        // fullTranscript: plain text "SPEAKER: text" format (set by process-transcription.ts)
+        if (typeof analytics.fullTranscript === 'string' && analytics.fullTranscript.trim().length > 0) {
+          return parseTranscriptText(analytics.fullTranscript);
         }
       }
     }
@@ -456,21 +485,23 @@ async function getRecordingData(callId: string): Promise<{ transcript: Transcrip
  */
 function parseTranscriptSegments(segments: any[]): { transcript: TranscriptEntry[] } {
   const transcript: TranscriptEntry[] = segments.map((seg, idx) => {
-    // Normalize speaker names
     let speaker: 'AGENT' | 'CUSTOMER' = 'CUSTOMER';
     if (seg.speaker?.toLowerCase() === 'agent' || seg.speaker?.toLowerCase() === 'assistant') {
       speaker = 'AGENT';
     }
 
-    // Format timestamp
-    const timestamp = seg.timestamp
-      ? formatTimestamp(typeof seg.timestamp === 'number' ? seg.timestamp : parseFloat(seg.timestamp) || idx * 5)
-      : formatTimestamp(idx * 5);
+    const rawTime =
+      (typeof seg.startTime === 'number' ? seg.startTime : undefined) ??
+      (typeof seg.timestamp === 'number' ? seg.timestamp : undefined) ??
+      (typeof seg.startTime === 'string' ? parseFloat(seg.startTime) : undefined) ??
+      (typeof seg.timestamp === 'string' ? parseFloat(seg.timestamp) : undefined) ??
+      (idx * 5);
+    const timestamp = formatTimestamp(Number.isFinite(rawTime) ? rawTime : idx * 5);
 
     return {
       timestamp,
       speaker,
-      text: seg.text || seg.content || seg.message || ''
+      text: seg.content || seg.text || seg.message || ''
     };
   }).filter(entry => entry.text.trim().length > 0);
 
@@ -553,6 +584,110 @@ async function analyzeSession(messages: any[]): Promise<any> {
     callType,
     priority,
     patientName
+  };
+}
+
+/**
+ * Derive insights from CallAnalytics data + transcript for LexAI/Connect AI calls.
+ * These calls don't have ChatHistory sessions; their conversation is stored in
+ * TranscriptBuffers / CallAnalytics instead.
+ */
+function deriveAiCallInsights(callRecord: any, transcript: TranscriptEntry[]): any {
+  const allText = transcript.map(t => t.text.toLowerCase()).join(' ');
+  const agentText = transcript.filter(t => t.speaker === 'AGENT').map(t => t.text.toLowerCase()).join(' ');
+  const customerText = transcript.filter(t => t.speaker === 'CUSTOMER').map(t => t.text.toLowerCase()).join(' ');
+
+  if (transcript.length === 0 && !callRecord.lastCallerUtterance && !callRecord.lastAiResponse) {
+    return {
+      ...getDefaultInsights(),
+      summary: callRecord.outcome === 'completed'
+        ? 'AI call completed. No transcript was recorded.'
+        : 'Call ended without a conversation.',
+      patientName: callRecord.patientName || null,
+    };
+  }
+
+  const combinedText = allText ||
+    `${callRecord.lastCallerUtterance || ''} ${callRecord.lastAiResponse || ''}`.toLowerCase();
+
+  const appointmentStatus = (() => {
+    if (agentText.includes('appointment scheduled') || agentText.includes('booked successfully') ||
+        agentText.includes('appointment has been scheduled') || agentText.includes('you\'re all set')) {
+      return 'scheduled';
+    }
+    if (combinedText.includes('rescheduled')) return 'rescheduled';
+    if (combinedText.includes('cancelled') || combinedText.includes('canceled')) return 'cancelled';
+    if (agentText.includes('no availability') || agentText.includes('no slots') ||
+        agentText.includes('no openings') || agentText.includes('fully booked')) {
+      return 'not_scheduled';
+    }
+    if (customerText.includes('appointment') || customerText.includes('schedule') || customerText.includes('book')) {
+      return agentText.includes('available') ? 'unknown' : 'not_scheduled';
+    }
+    return 'unknown';
+  })();
+
+  const callType = (() => {
+    if (combinedText.includes('emergency') || combinedText.includes('urgent') || combinedText.includes('severe pain')) return 'emergency';
+    if (combinedText.includes('appointment') || combinedText.includes('schedule') || combinedText.includes('book')) return 'appointment';
+    if (combinedText.includes('billing') || combinedText.includes('insurance') || combinedText.includes('payment') || combinedText.includes('cost')) return 'billing';
+    if (combinedText.includes('complaint') || combinedText.includes('unhappy') || combinedText.includes('dissatisfied')) return 'complaint';
+    if (combinedText.includes('question') || combinedText.includes('how much') || combinedText.includes('do you offer')) return 'inquiry';
+    return 'other';
+  })();
+
+  const missedOpportunity = appointmentStatus !== 'scheduled' && (
+    customerText.includes('appointment') || customerText.includes('schedule') ||
+    customerText.includes('book') || customerText.includes('emergency')
+  );
+
+  const missedOpportunityReason = missedOpportunity
+    ? (combinedText.includes('no availability') || combinedText.includes('no slots')
+      ? 'No available appointment slots'
+      : combinedText.includes('closed')
+        ? 'Clinic was closed'
+        : 'Caller intent to schedule was not fulfilled')
+    : null;
+
+  const summary = (() => {
+    const direction = callRecord.direction === 'outbound' ? 'AI outbound call' : 'AI-handled call';
+    const purpose = callRecord.purpose ? ` regarding ${callRecord.purpose}` : '';
+
+    if (appointmentStatus === 'scheduled') {
+      return `${direction}${purpose}. An appointment was successfully scheduled.`;
+    }
+    if (callType === 'emergency') {
+      return `${direction}. Caller reported a dental emergency.`;
+    }
+    if (appointmentStatus === 'not_scheduled' && missedOpportunity) {
+      return `${direction}${purpose}. Caller wanted to schedule but no appointment was booked.`;
+    }
+
+    const turnInfo = callRecord.turnCount ? ` The conversation had ${callRecord.turnCount} exchanges.` : '';
+    return `${direction}${purpose} completed.${turnInfo}`;
+  })();
+
+  return {
+    summary,
+    appointmentStatus,
+    notSchedulingReason: appointmentStatus === 'scheduled' ? null
+      : (combinedText.includes('no availability') ? 'No available appointment slots'
+        : combinedText.includes('closed') ? 'Clinic was closed'
+          : combinedText.includes('call back') ? 'Caller will call back later'
+            : 'Not provided'),
+    missedOpportunity,
+    missedOpportunityReason,
+    billingConcerns: combinedText.includes('billing') || combinedText.includes('insurance') ||
+                     combinedText.includes('payment') || combinedText.includes('cost'),
+    givenFeedback: combinedText.includes('feedback') || combinedText.includes('complaint') ||
+                   combinedText.includes('suggestion'),
+    inquiredServices: ['cleaning', 'whitening', 'filling', 'crown', 'bridge', 'implant',
+      'extraction', 'root canal', 'denture', 'braces', 'orthodontic', 'x-ray', 'exam']
+      .some(kw => combinedText.includes(kw)),
+    callType,
+    priority: callType === 'emergency' ? 'high'
+      : (missedOpportunity || callType === 'appointment' || callType === 'billing') ? 'medium' : 'low',
+    patientName: callRecord.patientName || null,
   };
 }
 
@@ -796,24 +931,34 @@ function determineCallType(call: any): string {
 }
 
 function parseTranscriptText(transcriptText: string): { transcript: TranscriptEntry[] } {
-  // Simple parsing of transcript text
-  // Format: "AGENT: text\nCUSTOMER: text\n..."
   const lines = transcriptText.split('\n').filter(l => l.trim());
   const transcript: TranscriptEntry[] = [];
 
   let elapsedSeconds = 0;
   for (const line of lines) {
-    if (line.includes('AGENT:') || line.includes('CUSTOMER:')) {
-      const speaker = line.includes('AGENT:') ? 'AGENT' : 'CUSTOMER';
-      const text = line.replace(/^(AGENT:|CUSTOMER:)/, '').trim();
+    const match = line.match(/^(AGENT|CUSTOMER|Agent|Customer|assistant|user)\s*:\s*(.+)/i);
+    if (match) {
+      const speakerRaw = match[1].toUpperCase();
+      const speaker: 'AGENT' | 'CUSTOMER' =
+        speakerRaw === 'AGENT' || speakerRaw === 'ASSISTANT' ? 'AGENT' : 'CUSTOMER';
+      const text = match[2].trim();
 
+      if (text) {
+        transcript.push({
+          timestamp: formatTimestamp(elapsedSeconds),
+          speaker,
+          text
+        });
+        elapsedSeconds += 5;
+      }
+    } else if (line.trim() && transcript.length > 0) {
+      const lastSpeaker = transcript[transcript.length - 1].speaker;
+      const speaker: 'AGENT' | 'CUSTOMER' = lastSpeaker === 'AGENT' ? 'CUSTOMER' : 'AGENT';
       transcript.push({
         timestamp: formatTimestamp(elapsedSeconds),
         speaker,
-        text
+        text: line.trim()
       });
-
-      // Estimate ~5 seconds per line
       elapsedSeconds += 5;
     }
   }
@@ -848,34 +993,66 @@ function parseTranscriptData(data: any): { transcript: TranscriptEntry[] } {
     return { transcript: [] };
   }
 
+  // Build speaker label mapping from Transcribe's speaker_labels segments.
+  // AWS Transcribe assigns labels like "spk_0", "spk_1". Map the first speaker
+  // to CUSTOMER (the caller) and subsequent speakers to AGENT.
+  const speakerOrder: string[] = [];
+  if (data.results.speaker_labels?.segments) {
+    for (const seg of data.results.speaker_labels.segments) {
+      const label = seg.speaker_label;
+      if (label && !speakerOrder.includes(label)) {
+        speakerOrder.push(label);
+      }
+    }
+  }
+
+  const mapSpeaker = (label: string | undefined): 'AGENT' | 'CUSTOMER' => {
+    if (!label || speakerOrder.length === 0) return 'CUSTOMER';
+    const idx = speakerOrder.indexOf(label);
+    // First speaker (spk_0) is typically the customer (caller); subsequent speakers are agent/AI.
+    return idx <= 0 ? 'CUSTOMER' : 'AGENT';
+  };
+
   const transcript: TranscriptEntry[] = [];
   let currentText = '';
   let currentSpeaker: 'AGENT' | 'CUSTOMER' = 'CUSTOMER';
   let currentTime = 0;
 
   for (const item of data.results.items) {
+    const itemSpeaker = item.speaker_label ? mapSpeaker(item.speaker_label) : undefined;
+
     if (item.type === 'pronunciation') {
-      currentText += item.alternatives?.[0]?.content || '';
-      currentTime = parseFloat(item.start_time || '0');
+      // When the speaker changes mid-sentence, flush accumulated text first.
+      if (itemSpeaker && itemSpeaker !== currentSpeaker && currentText.trim()) {
+        transcript.push({
+          timestamp: formatTimestamp(currentTime),
+          speaker: currentSpeaker,
+          text: currentText.trim()
+        });
+        currentText = '';
+      }
+
+      if (itemSpeaker) {
+        currentSpeaker = itemSpeaker;
+      }
+      if (!currentText) {
+        currentTime = parseFloat(item.start_time || '0');
+      }
+      currentText += (currentText && !currentText.endsWith(' ') ? ' ' : '') + (item.alternatives?.[0]?.content || '');
     } else if (item.type === 'punctuation') {
       currentText += item.alternatives?.[0]?.content || '';
 
-      // End of sentence - create entry
       if (currentText.trim()) {
         transcript.push({
           timestamp: formatTimestamp(currentTime),
           speaker: currentSpeaker,
           text: currentText.trim()
         });
-
         currentText = '';
-        // Alternate speaker for next segment
-        currentSpeaker = currentSpeaker === 'AGENT' ? 'CUSTOMER' : 'AGENT';
       }
     }
   }
 
-  // Add any remaining text
   if (currentText.trim()) {
     transcript.push({
       timestamp: formatTimestamp(currentTime),

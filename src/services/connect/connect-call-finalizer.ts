@@ -97,6 +97,7 @@ async function findAnalyticsRecord(callId: string): Promise<{ callId: string; ti
       KeyConditionExpression: 'callId = :callId',
       ExpressionAttributeValues: { ':callId': callId },
       Limit: 1,
+      ScanIndexForward: false, // Most recent first (defensive; some callIds may have multiple rows)
     }));
 
     if (result.Items && result.Items.length > 0) {
@@ -115,6 +116,152 @@ async function findAnalyticsRecord(callId: string): Promise<{ callId: string; ti
   }
 }
 
+function buildTranscriptArtifactsFromSegments(params: {
+  segments: any[];
+}): {
+  latestTranscripts: Array<{ timestamp: number; speaker: 'AGENT' | 'CUSTOMER'; text: string; confidence?: number }>;
+  latestTranscriptsTruncated: boolean;
+  fullTranscript: string;
+  fullTranscriptTruncated: boolean;
+  segmentCount: number;
+} {
+  const MAX_LATEST_SEGMENTS = 400;
+  const MAX_FULL_CHARS = 20000;
+
+  const rawSegments = Array.isArray(params.segments) ? params.segments : [];
+
+  const normalized = rawSegments
+    .map((seg: any, idx: number) => {
+      const rawSpeaker = String(seg?.speaker || 'CUSTOMER').toUpperCase();
+      const speaker: 'AGENT' | 'CUSTOMER' =
+        rawSpeaker === 'AGENT' || rawSpeaker === 'ASSISTANT' ? 'AGENT' : 'CUSTOMER';
+
+      const timestamp =
+        typeof seg?.startTime === 'number'
+          ? seg.startTime
+          : (typeof seg?.timestamp === 'number' ? seg.timestamp : idx);
+
+      const text = String(seg?.content ?? seg?.text ?? seg?.message ?? '').trim();
+      const confidence = typeof seg?.confidence === 'number' ? seg.confidence : undefined;
+
+      return { timestamp, speaker, text, confidence };
+    })
+    .filter((t: any) => typeof t.text === 'string' && t.text.trim().length > 0);
+
+  const segmentCount = normalized.length;
+
+  const latestTranscriptsTruncated = normalized.length > MAX_LATEST_SEGMENTS;
+  const latestTranscripts = latestTranscriptsTruncated
+    ? normalized.slice(-MAX_LATEST_SEGMENTS)
+    : normalized;
+
+  const fullLines = normalized.map((t) => `${t.speaker}: ${t.text}`);
+  let fullTranscript = fullLines.join('\n');
+  let fullTranscriptTruncated = false;
+
+  if (fullTranscript.length > MAX_FULL_CHARS) {
+    fullTranscript = fullTranscript.substring(fullTranscript.length - MAX_FULL_CHARS);
+    fullTranscriptTruncated = true;
+  }
+
+  return {
+    latestTranscripts,
+    latestTranscriptsTruncated,
+    fullTranscript,
+    fullTranscriptTruncated,
+    segmentCount,
+  };
+}
+
+async function persistTranscriptToAnalytics(params: {
+  callId: string;
+  timestamp: number;
+  existingTranscriptCount?: number;
+  hasTranscriptAlready?: boolean;
+}): Promise<boolean> {
+  if (!CALL_ANALYTICS_TABLE) return false;
+  if (!TRANSCRIPT_BUFFER_TABLE) return false;
+
+  const { callId, timestamp, existingTranscriptCount, hasTranscriptAlready } = params;
+
+  if (hasTranscriptAlready) {
+    return true;
+  }
+
+  const fetchBuffer = async (): Promise<any[]> => {
+    const bufferResult = await docClient.send(new GetCommand({
+      TableName: TRANSCRIPT_BUFFER_TABLE,
+      Key: { callId },
+    }));
+    const buffer: any = bufferResult.Item;
+    return Array.isArray(buffer?.segments) ? buffer.segments : [];
+  };
+
+  try {
+    let segments = await fetchBuffer();
+
+    // The lex-bedrock-hook writes transcript segments with fire-and-forget DynamoDB calls.
+    // If the caller hangs up immediately after the last AI response, the finalizer may
+    // run before those writes complete. Retry once after a short delay.
+    if (segments.length === 0) {
+      console.log('[ConnectFinalizer] Buffer empty on first read, retrying after delay:', { callId });
+      await new Promise(r => setTimeout(r, 1500));
+      segments = await fetchBuffer();
+    }
+
+    if (segments.length === 0) {
+      console.log('[ConnectFinalizer] No transcript segments found to persist after retry:', { callId });
+      return false;
+    }
+
+    const artifacts = buildTranscriptArtifactsFromSegments({ segments });
+
+    const existingCount = typeof existingTranscriptCount === 'number' ? existingTranscriptCount : 0;
+    const transcriptCount = Math.max(existingCount, artifacts.segmentCount);
+
+    const nowIso = new Date().toISOString();
+
+    await docClient.send(new UpdateCommand({
+      TableName: CALL_ANALYTICS_TABLE,
+      Key: { callId, timestamp },
+      UpdateExpression: `
+        SET latestTranscripts = :latest,
+            fullTranscript = :full,
+            transcriptCount = :count,
+            latestTranscriptsTruncated = :latestTrunc,
+            fullTranscriptTruncated = :fullTrunc,
+            transcriptPersistedAt = :now,
+            updatedAt = :now,
+            lastActivityTime = :now
+      `,
+      ExpressionAttributeValues: {
+        ':latest': artifacts.latestTranscripts,
+        ':full': artifacts.fullTranscript,
+        ':count': transcriptCount,
+        ':latestTrunc': artifacts.latestTranscriptsTruncated,
+        ':fullTrunc': artifacts.fullTranscriptTruncated,
+        ':now': nowIso,
+      },
+    }));
+
+    console.log('[ConnectFinalizer] Persisted transcript into CallAnalytics:', {
+      callId,
+      timestamp,
+      segmentCount: artifacts.segmentCount,
+      latestTruncated: artifacts.latestTranscriptsTruncated,
+      fullTruncated: artifacts.fullTranscriptTruncated,
+    });
+    return true;
+  } catch (error: any) {
+    console.warn('[ConnectFinalizer] Failed to persist transcript (non-fatal):', {
+      callId,
+      errorName: error?.name,
+      errorMessage: error?.message,
+    });
+    return false;
+  }
+}
+
 /**
  * Finalize the analytics record with duration and outcome
  */
@@ -122,35 +269,59 @@ async function finalizeAnalytics(params: {
   callId: string;
   timestamp: number;
   callStartMs: number;
+  callEndMs: number;
   disconnectReason?: string;
+  callerNumber?: string;
+  dialedNumber?: string;
+  patientName?: string;
 }): Promise<void> {
   if (!CALL_ANALYTICS_TABLE) return;
 
-  const { callId, timestamp, callStartMs, disconnectReason } = params;
-  const now = Date.now();
-  const durationSec = Math.round((now - callStartMs) / 1000);
+  const { callId, timestamp, callStartMs, callEndMs, disconnectReason, callerNumber, dialedNumber, patientName } = params;
+  const durationSec = Math.max(0, Math.round((callEndMs - callStartMs) / 1000));
+  const nowIso = new Date(callEndMs).toISOString();
 
   try {
+    const setItems = [
+      'callStatus = :completed',
+      'outcome = :outcome',
+      'callEndTime = :endTime',
+      'duration = :duration',
+      'totalDuration = :duration',
+      'disconnectReason = :reason',
+      'lastActivityTime = :now',
+      'updatedAt = :now',
+    ];
+    const exprValues: Record<string, any> = {
+      ':completed': 'completed',
+      ':outcome': 'completed',
+      ':endTime': nowIso,
+      ':duration': durationSec,
+      ':reason': disconnectReason || 'customer_disconnect',
+      ':now': nowIso,
+    };
+
+    if (callerNumber) {
+      setItems.push(
+        'callerNumber = if_not_exists(callerNumber, :caller)',
+        'customerPhone = if_not_exists(customerPhone, :caller)',
+      );
+      exprValues[':caller'] = callerNumber;
+    }
+    if (dialedNumber) {
+      setItems.push('dialedNumber = if_not_exists(dialedNumber, :dialed)');
+      exprValues[':dialed'] = dialedNumber;
+    }
+    if (patientName) {
+      setItems.push('patientName = if_not_exists(patientName, :patient)');
+      exprValues[':patient'] = patientName;
+    }
+
     await docClient.send(new UpdateCommand({
       TableName: CALL_ANALYTICS_TABLE,
       Key: { callId, timestamp },
-      UpdateExpression: `
-        SET callStatus = :completed,
-            outcome = :outcome,
-            callEndTime = :endTime,
-            duration = :duration,
-            totalDuration = :duration,
-            disconnectReason = :reason,
-            lastActivityTime = :now
-      `,
-      ExpressionAttributeValues: {
-        ':completed': 'completed',
-        ':outcome': 'completed',
-        ':endTime': new Date(now).toISOString(),
-        ':duration': durationSec,
-        ':reason': disconnectReason || 'customer_disconnect',
-        ':now': new Date(now).toISOString(),
-      },
+      UpdateExpression: `SET ${setItems.join(', ')}`,
+      ExpressionAttributeValues: exprValues,
     }));
 
     console.log('[ConnectFinalizer] Analytics finalized:', { callId, durationSec, disconnectReason });
@@ -273,10 +444,18 @@ async function finalizeScheduledCall(params: {
   }
 }
 
-/**
- * Get session to retrieve call start time
- */
-async function getSession(contactId: string): Promise<{ callStartMs: number } | null> {
+interface SessionData {
+  callStartMs: number;
+  callerNumber?: string;
+  clinicId?: string;
+  callDirection?: string;
+  patientName?: string;
+  aiAgentId?: string;
+  aiAgentName?: string;
+  purpose?: string;
+}
+
+async function getSession(contactId: string): Promise<SessionData | null> {
   const sessionKey = `lex-${contactId}`;
 
   try {
@@ -286,7 +465,16 @@ async function getSession(contactId: string): Promise<{ callStartMs: number } | 
     }));
 
     if (result.Item) {
-      return { callStartMs: result.Item.callStartMs || Date.now() };
+      return {
+        callStartMs: result.Item.callStartMs || Date.now(),
+        callerNumber: result.Item.callerNumber,
+        clinicId: result.Item.clinicId,
+        callDirection: result.Item.callDirection,
+        patientName: result.Item.patientName,
+        aiAgentId: result.Item.aiAgentId,
+        aiAgentName: result.Item.aiAgentName,
+        purpose: result.Item.purpose,
+      };
     }
     return null;
   } catch (error) {
@@ -316,6 +504,10 @@ export const handler = async (event: ConnectLambdaEvent): Promise<ConnectLambdaR
     ? contactAttributes.scheduledCallId.trim()
     : '';
 
+  // Extract caller/dialed numbers from Connect contact data
+  const callerNumber = contactData.CustomerEndpoint?.Address || '';
+  const dialedNumber = contactData.SystemEndpoint?.Address || '';
+
   // Compute start/end timestamps (prefer session; fall back to Connect timestamps)
   const session = await getSession(contactId);
   const initiationMs = contactData.InitiationTimestamp ? new Date(contactData.InitiationTimestamp).getTime() : NaN;
@@ -325,25 +517,56 @@ export const handler = async (event: ConnectLambdaEvent): Promise<ConnectLambdaR
   const endMs = Number.isFinite(disconnectMs) ? disconnectMs : Date.now();
   const durationSec = Math.max(0, Math.round((endMs - startMs) / 1000));
 
+  const effectiveCallerNumber = session?.callerNumber || callerNumber;
+  const effectivePatientName = session?.patientName || contactAttributes.patientName || '';
+
   // Find the analytics record (optional; may not exist for busy/no-answer calls)
   const analyticsInfo = await findAnalyticsRecord(callId);
 
   if (analyticsInfo) {
-    // Check if already finalized
-    if (analyticsInfo.record.callStatus === 'completed') {
+    const hasTranscriptAlready =
+      (typeof analyticsInfo.record?.fullTranscript === 'string' && analyticsInfo.record.fullTranscript.trim().length > 0) ||
+      (Array.isArray(analyticsInfo.record?.latestTranscripts) && analyticsInfo.record.latestTranscripts.length > 0);
+
+    const alreadyFinalized = analyticsInfo.record.callStatus === 'completed';
+
+    if (alreadyFinalized) {
       console.log('[ConnectFinalizer] Call already finalized:', callId);
-      // Still ensure ScheduledCalls is finalized (idempotent update)
     } else {
-      // Finalize the analytics
       await finalizeAnalytics({
         callId,
         timestamp: analyticsInfo.timestamp,
         callStartMs: startMs,
+        callEndMs: endMs,
         disconnectReason,
+        callerNumber: effectiveCallerNumber,
+        dialedNumber,
+        patientName: effectivePatientName,
       });
+    }
 
-      // Optionally shorten transcript buffer TTL
+    // Always attempt transcript persistence if transcript is missing, even on
+    // duplicate invocations where callStatus is already 'completed'. The previous
+    // invocation may have set the status but failed to persist the transcript
+    // (e.g., TranscriptBuffersV2 was empty due to a race with fire-and-forget writes).
+    let transcriptPersisted = hasTranscriptAlready;
+    if (!hasTranscriptAlready) {
+      transcriptPersisted = await persistTranscriptToAnalytics({
+        callId,
+        timestamp: analyticsInfo.timestamp,
+        existingTranscriptCount: typeof analyticsInfo.record?.transcriptCount === 'number'
+          ? analyticsInfo.record.transcriptCount
+          : undefined,
+        hasTranscriptAlready: false,
+      });
+    }
+
+    // Only shorten buffer TTL after successful persistence (or if transcript was already present).
+    // If persistence failed, keep the buffer alive so a retry can succeed.
+    if (transcriptPersisted) {
       await shortenTranscriptTTL(callId);
+    } else {
+      console.log('[ConnectFinalizer] Skipping TTL shortening - transcript not yet persisted:', { callId });
     }
   } else {
     console.warn('[ConnectFinalizer] No analytics record found for call (non-fatal):', callId);

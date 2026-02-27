@@ -25,7 +25,7 @@ import {
     DeleteObjectCommand,
 } from '@aws-sdk/client-s3';
 import { v4 as uuidv4 } from 'uuid';
-import { buildCorsHeaders } from '../../shared/utils/cors';
+import { buildCorsHeadersAsync } from '../../shared/utils/cors';
 
 const ddb = DynamoDBDocumentClient.from(new DynamoDBClient({}), {
     marshallOptions: { removeUndefinedValues: true },
@@ -41,9 +41,9 @@ const MEDIA_BUCKET = process.env.MEDIA_BUCKET!;
 export const handler = async (
     event: APIGatewayProxyEvent
 ): Promise<APIGatewayProxyResult> => {
-    const corsHeaders = buildCorsHeaders({
+    const corsHeaders = await buildCorsHeadersAsync({
         allowMethods: ['OPTIONS', 'POST', 'GET', 'DELETE'],
-    });
+    }, event.headers?.origin || event.headers?.Origin);
 
     if (event.httpMethod === 'OPTIONS') {
         return { statusCode: 200, headers: corsHeaders, body: '' };
@@ -402,9 +402,7 @@ export const handler = async (
         console.error('Templates Error:', err);
         return {
             statusCode: 500,
-            headers: buildCorsHeaders({
-                allowMethods: ['OPTIONS', 'POST', 'GET', 'DELETE'],
-            }),
+            headers: corsHeaders,
             body: JSON.stringify({ error: err.message }),
         };
     }

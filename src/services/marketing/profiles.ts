@@ -2,9 +2,9 @@ import { APIGatewayProxyEvent, APIGatewayProxyResult } from 'aws-lambda';
 import { DynamoDBClient } from '@aws-sdk/client-dynamodb';
 import { DynamoDBDocumentClient, PutCommand, GetCommand, DeleteCommand, ScanCommand, UpdateCommand } from '@aws-sdk/lib-dynamodb';
 import { ayrshareCreateProfile, ayrshareGenerateJWT, ayrshareDeleteProfile, ayrshareGetProfile } from './ayrshare-client';
-import { buildCorsHeaders } from '../../shared/utils/cors';
-import { 
-  getClinicConfig as getClinicConfigFromDynamo, 
+import { buildCorsHeadersAsync } from '../../shared/utils/cors';
+import {
+  getClinicConfig as getClinicConfigFromDynamo,
   getClinicSecrets,
   getAllClinicConfigs,
   getAllClinicSecrets,
@@ -65,9 +65,9 @@ async function getEnabledAyrshareClinics(): Promise<Array<{ config: ClinicConfig
     getAllClinicConfigs(),
     getAllClinicSecrets(),
   ]);
-  
+
   const secretsMap = new Map(allSecrets.map(s => [s.clinicId, s]));
-  
+
   return configs
     .filter(c => c.ayrshare?.enabled)
     .map(config => ({
@@ -78,7 +78,7 @@ async function getEnabledAyrshareClinics(): Promise<Array<{ config: ClinicConfig
 }
 
 export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayProxyResult> => {
-  const corsHeaders = buildCorsHeaders({ allowMethods: ['OPTIONS', 'POST', 'GET', 'DELETE'] });
+  const corsHeaders = await buildCorsHeadersAsync({ allowMethods: ['OPTIONS', 'POST', 'GET', 'DELETE'] }, event.headers?.origin || event.headers?.Origin);
 
   if (event.httpMethod === 'OPTIONS') {
     return { statusCode: 200, headers: corsHeaders, body: '' };
@@ -296,7 +296,7 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
 
       // Merge with config profiles that aren't in DynamoDB
       let allProfiles = [...dbProfiles];
-      
+
       if (includeConfigOnly) {
         const configClinics = await getEnabledAyrshareClinics();
         for (const clinic of configClinics) {
@@ -463,14 +463,14 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
     if (path.includes('/generate-jwt') && method === 'POST') {
       const clinicId = event.pathParameters?.clinicId;
       console.log('Generate JWT request for clinicId:', clinicId);
-      
+
       if (!clinicId) {
         return {
           statusCode: 400,
           headers: corsHeaders,
-          body: JSON.stringify({ 
-            success: false, 
-            error: 'clinicId is required in the path' 
+          body: JSON.stringify({
+            success: false,
+            error: 'clinicId is required in the path'
           })
         };
       }
@@ -508,8 +508,8 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
         return {
           statusCode: 404,
           headers: corsHeaders,
-          body: JSON.stringify({ 
-            success: false, 
+          body: JSON.stringify({
+            success: false,
             error: 'Clinic profile not found in DynamoDB or clinics.json.',
             clinicId,
             hint: 'Ensure this clinic has an ayrshare configuration in clinics.json or call POST /profiles/sync first.'
@@ -524,7 +524,7 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
           getDomain(),
           getPrivateKey()
         ]);
-        
+
         console.log('Generating JWT for profile:', profileKey, 'domain:', domain);
         const jwtRes = await ayrshareGenerateJWT(apiKey, profileKey, domain, privateKey, expiresIn);
         console.log('JWT generated successfully, URL:', jwtRes.url ? 'Present' : 'Missing');

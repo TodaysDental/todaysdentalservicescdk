@@ -1,7 +1,7 @@
 import { APIGatewayProxyEvent, APIGatewayProxyResult } from 'aws-lambda';
 import { DynamoDBClient } from '@aws-sdk/client-dynamodb';
 import { DynamoDBDocumentClient, GetCommand } from '@aws-sdk/lib-dynamodb';
-import { buildCorsHeaders } from '../../shared/utils/cors';
+import { buildCorsHeadersAsync } from '../../shared/utils/cors';
 import { ayrshareGetHistory } from './ayrshare-client';
 
 const ddb = DynamoDBDocumentClient.from(new DynamoDBClient({}), {
@@ -12,7 +12,7 @@ const PROFILES_TABLE = process.env.MARKETING_PROFILES_TABLE!;
 const API_KEY = process.env.AYRSHARE_API_KEY!;
 
 export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayProxyResult> => {
-  const corsHeaders = buildCorsHeaders({ allowMethods: ['OPTIONS', 'GET'] });
+  const corsHeaders = await buildCorsHeadersAsync({ allowMethods: ['OPTIONS', 'GET'] }, event.headers?.origin || event.headers?.Origin);
 
   if (event.httpMethod === 'OPTIONS') {
     return { statusCode: 200, headers: corsHeaders, body: '' };
@@ -28,8 +28,8 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
       const clinicId = event.queryStringParameters?.clinicId;
       const platform = event.queryStringParameters?.platform;
       const lastRecords = parseInt(event.queryStringParameters?.lastRecords || '25');
-      const lastDays = event.queryStringParameters?.lastDays 
-        ? parseInt(event.queryStringParameters.lastDays) 
+      const lastDays = event.queryStringParameters?.lastDays
+        ? parseInt(event.queryStringParameters.lastDays)
         : undefined;
 
       if (!clinicId) {
@@ -104,8 +104,8 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
     return {
       statusCode: 500,
       headers: corsHeaders,
-      body: JSON.stringify({ 
-        success: false, 
+      body: JSON.stringify({
+        success: false,
         error: err.message,
         code: 'HISTORY_ERROR'
       })

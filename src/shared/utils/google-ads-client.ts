@@ -679,9 +679,9 @@ export async function getSearchQueryReport(
 /**
  * Add keywords to an ad group
  * 
- * NOTE: The google-ads-api library's create() method expects an array of
- * resource objects directly (IAdGroupCriterion), NOT wrapped in operation
- * objects like { create: { ... } }. The library handles operation types internally.
+ * Uses the REST API to support policy violation exemptions.
+ * When a keyword triggers a policy violation (e.g. trademark, content policy),
+ * the function extracts the policy violation keys and retries with exemptions.
  */
 export async function addKeywords(
   customerId: string,
@@ -690,38 +690,154 @@ export async function addKeywords(
 ): Promise<any> {
   console.log(`[GoogleAdsClient] addKeywords called with customerId=${customerId}, adGroup=${adGroupResourceName}, keywordCount=${keywords.length}`);
 
-  try {
-    const client = await getGoogleAdsClient(customerId);
+  const matchTypeMap: Record<string, string> = {
+    EXACT: 'EXACT',
+    PHRASE: 'PHRASE',
+    BROAD: 'BROAD',
+  };
 
-    // The library's create() expects resource objects directly, not operation wrappers
-    const resources = keywords.map(kw => ({
-      ad_group: adGroupResourceName,
-      status: 'ENABLED',
-      keyword: {
-        text: kw.text.trim(),
-        match_type: kw.matchType,
-      },
-    }));
+  const added: string[] = [];
+  const failed: Array<{ text: string; reason: string }> = [];
 
-    console.log(`[GoogleAdsClient] Creating ${resources.length} keywords`);
-    console.log('[GoogleAdsClient] Resources:', JSON.stringify(resources, null, 2));
+  // Process each keyword individually for granular error handling + policy exemption
+  for (const kw of keywords) {
+    const keywordText = kw.text.trim();
+    const matchType = matchTypeMap[kw.matchType] || 'BROAD';
 
-    const result = await (client as any).adGroupCriteria.create(resources);
+    const body: any = {
+      operations: [{
+        create: {
+          adGroup: adGroupResourceName,
+          status: 'ENABLED',
+          keyword: {
+            text: keywordText,
+            matchType,
+          },
+        },
+      }],
+      partialFailure: true,
+    };
 
-    console.log('[GoogleAdsClient] Successfully created keywords:', JSON.stringify(result, null, 2));
-    return result;
-  } catch (error: any) {
-    console.error('[GoogleAdsClient] Error adding keywords:', error);
-    console.error('[GoogleAdsClient] Error details:', JSON.stringify({
-      message: error.message,
-      code: error.code,
-      errors: error.errors,
-      details: error.details,
-    }, null, 2));
+    try {
+      console.log(`[GoogleAdsClient] Adding keyword "${keywordText}" (${matchType})`);
+      const result = await googleAdsRestCall(customerId, 'adGroupCriteria:mutate', body);
 
-    // Re-throw with more context
-    throw error;
+      // Check for partial_failure_error in the response
+      if (result?.partialFailureError) {
+        const errorDetails = result.partialFailureError.details || [];
+        const policyViolationKeys: any[] = [];
+
+        // Extract policy violation keys from error details
+        for (const detail of errorDetails) {
+          if (detail.errors) {
+            for (const err of detail.errors) {
+              if (err.details?.policyViolationDetails?.externalPolicyName ||
+                err.details?.policyViolationDetails) {
+                const pvDetail = err.details.policyViolationDetails;
+                if (pvDetail.key) {
+                  policyViolationKeys.push(pvDetail.key);
+                }
+              }
+            }
+          }
+        }
+
+        if (policyViolationKeys.length > 0) {
+          // Retry with policy exemptions
+          console.log(`[GoogleAdsClient] Policy violation for "${keywordText}", retrying with ${policyViolationKeys.length} exemption key(s)`);
+          body.operations[0].exemptPolicyViolationKeys = policyViolationKeys;
+          const retryResult = await googleAdsRestCall(customerId, 'adGroupCriteria:mutate', body);
+
+          if (retryResult?.partialFailureError) {
+            const retryMsg = JSON.stringify(retryResult.partialFailureError);
+            console.warn(`[GoogleAdsClient] Retry with exemption still failed for "${keywordText}": ${retryMsg}`);
+            failed.push({ text: keywordText, reason: `Policy exemption retry failed: ${retryMsg}` });
+          } else {
+            console.log(`[GoogleAdsClient] Successfully added "${keywordText}" with policy exemption`);
+            added.push(keywordText);
+          }
+        } else {
+          // No policy keys found, it's a different kind of partial failure
+          const errMsg = JSON.stringify(result.partialFailureError);
+          console.warn(`[GoogleAdsClient] Non-policy partial failure for "${keywordText}": ${errMsg}`);
+          failed.push({ text: keywordText, reason: errMsg });
+        }
+      } else {
+        // Success
+        console.log(`[GoogleAdsClient] Successfully added keyword "${keywordText}"`);
+        added.push(keywordText);
+      }
+    } catch (restError: any) {
+      // REST API returned an error status
+      const errorMsg = restError.message || 'Unknown REST API error';
+      const errorDetails = restError.details;
+
+      console.log(`[GoogleAdsClient] REST error for "${keywordText}":`, JSON.stringify(errorDetails, null, 2));
+
+      // Check for duplicate/already exists errors first
+      const isDuplicate = errorMsg.toLowerCase().includes('already exists') ||
+        errorMsg.toLowerCase().includes('duplicate') ||
+        JSON.stringify(errorDetails || '').toLowerCase().includes('already exists') ||
+        JSON.stringify(errorDetails || '').toLowerCase().includes('criterion_error');
+
+      if (isDuplicate) {
+        console.log(`[GoogleAdsClient] Keyword "${keywordText}" already exists in ad group, skipping`);
+        added.push(keywordText); // Count as success since it already exists
+        continue;
+      }
+
+      // Deep search for policy violation keys in the error response
+      const policyViolationKeys: any[] = [];
+      const searchForPolicyKeys = (obj: any) => {
+        if (!obj || typeof obj !== 'object') return;
+        if (obj.policyViolationDetails?.key) {
+          policyViolationKeys.push(obj.policyViolationDetails.key);
+        }
+        if (Array.isArray(obj)) {
+          obj.forEach(searchForPolicyKeys);
+        } else {
+          Object.values(obj).forEach(searchForPolicyKeys);
+        }
+      };
+      searchForPolicyKeys(errorDetails);
+
+      if (policyViolationKeys.length > 0) {
+        // Retry with policy exemptions
+        console.log(`[GoogleAdsClient] Policy violation (error) for "${keywordText}", retrying with ${policyViolationKeys.length} exemption key(s):`, JSON.stringify(policyViolationKeys));
+        body.operations[0].exemptPolicyViolationKeys = policyViolationKeys;
+        try {
+          await googleAdsRestCall(customerId, 'adGroupCriteria:mutate', body);
+          console.log(`[GoogleAdsClient] Successfully added "${keywordText}" with policy exemption`);
+          added.push(keywordText);
+        } catch (retryError: any) {
+          console.warn(`[GoogleAdsClient] Retry with exemption failed for "${keywordText}": ${retryError.message}`);
+          // Provide a user-friendly error message
+          const friendlyReason = retryError.message?.includes('policy')
+            ? `This keyword violates a Google Ads policy that cannot be exempted. Try a different keyword variation.`
+            : retryError.message;
+          failed.push({ text: keywordText, reason: friendlyReason });
+        }
+      } else {
+        // Provide a user-friendly error message
+        let friendlyReason = errorMsg;
+        if (errorMsg.includes('policy')) {
+          friendlyReason = `Google Ads policy violation — this keyword may already exist or is restricted. Try adding it directly in Google Ads.`;
+        }
+        console.warn(`[GoogleAdsClient] Failed to add keyword "${keywordText}": ${errorMsg}`);
+        failed.push({ text: keywordText, reason: friendlyReason });
+      }
+    }
   }
+
+  console.log(`[GoogleAdsClient] Results: ${added.length} added, ${failed.length} failed`);
+
+  if (added.length === 0 && failed.length > 0) {
+    const err: any = new Error(`All ${failed.length} keyword(s) failed to add. ${failed.map(f => `"${f.text}": ${f.reason}`).join('; ')}`);
+    err.failedKeywords = failed;
+    throw err;
+  }
+
+  return { addedCount: added.length, failedKeywords: failed, addedKeywords: added };
 }
 
 /**

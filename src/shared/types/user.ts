@@ -15,6 +15,7 @@ export const USER_ROLES = [
   'Marketing',
   'Insurance',
   'Payment Posting',
+  'Claims',
   'Credentialing',
   'Admin',
   'SuperAdmin',
@@ -84,6 +85,9 @@ export interface ClinicRoleAssignment {
   perClaimFeeOpenDental?: number; // Fee per claim - OpenDental (Payment Posting role)
   perClaimFeePortal?: number; // Fee per claim - Portal (Payment Posting role)
   perPreAuthFee?: number; // Fee per pre-authorization (Payment Posting role)
+  perClaimsPostedAmount?: number; // Per Claims Posted Amount (Claims role)
+  perEobsAttachedAmount?: number; // Per EOB's Attached Amount (Claims role)
+  statusDeniedAmount?: number; // Status Denied Amount (Claims role)
   moduleAccess?: ModuleAccess[]; // Optional - granular module permissions per clinic
 
   // Open Dental user fields

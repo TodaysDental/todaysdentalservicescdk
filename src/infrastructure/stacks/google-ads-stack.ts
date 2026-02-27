@@ -229,7 +229,10 @@ export class GoogleAdsStack extends Stack {
         'bedrock:InvokeModel',
         'bedrock:InvokeModelWithResponseStream',
       ],
-      resources: ['arn:aws:bedrock:*::foundation-model/*'],
+      resources: [
+        'arn:aws:bedrock:*::foundation-model/*',
+        `arn:aws:bedrock:*:${this.account}:inference-profile/*`,
+      ],
     }));
 
     // Google Ads Ads Management Lambda
