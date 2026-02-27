@@ -421,11 +421,92 @@ export class EmailStack extends Stack {
     });
     applyTags(processedEmailsTable, { Table: 'processed-emails' });
 
+    // ========================================
+    // SYSTEM TASKS TABLE
+    // ========================================
+
+    const systemTasksTable = new dynamodb.Table(this, 'SystemTasksTable', {
+      tableName: `${this.stackName}-SystemTasks`,
+      partitionKey: { name: 'taskId', type: dynamodb.AttributeType.STRING },
+      billingMode: dynamodb.BillingMode.PAY_PER_REQUEST,
+      removalPolicy: RemovalPolicy.DESTROY,
+      timeToLiveAttribute: 'ttl',
+    });
+    applyTags(systemTasksTable, { Table: 'system-tasks' });
+
+    systemTasksTable.addGlobalSecondaryIndex({
+      indexName: 'ModuleIndex',
+      partitionKey: { name: 'module', type: dynamodb.AttributeType.STRING },
+      sortKey: { name: 'createdAt', type: dynamodb.AttributeType.STRING },
+      projectionType: dynamodb.ProjectionType.ALL,
+    });
+    systemTasksTable.addGlobalSecondaryIndex({
+      indexName: 'StatusIndex',
+      partitionKey: { name: 'status', type: dynamodb.AttributeType.STRING },
+      sortKey: { name: 'createdAt', type: dynamodb.AttributeType.STRING },
+      projectionType: dynamodb.ProjectionType.ALL,
+    });
+    systemTasksTable.addGlobalSecondaryIndex({
+      indexName: 'ClinicIndex',
+      partitionKey: { name: 'clinicId', type: dynamodb.AttributeType.STRING },
+      sortKey: { name: 'createdAt', type: dynamodb.AttributeType.STRING },
+      projectionType: dynamodb.ProjectionType.ALL,
+    });
+    systemTasksTable.addGlobalSecondaryIndex({
+      indexName: 'AssignedToIndex',
+      partitionKey: { name: 'assignedTo', type: dynamodb.AttributeType.STRING },
+      sortKey: { name: 'createdAt', type: dynamodb.AttributeType.STRING },
+      projectionType: dynamodb.ProjectionType.ALL,
+    });
+
+    // ========================================
+    // SYSTEM TASKS API HANDLER
+    // ========================================
+
+    const systemTasksHandler = new lambdaNode.NodejsFunction(this, 'SystemTasksHandlerFn', {
+      entry: path.join(__dirname, '..', '..', 'services', 'email', 'system-tasks-handler.ts'),
+      handler: 'handler',
+      runtime: lambda.Runtime.NODEJS_22_X,
+      memorySize: 256,
+      timeout: Duration.seconds(30),
+      bundling: { format: lambdaNode.OutputFormat.CJS, target: 'node22' },
+      environment: {
+        REGION: Stack.of(this).region,
+        SYSTEM_TASKS_TABLE: systemTasksTable.tableName,
+        FAVORS_TABLE: props.commFavorsTableName || '',
+      },
+    });
+    applyTags(systemTasksHandler, { Function: 'system-tasks-handler' });
+    systemTasksTable.grantReadWriteData(systemTasksHandler);
+
+    if (props.commFavorsTableArn) {
+      systemTasksHandler.addToRolePolicy(new iam.PolicyStatement({
+        actions: ['dynamodb:PutItem', 'dynamodb:UpdateItem'],
+        resources: [props.commFavorsTableArn],
+      }));
+    }
+
+    // System Tasks API routes: /system-tasks
+    const systemTasksIntegration = new apigw.LambdaIntegration(systemTasksHandler);
+    const systemTasksResource = this.emailApi.root.addResource('system-tasks');
+    systemTasksResource.addMethod('GET', systemTasksIntegration, {
+      authorizer: this.authorizer,
+      authorizationType: apigw.AuthorizationType.CUSTOM,
+    });
+    systemTasksResource.addMethod('PUT', systemTasksIntegration, {
+      authorizer: this.authorizer,
+      authorizationType: apigw.AuthorizationType.CUSTOM,
+    });
+    systemTasksResource.addMethod('POST', systemTasksIntegration, {
+      authorizer: this.authorizer,
+      authorizationType: apigw.AuthorizationType.CUSTOM,
+    });
+
     this.emailRouterFn = new lambdaNode.NodejsFunction(this, 'EmailRouterFn', {
       entry: path.join(__dirname, '..', '..', 'services', 'email', 'email-router.ts'),
       handler: 'handler',
       runtime: lambda.Runtime.NODEJS_22_X,
-      memorySize: 512,
+      memorySize: 1536,
       timeout: Duration.seconds(300),
       bundling: {
         format: lambdaNode.OutputFormat.CJS,
@@ -435,11 +516,11 @@ export class EmailStack extends Stack {
         PROCESSED_EMAILS_TABLE: processedEmailsTable.tableName,
         CALLBACK_TABLE_PREFIX: props.callbackTablePrefix || 'todaysdentalinsights-callback-',
         DEFAULT_CALLBACK_TABLE: props.defaultCallbackTableName || '',
-        FAVORS_TABLE: props.commFavorsTableName || '',
         FILES_BUCKET: props.commFilesBucketName || '',
         GLOBAL_SECRETS_TABLE: props.globalSecretsTableName,
         CLINIC_SECRETS_TABLE: props.clinicSecretsTableName,
         CLINIC_CONFIG_TABLE: props.clinicConfigTableName,
+        SYSTEM_TASKS_TABLE: systemTasksTable.tableName,
       },
     });
     applyTags(this.emailRouterFn, { Function: 'email-router' });
@@ -448,6 +529,7 @@ export class EmailStack extends Stack {
 
     // ProcessedEmails table read/write
     processedEmailsTable.grantReadWriteData(this.emailRouterFn);
+    systemTasksTable.grantReadWriteData(this.emailRouterFn);
 
     // Secrets tables read + KMS decrypt (same as other email lambdas)
     this.emailRouterFn.addToRolePolicy(secretsReadPolicy);
@@ -566,6 +648,10 @@ export class EmailStack extends Stack {
       value: processedEmailsTable.tableName,
       description: 'ProcessedEmails DynamoDB table for deduplication',
       exportName: `${this.stackName}-ProcessedEmailsTableName`,
+    });
+
+    new CfnOutput(this, 'SystemTasksTableName', {
+      value: systemTasksTable.tableName,
     });
   }
 }

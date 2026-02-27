@@ -33,10 +33,10 @@ import {
 const PROCESSED_EMAILS_TABLE = process.env.PROCESSED_EMAILS_TABLE || '';
 const CALLBACK_TABLE_PREFIX = process.env.CALLBACK_TABLE_PREFIX || 'todaysdentalinsights-callback-';
 const DEFAULT_CALLBACK_TABLE = process.env.DEFAULT_CALLBACK_TABLE || '';
-const FAVORS_TABLE = process.env.FAVORS_TABLE || '';
+const SYSTEM_TASKS_TABLE = process.env.SYSTEM_TASKS_TABLE || '';
 const FILES_BUCKET = process.env.FILES_BUCKET || '';
 const REGION = process.env.AWS_REGION || 'us-east-1';
-const MAX_EMAILS_PER_CLINIC = parseInt(process.env.MAX_EMAILS_PER_CLINIC || '20', 10);
+const MAX_EMAILS_PER_CLINIC = parseInt(process.env.MAX_EMAILS_PER_CLINIC || '10', 10);
 const POLL_DAYS = parseInt(process.env.POLL_DAYS || '1', 10);
 const PROCESSED_TTL_DAYS = 30;
 
@@ -268,7 +268,7 @@ function base64UrlDecode(b64url: string): Buffer {
   return Buffer.from(s + pad, 'base64');
 }
 
-async function fetchUnreadGmail(clinicConfig: ClinicConfig): Promise<ParsedEmail[]> {
+async function fetchUnreadGmailHeaders(clinicConfig: ClinicConfig): Promise<ParsedEmail[]> {
   const emailConfig = clinicConfig.email as GmailEmailConfig | undefined;
   if (!emailConfig?.gmailRefreshToken) return [];
 
@@ -292,27 +292,24 @@ async function fetchUnreadGmail(clinicConfig: ClinicConfig): Promise<ParsedEmail
 
   for (const { id } of list.messages.slice(0, MAX_EMAILS_PER_CLINIC)) {
     try {
+      // Phase 1: fetch metadata only (headers + snippet) - no attachments loaded
       const msg = await gmailRequest(
         'GET',
-        `users/${encodeURIComponent(userId)}/messages/${encodeURIComponent(id)}?format=raw`,
+        `users/${encodeURIComponent(userId)}/messages/${encodeURIComponent(id)}?format=metadata&metadataHeaders=From&metadataHeaders=To&metadataHeaders=Subject&metadataHeaders=Date`,
         refreshToken,
-      ) as { id: string; raw: string };
+      ) as { id: string; snippet: string; internalDate: string; payload?: { headers?: { name: string; value: string }[] } };
 
-      const buf = base64UrlDecode(msg.raw || '');
-      const parsed = await simpleParser(buf);
-
-      const toAddr = Array.isArray(parsed.to) ? parsed.to.map(a => a.text).join(', ') : (parsed.to?.text || '');
-      const text = (parsed.text || '').trim();
+      const headers = msg.payload?.headers || [];
+      const getHeader = (name: string) => headers.find(h => h.name.toLowerCase() === name.toLowerCase())?.value || '';
 
       emails.push({
         id: msg.id,
-        from: parsed.from?.text || '',
-        to: toAddr,
-        subject: parsed.subject || '',
-        date: parsed.date?.toISOString() || '',
-        text,
-        html: parsed.html || undefined,
-        attachments: parsed.attachments || [],
+        from: getHeader('From'),
+        to: getHeader('To'),
+        subject: getHeader('Subject'),
+        date: getHeader('Date') || (msg.internalDate ? new Date(Number(msg.internalDate)).toISOString() : ''),
+        text: msg.snippet || '',
+        attachments: [],
       });
     } catch (err) {
       console.error(`[EmailRouter] Error fetching Gmail message ${id}:`, err);
@@ -320,6 +317,29 @@ async function fetchUnreadGmail(clinicConfig: ClinicConfig): Promise<ParsedEmail
   }
 
   return emails;
+}
+
+async function fetchGmailFullBody(clinicConfig: ClinicConfig, messageId: string): Promise<{ text: string; attachments: Attachment[] }> {
+  const emailConfig = clinicConfig.email as GmailEmailConfig | undefined;
+  if (!emailConfig?.gmailRefreshToken) return { text: '', attachments: [] };
+
+  const userId = emailConfig.gmailUserId || 'me';
+  try {
+    const msg = await gmailRequest(
+      'GET',
+      `users/${encodeURIComponent(userId)}/messages/${encodeURIComponent(messageId)}?format=raw`,
+      emailConfig.gmailRefreshToken,
+    ) as { raw: string };
+
+    const buf = base64UrlDecode(msg.raw || '');
+    const parsed = await simpleParser(buf);
+    const text = (parsed.text || '').trim();
+    const attachments = parsed.attachments || [];
+    return { text, attachments };
+  } catch (err) {
+    console.error(`[EmailRouter] Error fetching Gmail full body ${messageId}:`, err);
+    return { text: '', attachments: [] };
+  }
 }
 
 async function markGmailAsRead(clinicConfig: ClinicConfig, messageId: string): Promise<void> {
@@ -339,7 +359,22 @@ async function markGmailAsRead(clinicConfig: ClinicConfig, messageId: string): P
 // IMAP POLLING
 // ========================================
 
-async function fetchUnreadImap(clinicConfig: ClinicConfig): Promise<ParsedEmail[]> {
+function getImapConfig(domainConfig: NonNullable<GmailEmailConfig['domain']>, password: string) {
+  return {
+    imap: {
+      user: domainConfig.smtpUser,
+      password,
+      host: domainConfig.imapHost,
+      port: domainConfig.imapPort,
+      tls: true,
+      authTimeout: 30000,
+      connTimeout: 30000,
+      tlsOptions: { servername: domainConfig.imapHost },
+    },
+  };
+}
+
+async function fetchUnreadImapHeaders(clinicConfig: ClinicConfig): Promise<ParsedEmail[]> {
   const emailConfig = clinicConfig.email as GmailEmailConfig | undefined;
   const domainConfig = emailConfig?.domain;
   if (!domainConfig) return [];
@@ -350,27 +385,15 @@ async function fetchUnreadImap(clinicConfig: ClinicConfig): Promise<ParsedEmail[
     return [];
   }
 
-  const imapConfig = {
-    imap: {
-      user: domainConfig.smtpUser,
-      password: clinicSecrets.domainSmtpPassword,
-      host: domainConfig.imapHost,
-      port: domainConfig.imapPort,
-      tls: true,
-      authTimeout: 30000,
-      connTimeout: 30000,
-      tlsOptions: { servername: domainConfig.imapHost },
-    },
-  };
-
   let connection: imaps.ImapSimple | null = null;
   try {
-    connection = await imaps.connect(imapConfig);
+    connection = await imaps.connect(getImapConfig(domainConfig, clinicSecrets.domainSmtpPassword));
     await connection.openBox('INBOX');
 
+    // Phase 1: fetch HEADER only - no body or attachments loaded into memory
     const searchResults = await connection.search(['UNSEEN'], {
-      bodies: [''],
-      struct: true,
+      bodies: ['HEADER'],
+      struct: false,
     });
 
     if (!searchResults.length) {
@@ -383,26 +406,28 @@ async function fetchUnreadImap(clinicConfig: ClinicConfig): Promise<ParsedEmail[
 
     for (const message of limited) {
       try {
-        const bodyPart = message.parts?.find((p: { which: string }) => p.which === '');
-        const raw = bodyPart?.body || '';
-        if (!raw) continue;
+        const headerPart = message.parts?.find((p: { which: string }) => p.which === 'HEADER');
+        const headers = headerPart?.body;
+        if (!headers) continue;
 
-        const parsed = await simpleParser(raw);
-        const toAddr = Array.isArray(parsed.to) ? parsed.to.map(a => a.text).join(', ') : (parsed.to?.text || '');
         const uid = message.attributes?.uid;
+        // IMAP HEADER body is a parsed object: { from: ['...'], to: ['...'], subject: ['...'], date: ['...'] }
+        const from = (Array.isArray(headers.from) ? headers.from[0] : headers.from) || '';
+        const to = (Array.isArray(headers.to) ? headers.to[0] : headers.to) || '';
+        const subject = (Array.isArray(headers.subject) ? headers.subject[0] : headers.subject) || '';
+        const dateStr = (Array.isArray(headers.date) ? headers.date[0] : headers.date) || '';
 
         emails.push({
           id: String(uid || uuidv4()),
-          from: parsed.from?.text || '',
-          to: toAddr,
-          subject: parsed.subject || '',
-          date: parsed.date?.toISOString() || '',
-          text: (parsed.text || '').trim(),
-          html: parsed.html || undefined,
-          attachments: parsed.attachments || [],
+          from: String(from).trim(),
+          to: String(to).trim(),
+          subject: String(subject).trim(),
+          date: dateStr ? new Date(String(dateStr)).toISOString() : '',
+          text: '', // body fetched separately in phase 2
+          attachments: [],
         });
       } catch (err) {
-        console.error(`[EmailRouter] Error parsing IMAP message:`, err);
+        console.error(`[EmailRouter] Error parsing IMAP header:`, err);
       }
     }
 
@@ -412,6 +437,41 @@ async function fetchUnreadImap(clinicConfig: ClinicConfig): Promise<ParsedEmail[
     console.error(`[EmailRouter] IMAP connection error for ${clinicConfig.clinicId}:`, err);
     try { if (connection) connection.end(); } catch { /* ignore */ }
     return [];
+  }
+}
+
+async function fetchImapFullBody(clinicConfig: ClinicConfig, uid: string): Promise<{ text: string; attachments: Attachment[] }> {
+  const emailConfig = clinicConfig.email as GmailEmailConfig | undefined;
+  const domainConfig = emailConfig?.domain;
+  if (!domainConfig) return { text: '', attachments: [] };
+
+  const clinicSecrets = await getClinicSecrets(clinicConfig.clinicId);
+  if (!clinicSecrets?.domainSmtpPassword) return { text: '', attachments: [] };
+
+  let connection: imaps.ImapSimple | null = null;
+  try {
+    connection = await imaps.connect(getImapConfig(domainConfig, clinicSecrets.domainSmtpPassword));
+    await connection.openBox('INBOX');
+
+    const results = await connection.search([['UID', uid]], {
+      bodies: [''],
+      struct: true,
+    });
+
+    connection.end();
+
+    if (!results.length) return { text: '', attachments: [] };
+
+    const bodyPart = results[0].parts?.find((p: { which: string }) => p.which === '');
+    const raw = bodyPart?.body || '';
+    if (!raw) return { text: '', attachments: [] };
+
+    const parsed = await simpleParser(raw);
+    return { text: (parsed.text || '').trim(), attachments: parsed.attachments || [] };
+  } catch (err) {
+    console.error(`[EmailRouter] Error fetching IMAP body for UID ${uid}:`, err);
+    try { if (connection) connection.end(); } catch { /* ignore */ }
+    return { text: '', attachments: [] };
   }
 }
 
@@ -581,19 +641,8 @@ async function createCallback(
 }
 
 // ========================================
-// ROUTING: COMM TASK CREATION
+// ROUTING: SYSTEM TASK CREATION
 // ========================================
-
-const CATEGORY_TO_COMM: Record<string, { category: string; requestType: string }> = {
-  accounting_task: { category: 'Accounting', requestType: 'Assign Task' },
-  appointment_request: { category: 'Operations', requestType: 'Assign Task' },
-  hr_task: { category: 'HR', requestType: 'Assign Task' },
-  azure_backup_failure: { category: 'IT', requestType: 'Assign Task' },
-  azure_payment_pending: { category: 'Accounting', requestType: 'Assign Task' },
-  autoclave_test_failed: { category: 'Operations', requestType: 'Assign Task' },
-  autoclave_test_passed: { category: 'Operations', requestType: 'Assign Task' },
-  general_inquiry: { category: 'Operations', requestType: 'Assign Task' },
-};
 
 function buildTaskDescription(classification: ClassificationResult, email: ParsedEmail, attachmentLinks: string[]): string {
   const parts: string[] = [];
@@ -632,15 +681,15 @@ function buildTaskDescription(classification: ClassificationResult, email: Parse
   return parts.join('\n');
 }
 
-async function createCommTask(
+async function createSystemTask(
   clinicId: string,
   classification: ClassificationResult,
   email: ParsedEmail,
   attachmentLinks: string[],
 ): Promise<string> {
-  const favorRequestID = uuidv4();
+  const taskId = uuidv4();
   const now = new Date().toISOString();
-  const mapping = CATEGORY_TO_COMM[classification.category] || CATEGORY_TO_COMM.general_inquiry;
+  const module = CATEGORY_TO_MODULE[classification.category] || 'Operations';
 
   const titlePrefix: Record<string, string> = {
     azure_backup_failure: '[AZURE BACKUP FAILURE]',
@@ -658,29 +707,25 @@ async function createCommTask(
   const description = buildTaskDescription(classification, email, attachmentLinks);
 
   const task: Record<string, any> = {
-    favorRequestID,
-    senderID: 'system-email-router',
-    userID: 'system-email-router',
+    taskId,
+    module,
+    category: classification.category,
+    clinicId,
     title,
     description,
+    source: 'email-router',
     status: 'pending',
     priority: classification.priority.charAt(0).toUpperCase() + classification.priority.slice(1),
-    category: mapping.category,
-    requestType: mapping.requestType,
-    createdAt: now,
-    updatedAt: now,
-    initialMessage: description,
-    unreadCount: 1,
-    source: 'email-router',
-    sourceClinicId: clinicId,
     emailFrom: email.from,
     emailSubject: email.subject,
+    createdAt: now,
+    updatedAt: now,
   };
 
-  await docClient.send(new PutCommand({ TableName: FAVORS_TABLE, Item: task }));
-  console.log(`[EmailRouter] Task ${favorRequestID} created (${mapping.category}/${classification.priority})`);
+  await docClient.send(new PutCommand({ TableName: SYSTEM_TASKS_TABLE, Item: task }));
+  console.log(`[EmailRouter] SystemTask ${taskId} created (${module}/${classification.priority})`);
 
-  return favorRequestID;
+  return taskId;
 }
 
 // ========================================
@@ -697,7 +742,9 @@ async function processEmail(
     return { clinicId, emailId: email.id, category: 'spam_or_marketing', action: 'skipped' };
   }
 
-  const classification = await classifyEmail(email.subject, email.text || '', email.from);
+  // Phase 1: classify using headers (subject + from) and any available snippet text
+  const classificationBody = email.text || email.subject;
+  const classification = await classifyEmail(email.subject, classificationBody, email.from);
   console.log(`[EmailRouter] ${clinicId}/${email.id}: ${classification.category} (${classification.confidence})`);
 
   if (classification.category === 'spam_or_marketing') {
@@ -705,20 +752,53 @@ async function processEmail(
     return { clinicId, emailId: email.id, category: classification.category, action: 'skipped' };
   }
 
-  const attachmentLinks = await uploadAttachments(clinicId, email.id, email.attachments);
+  // Phase 2: fetch full body + attachments only for emails being routed (one at a time)
+  let fullText = email.text;
+  let attachments = email.attachments;
+
+  try {
+    if (emailSource === 'gmail') {
+      const full = await fetchGmailFullBody(clinicConfig, email.id);
+      fullText = full.text || fullText;
+      attachments = full.attachments;
+    } else {
+      const full = await fetchImapFullBody(clinicConfig, email.id);
+      fullText = full.text || fullText;
+      attachments = full.attachments;
+    }
+    email.text = fullText;
+  } catch (err) {
+    console.warn(`[EmailRouter] Failed to fetch full body for ${email.id} (using headers):`, err);
+  }
+
+  // Re-classify with full body if we got more text
+  let finalClassification = classification;
+  if (fullText && fullText !== classificationBody && fullText.length > classificationBody.length) {
+    try {
+      finalClassification = await classifyEmail(email.subject, fullText, email.from);
+      console.log(`[EmailRouter] ${clinicId}/${email.id}: reclassified to ${finalClassification.category} (${finalClassification.confidence})`);
+    } catch {
+      // Keep original classification
+    }
+  }
+
+  const attachmentLinks = await uploadAttachments(clinicId, email.id, attachments);
 
   let targetId: string;
   let action: 'callback_created' | 'task_created';
 
-  if (classification.category === 'callback_request') {
-    targetId = await createCallback(clinicId, classification, email, attachmentLinks);
+  if (finalClassification.category === 'spam_or_marketing') {
+    await markAsProcessed(clinicId, email.id, finalClassification.category);
+    return { clinicId, emailId: email.id, category: finalClassification.category, action: 'skipped' };
+  } else if (finalClassification.category === 'callback_request') {
+    targetId = await createCallback(clinicId, finalClassification, email, attachmentLinks);
     action = 'callback_created';
   } else {
-    targetId = await createCommTask(clinicId, classification, email, attachmentLinks);
+    targetId = await createSystemTask(clinicId, finalClassification, email, attachmentLinks);
     action = 'task_created';
   }
 
-  await markAsProcessed(clinicId, email.id, classification.category);
+  await markAsProcessed(clinicId, email.id, finalClassification.category);
 
   try {
     if (emailSource === 'gmail') {
@@ -730,7 +810,7 @@ async function processEmail(
     console.warn(`[EmailRouter] Failed to mark ${email.id} as read (non-fatal):`, err);
   }
 
-  return { clinicId, emailId: email.id, category: classification.category, action, targetId };
+  return { clinicId, emailId: email.id, category: finalClassification.category, action, targetId };
 }
 
 // ========================================
@@ -752,9 +832,9 @@ async function processClinic(clinicConfig: ClinicConfig): Promise<RoutingResult[
 
   if (emailConfig.gmailRefreshToken) {
     try {
-      emails = await fetchUnreadGmail(clinicConfig);
+      emails = await fetchUnreadGmailHeaders(clinicConfig);
       source = 'gmail';
-      console.log(`[EmailRouter] ${clinicId}: Fetched ${emails.length} unread emails via Gmail`);
+      console.log(`[EmailRouter] ${clinicId}: Fetched ${emails.length} unread emails via Gmail (headers only)`);
     } catch (err) {
       console.error(`[EmailRouter] Gmail fetch failed for ${clinicId}, trying IMAP:`, err);
       emails = [];
@@ -763,9 +843,9 @@ async function processClinic(clinicConfig: ClinicConfig): Promise<RoutingResult[
 
   if (!emails.length && emailConfig.domain) {
     try {
-      emails = await fetchUnreadImap(clinicConfig);
+      emails = await fetchUnreadImapHeaders(clinicConfig);
       source = 'imap';
-      console.log(`[EmailRouter] ${clinicId}: Fetched ${emails.length} unread emails via IMAP`);
+      console.log(`[EmailRouter] ${clinicId}: Fetched ${emails.length} unread emails via IMAP (headers only)`);
     } catch (err) {
       console.error(`[EmailRouter] IMAP fetch failed for ${clinicId}:`, err);
       return results;
