@@ -10,7 +10,7 @@ import { getUserIdFromJwt, checkClinicAuthorization } from '../../shared/utils/p
 import { scheduleCompensatingAction } from './compensating-action-processor';
 import { TTL_POLICY, calculateTTL } from './config/ttl-policy';
 import { DistributedLock } from './utils/distributed-lock';
-import { isPushNotificationsEnabled, sendCallEndedToAgent } from './utils/push-notifications';
+import { isPushNotificationsEnabled, sendCallResumedToAgent } from './utils/push-notifications';
 import { CHIME_CONFIG } from './config';
 
 const ddb = getDynamoDBClient();
@@ -239,9 +239,11 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
             }
 
             // CRITICAL FIX: Validate meeting exists before attempting resume
+            let meetingInfo: any = null;
             if (meetingId) {
                 try {
-                    await chimeClient.send(new GetMeetingCommand({ MeetingId: meetingId }));
+                    const getMeetingResp = await chimeClient.send(new GetMeetingCommand({ MeetingId: meetingId }));
+                    meetingInfo = getMeetingResp.Meeting;
                     console.log(`[resume-call] Meeting ${meetingId} validated - exists`);
                 } catch (meetingErr: any) {
                     if (meetingErr.name === 'NotFoundException') {
@@ -271,7 +273,8 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
             }
 
             try {
-                let agentAttendeeId = null;
+                let agentAttendeeId: string | null = null;
+                let agentJoinToken: string = '';
 
                 // CRITICAL FIX #2: Delete OLD attendee BEFORE creating new one
                 // This prevents "Attendee already exists" errors
@@ -306,10 +309,8 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
 
                         if (attendeeResponse.Attendee?.AttendeeId) {
                             agentAttendeeId = attendeeResponse.Attendee.AttendeeId;
+                            agentJoinToken = attendeeResponse.Attendee.JoinToken || '';
                             console.log(`[resume-call] Created new attendee ${agentAttendeeId} for agent ${agentId}`);
-
-                            // Store the entire attendee response for use later
-                            const joinToken = attendeeResponse.Attendee.JoinToken || '';
 
                             // Update the call record with attendee info here to ensure we have the join token
                             try {
@@ -320,7 +321,7 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
                                     ExpressionAttributeValues: {
                                         ':attendeeInfo': {
                                             AttendeeId: agentAttendeeId,
-                                            JoinToken: joinToken,
+                                            JoinToken: agentJoinToken,
                                             ExternalUserId: agentId
                                         }
                                     }
@@ -404,15 +405,12 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
                     }));
                     console.log(`[resume-call] Transaction completed - both tables updated atomically for call ${callId}`);
 
-                    // Push notification: notify agent's mobile app that the call was resumed from hold (state sync)
                     if (isPushNotificationsEnabled() && CHIME_CONFIG.PUSH.ENABLE_HOLD_RESUME_PUSH) {
-                        sendCallEndedToAgent({
+                        sendCallResumedToAgent({
                             callId,
                             clinicId,
                             clinicName: callRecord.clinicName || clinicId,
                             agentId,
-                            reason: 'call_resumed',
-                            message: 'Call resumed from hold',
                             direction: callRecord.direction || 'inbound',
                             timestamp: new Date().toISOString(),
                         }).catch(err => console.warn('[resume-call] Push notification failed (non-fatal):', err.message));
@@ -441,6 +439,12 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
                     throw txnErr;
                 }
 
+                const attendeeInfo = agentAttendeeId ? {
+                    AttendeeId: agentAttendeeId,
+                    JoinToken: agentJoinToken,
+                    ExternalUserId: agentId,
+                } : undefined;
+
                 return {
                     statusCode: 200,
                     headers: corsHeaders,
@@ -449,8 +453,8 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
                         callId,
                         status: 'connected',
                         holdDuration,
-                        meetingId,
-                        attendeeId: agentAttendeeId
+                        meeting: meetingInfo || callRecord.meetingInfo || { MeetingId: meetingId },
+                        attendee: attendeeInfo || { AttendeeId: agentAttendeeId },
                     })
                 };
             } catch (smaError: any) {

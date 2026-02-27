@@ -15,7 +15,7 @@ import { verifyIdToken } from '../../shared/utils/auth-helper';
 import { getUserIdFromJwt, checkClinicAuthorization } from '../../shared/utils/permissions-helper';
 import { getSmaIdForClinic } from './utils/sma-map';
 import { randomUUID } from 'crypto';
-import { isPushNotificationsEnabled, sendAgentAlert } from './utils/push-notifications';
+import { isPushNotificationsEnabled, sendAgentAlert, sendConferenceInviteToAgent } from './utils/push-notifications';
 import { CHIME_CONFIG } from './config';
 
 const ddb = getDynamoDBClient();
@@ -421,19 +421,17 @@ async function addParticipantToConference(
             }
         }));
 
-        // Push notification: notify agents in the conference about the new participant
         if (isPushNotificationsEnabled() && CHIME_CONFIG.PUSH.ENABLE_CONFERENCE_JOIN_PUSH) {
-            sendAgentAlert(
-                [agentId],
-                'Conference Updated',
-                `A new participant has been added to your conference`,
-                {
-                    alertType: 'conference_participant_added',
-                    conferenceId,
-                    addedCallId: callIdToAdd,
-                    phoneNumber: callRecord.phoneNumber,
-                },
-            ).catch(err => console.warn('[conference-call] Conference push failed (non-fatal):', err.message));
+            sendConferenceInviteToAgent(agentId, {
+                callId: callIdToAdd,
+                clinicId: callRecord.clinicId || '',
+                clinicName: callRecord.clinicName || callRecord.clinicId || '',
+                conferenceId,
+                initiatorAgentId: agentId,
+                participantCount: currentConferenceCallIds.length,
+                callerPhoneNumber: callRecord.phoneNumber,
+                timestamp: new Date().toISOString(),
+            }).catch(err => console.warn('[conference-call] Conference push failed (non-fatal):', err.message));
         }
     }
 

@@ -39,8 +39,6 @@ export interface AdminStackProps extends StackProps {
   // Optional ARNs for Chime lambdas (imported from Chime stack to avoid
   // two-way construct references). When provided, Admin stack will add API
   // routes that integrate with these functions.
-  startSessionFnArn?: string;
-  stopSessionFnArn?: string;
   agentActiveFnArn?: string;
   agentInactiveFnArn?: string;
   outboundCallFnArn?: string;
@@ -52,7 +50,6 @@ export interface AdminStackProps extends StackProps {
   callRejectedFnArn?: string;
   callHungupFnArn?: string;
   leaveCallFnArn?: string;
-  heartbeatFnArn?: string;
   holdCallFnArn?: string;
   resumeCallFnArn?: string;
   // ** NEW: Add Call, DTMF, Notes, Conference **
@@ -66,10 +63,6 @@ export interface AdminStackProps extends StackProps {
   getJoinableCallsFnArn?: string;
   // ** NEW: Call Recording **
   getRecordingFnArn?: string;
-  // ** NEW: Supervisor Tools **
-  supervisorLiveCallsFnArn?: string;
-  supervisorMonitorFnArn?: string;
-  supervisorWhisperFnArn?: string;
 }
 
 export class AdminStack extends Stack {
@@ -839,8 +832,6 @@ export class AdminStack extends Stack {
         methodResponses: [{ statusCode: '200' }],
       });
 
-      // NOTE: /analytics/live endpoint removed (live call analytics feature removed)
-
       // GET /analytics/rankings?clinicId={clinicId} - Agent rankings/leaderboard
       const rankingsRes = analyticsRes.addResource('rankings');
       rankingsRes.addMethod('GET', new apigw.LambdaIntegration(this.getAnalyticsFn), {
@@ -883,45 +874,13 @@ export class AdminStack extends Stack {
     // them here and wire API Gateway routes to the imported functions. This
     // avoids passing the Admin API object into the Chime stack which would
     // create a circular dependency.
-    if (props.startSessionFnArn || props.stopSessionFnArn || props.outboundCallFnArn || props.transferCallFnArn ||
+    if (props.outboundCallFnArn || props.transferCallFnArn ||
       props.agentActiveFnArn || props.agentInactiveFnArn ||
       props.callAcceptedFnArn || props.callAcceptedV2FnArn || props.callRejectedV2FnArn || props.callHungupV2FnArn ||
       props.callRejectedFnArn || props.callHungupFnArn || props.leaveCallFnArn ||
-      props.heartbeatFnArn || props.holdCallFnArn || props.resumeCallFnArn ||
+      props.holdCallFnArn || props.resumeCallFnArn ||
       props.addCallFnArn || props.sendDtmfFnArn || props.callNotesFnArn || props.conferenceCallFnArn) {
       const chimeApiRoot = this.api.root.getResource('chime') ?? this.api.root.addResource('chime');
-
-      if (props.startSessionFnArn) {
-        const importedStart = lambda.Function.fromFunctionArn(this, 'ImportedStartSessionFn', props.startSessionFnArn);
-
-        // Add API Gateway permission - use wildcard to account for base path mapping
-        importedStart.addPermission('ApiGatewayInvokeStartSession', {
-          principal: new iam.ServicePrincipal('apigateway.amazonaws.com'),
-          sourceArn: this.api.arnForExecuteApi('*', '/chime/start-session', '*')
-        });
-
-        const startSessionRes = chimeApiRoot.addResource('start-session');
-        startSessionRes.addMethod('POST', new apigw.LambdaIntegration(importedStart, { proxy: true }), {
-          authorizer: this.authorizer,
-          authorizationType: apigw.AuthorizationType.CUSTOM,
-        });
-      }
-
-      if (props.stopSessionFnArn) {
-        const importedStop = lambda.Function.fromFunctionArn(this, 'ImportedStopSessionFn', props.stopSessionFnArn);
-
-        // Add API Gateway permission - use wildcard to account for base path mapping
-        importedStop.addPermission('ApiGatewayInvokeStopSession', {
-          principal: new iam.ServicePrincipal('apigateway.amazonaws.com'),
-          sourceArn: this.api.arnForExecuteApi('*', '/chime/stop-session', '*')
-        });
-
-        const stopSessionRes = chimeApiRoot.addResource('stop-session');
-        stopSessionRes.addMethod('POST', new apigw.LambdaIntegration(importedStop, { proxy: true }), {
-          authorizer: this.authorizer,
-          authorizationType: apigw.AuthorizationType.CUSTOM,
-        });
-      }
 
       // Agent Active / Inactive (push-first availability toggle)
       if (props.agentActiveFnArn || props.agentInactiveFnArn) {
@@ -1092,22 +1051,6 @@ export class AdminStack extends Stack {
 
         const leaveCallRes = chimeApiRoot.addResource('leave-call');
         leaveCallRes.addMethod('POST', new apigw.LambdaIntegration(importedLeaveCall, { proxy: true }), {
-          authorizer: this.authorizer,
-          authorizationType: apigw.AuthorizationType.CUSTOM,
-        });
-      }
-
-      if (props.heartbeatFnArn) {
-        const importedHeartbeat = lambda.Function.fromFunctionArn(this, 'ImportedHeartbeatFn', props.heartbeatFnArn);
-
-        // Add API Gateway permission - use wildcard to account for base path mapping
-        importedHeartbeat.addPermission('ApiGatewayInvokeHeartbeat', {
-          principal: new iam.ServicePrincipal('apigateway.amazonaws.com'),
-          sourceArn: this.api.arnForExecuteApi('*', '/chime/heartbeat', '*')
-        });
-
-        const heartbeatRes = chimeApiRoot.addResource('heartbeat');
-        heartbeatRes.addMethod('POST', new apigw.LambdaIntegration(importedHeartbeat, { proxy: true }), {
           authorizer: this.authorizer,
           authorizationType: apigw.AuthorizationType.CUSTOM,
         });
@@ -1316,66 +1259,6 @@ export class AdminStack extends Stack {
         getJoinableRes.addMethod('GET', new apigw.LambdaIntegration(importedGetJoinable, { proxy: true }), {
           authorizer: this.authorizer,
           authorizationType: apigw.AuthorizationType.CUSTOM,
-        });
-      }
-    }
-
-    // ========================================
-    // SUPERVISOR TOOLS API ROUTES
-    // ========================================
-    if (props.supervisorLiveCallsFnArn || props.supervisorMonitorFnArn || props.supervisorWhisperFnArn) {
-      const callCenterRoot = this.api.root.getResource('call-center') ?? this.api.root.addResource('call-center');
-      const supervisorRoot = callCenterRoot.getResource('supervisor') ?? callCenterRoot.addResource('supervisor');
-
-      // GET /call-center/supervisor/live-calls
-      if (props.supervisorLiveCallsFnArn) {
-        const importedLiveCalls = lambda.Function.fromFunctionArn(this, 'ImportedSupervisorLiveCallsFn', props.supervisorLiveCallsFnArn);
-        importedLiveCalls.addPermission('ApiGatewayInvokeSupervisorLiveCalls', {
-          principal: new iam.ServicePrincipal('apigateway.amazonaws.com'),
-          sourceArn: this.api.arnForExecuteApi('*', '/call-center/supervisor/live-calls', '*'),
-        });
-        const liveCallsRes = supervisorRoot.addResource('live-calls');
-        liveCallsRes.addMethod('GET', new apigw.LambdaIntegration(importedLiveCalls, { proxy: true }), {
-          authorizer: this.authorizer,
-          authorizationType: apigw.AuthorizationType.CUSTOM,
-        });
-      }
-
-      // POST/PUT/DELETE /call-center/supervisor/monitor
-      if (props.supervisorMonitorFnArn) {
-        const importedMonitor = lambda.Function.fromFunctionArn(this, 'ImportedSupervisorMonitorFn', props.supervisorMonitorFnArn);
-        importedMonitor.addPermission('ApiGatewayInvokeSupervisorMonitor', {
-          principal: new iam.ServicePrincipal('apigateway.amazonaws.com'),
-          sourceArn: this.api.arnForExecuteApi('*', '/call-center/supervisor/monitor', '*'),
-        });
-        const monitorRes = supervisorRoot.addResource('monitor');
-        monitorRes.addMethod('POST', new apigw.LambdaIntegration(importedMonitor, { proxy: true }), {
-          authorizer: this.authorizer, authorizationType: apigw.AuthorizationType.CUSTOM,
-        });
-        monitorRes.addMethod('PUT', new apigw.LambdaIntegration(importedMonitor, { proxy: true }), {
-          authorizer: this.authorizer, authorizationType: apigw.AuthorizationType.CUSTOM,
-        });
-        monitorRes.addMethod('DELETE', new apigw.LambdaIntegration(importedMonitor, { proxy: true }), {
-          authorizer: this.authorizer, authorizationType: apigw.AuthorizationType.CUSTOM,
-        });
-      }
-
-      // POST/GET/PUT /call-center/supervisor/whisper
-      if (props.supervisorWhisperFnArn) {
-        const importedWhisper = lambda.Function.fromFunctionArn(this, 'ImportedSupervisorWhisperFn', props.supervisorWhisperFnArn);
-        importedWhisper.addPermission('ApiGatewayInvokeSupervisorWhisper', {
-          principal: new iam.ServicePrincipal('apigateway.amazonaws.com'),
-          sourceArn: this.api.arnForExecuteApi('*', '/call-center/supervisor/whisper', '*'),
-        });
-        const whisperRes = supervisorRoot.addResource('whisper');
-        whisperRes.addMethod('POST', new apigw.LambdaIntegration(importedWhisper, { proxy: true }), {
-          authorizer: this.authorizer, authorizationType: apigw.AuthorizationType.CUSTOM,
-        });
-        whisperRes.addMethod('GET', new apigw.LambdaIntegration(importedWhisper, { proxy: true }), {
-          authorizer: this.authorizer, authorizationType: apigw.AuthorizationType.CUSTOM,
-        });
-        whisperRes.addMethod('PUT', new apigw.LambdaIntegration(importedWhisper, { proxy: true }), {
-          authorizer: this.authorizer, authorizationType: apigw.AuthorizationType.CUSTOM,
         });
       }
     }

@@ -17,6 +17,7 @@ import {
 import { getErrorTracker } from '../shared/utils/error-tracker';
 import { extractCallMetrics, trackCallCompletion } from '../shared/utils/agent-performance-tracker';
 import { QueryCommand } from '@aws-sdk/lib-dynamodb';
+import { isPushNotificationsEnabled, sendRecordingReadyToAgent } from './utils/push-notifications';
 
 const ddb = getDynamoDBClient();
 const errorTracker = getErrorTracker();
@@ -146,6 +147,21 @@ async function processRecordingEvent(record: S3EventRecord): Promise<void> {
       console.error('[RecordingProcessor] Failed to track agent performance:', err);
       // Don't throw - performance tracking is not critical
     }
+  }
+
+  // Push notification: notify the agent that their recording is ready
+  if (metadata.agentId && isPushNotificationsEnabled()) {
+    const callRecord = metadata.pstnCallId ? await getCallRecord(metadata.pstnCallId) : null;
+    sendRecordingReadyToAgent({
+      callId: metadata.callId,
+      clinicId: callRecord?.clinicId || '',
+      clinicName: callRecord?.clinicName || '',
+      agentId: metadata.agentId,
+      recordingId: metadata.recordingId,
+      durationSeconds: metadata.durationSeconds,
+      hasTranscription: AUTO_TRANSCRIBE,
+      timestamp: new Date().toISOString(),
+    }).catch(err => console.warn('[RecordingProcessor] Recording-ready push failed (non-fatal):', err.message));
   }
 
   console.log('[RecordingProcessor] Recording processed successfully:', metadata.recordingId);

@@ -541,8 +541,6 @@ const adminStack = new AdminStack(app, 'TodaysDentalInsightsAdminN1', {
   // CRITICAL: Add TranscriptBuffers table for LexAI/Voice AI transcript lookup
   transcriptBufferTableName: analyticsStack.transcriptBufferTable.tableName,
   // Import ARNs exported by the Chime stack
-  startSessionFnArn: cdk.Fn.importValue(`${chimeStack.stackName}-StartSessionArn`),
-  stopSessionFnArn: cdk.Fn.importValue(`${chimeStack.stackName}-StopSessionArn`),
   agentActiveFnArn: cdk.Fn.importValue(`${chimeStack.stackName}-AgentActiveArn`),
   agentInactiveFnArn: cdk.Fn.importValue(`${chimeStack.stackName}-AgentInactiveArn`),
   outboundCallFnArn: cdk.Fn.importValue(`${chimeStack.stackName}-OutboundCallArn`),
@@ -554,7 +552,6 @@ const adminStack = new AdminStack(app, 'TodaysDentalInsightsAdminN1', {
   callRejectedFnArn: cdk.Fn.importValue(`${chimeStack.stackName}-CallRejectedArn`),
   callHungupFnArn: cdk.Fn.importValue(`${chimeStack.stackName}-CallHungupArn`),
   leaveCallFnArn: cdk.Fn.importValue(`${chimeStack.stackName}-LeaveCallArn`),
-  heartbeatFnArn: cdk.Fn.importValue(`${chimeStack.stackName}-HeartbeatArn`),
   agentPresenceTableName: cdk.Fn.importValue(`${chimeStack.stackName}-AgentPresenceTableName`),
   agentActiveTableName: chimeStack.agentActiveTable.tableName,
   holdCallFnArn: cdk.Fn.importValue(`${chimeStack.stackName}-HoldCallArn`),

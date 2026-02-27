@@ -8,7 +8,7 @@
  * - State machine enforcement
  */
 import { APIGatewayProxyEvent, APIGatewayProxyResult } from 'aws-lambda';
-import { isPushNotificationsEnabled, sendClinicAlert } from './utils/push-notifications';
+import { isPushNotificationsEnabled, sendClinicAlert, sendCallHoldToAgent } from './utils/push-notifications';
 import { DynamoDBDocumentClient, UpdateCommand, QueryCommand, GetCommand, TransactWriteCommand } from '@aws-sdk/lib-dynamodb';
 // TransactWriteCommand is used for atomic updates in attemptDirectStateRecovery
 import { ChimeSDKVoiceClient, UpdateSipMediaApplicationCallCommand } from '@aws-sdk/client-chime-sdk-voice';
@@ -397,18 +397,23 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
 
                 console.log(`[hold-call] Database updated successfully (${holdOperationId})`);
 
-                // Push: Notify clinic supervisors that a call was placed on hold (best-effort)
                 if (isPushNotificationsEnabled()) {
-                    try {
-                        await sendClinicAlert(
-                            clinicId,
-                            'Call On Hold',
-                            `Agent placed a call on hold`,
-                            { callId, agentId, holdOperationId, alertType: 'call_on_hold' },
-                        );
-                    } catch (pushErr) {
-                        console.warn('[hold-call] Failed to send hold notification (non-fatal):', pushErr);
-                    }
+                    // State-sync push to the agent so all their devices reflect "On Hold"
+                    sendCallHoldToAgent({
+                        callId,
+                        clinicId,
+                        clinicName: clinicId,
+                        agentId,
+                        timestamp: new Date().toISOString(),
+                    }).catch(err => console.warn('[hold-call] Hold state-sync push failed (non-fatal):', err.message));
+
+                    // Notify clinic supervisors (best-effort)
+                    sendClinicAlert(
+                        clinicId,
+                        'Call On Hold',
+                        `Agent placed a call on hold`,
+                        { callId, agentId, holdOperationId, alertType: 'call_on_hold' },
+                    ).catch(err => console.warn('[hold-call] Clinic alert push failed (non-fatal):', err.message));
                 }
 
                 return {

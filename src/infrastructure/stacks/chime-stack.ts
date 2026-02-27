@@ -205,7 +205,6 @@ export class ChimeStack extends Stack {
   public readonly callQueueTable: dynamodb.Table;
   public readonly locksTable: dynamodb.Table;
   public readonly agentPerformanceTable: dynamodb.Table;
-  public readonly supervisorSessionsTable: dynamodb.Table;
   public readonly recordingMetadataTable?: dynamodb.Table;
   public readonly recordingsBucket?: s3.IBucket;
   public readonly holdMusicBucket?: s3.IBucket;
@@ -1363,100 +1362,6 @@ export class ChimeStack extends Stack {
     // JWT Secret environment variable (for custom auth)
     const jwtSecretValue = props.jwtSecret;
 
-    // Lambda for POST /chime/start-session
-    const startSessionFn = new lambdaNode.NodejsFunction(this, 'StartSessionFn', {
-      functionName: `${this.stackName}-StartSession`,
-      entry: path.join(__dirname, '..', '..', 'services', 'chime', 'start-session.ts'),
-      handler: 'handler',
-      runtime: lambda.Runtime.NODEJS_20_X,
-      timeout: Duration.seconds(10),
-      environment: {
-        AGENT_PRESENCE_TABLE_NAME: this.agentPresenceTable.tableName,
-        CALL_QUEUE_TABLE_NAME: this.callQueueTable.tableName,
-        LOCKS_TABLE_NAME: this.locksTable.tableName, // FIX: Added for distributed locking during queue assignment
-        JWT_SECRET: jwtSecretValue,
-        CHIME_MEDIA_REGION: chimeMediaRegion,
-        AWS_XRAY_TRACING_ENABLED: 'true',
-        AWS_XRAY_CONTEXT_MISSING: 'LOG_ERROR',
-      },
-    });
-    const startSessionLogGroup = new logs.LogGroup(this, 'StartSessionLogGroup', {
-      logGroupName: `/aws/lambda/${startSessionFn.functionName}`,
-      removalPolicy: RemovalPolicy.DESTROY,
-      retention: logs.RetentionDays.ONE_MONTH,
-    });
-    new logs.MetricFilter(this, 'StartSessionErrorMetricFilter', {
-      logGroup: startSessionLogGroup,
-      metricNamespace: 'Chime',
-      metricName: 'StartSessionErrors',
-      filterPattern: logs.FilterPattern.anyTerm('ERROR', 'Error', 'Exception'),
-      metricValue: '1',
-    });
-    new cloudwatch.Alarm(this, 'StartSessionErrorAlarm', {
-      metric: new cloudwatch.Metric({
-        namespace: 'Chime',
-        metricName: 'StartSessionErrors',
-        statistic: 'Sum',
-        period: Duration.minutes(5),
-      }),
-      threshold: 1,
-      evaluationPeriods: 1,
-      alarmDescription: 'Alarm when StartSession Lambda emits errors',
-      treatMissingData: cloudwatch.TreatMissingData.NOT_BREACHING,
-    });
-    startSessionFn.addToRolePolicy(chimeSdkPolicy);
-    this.agentPresenceTable.grantReadWriteData(startSessionFn);
-    this.callQueueTable.grantReadWriteData(startSessionFn); // FIX: Changed to ReadWrite for queue assignment
-    this.locksTable.grantReadWriteData(startSessionFn); // FIX: Added for distributed locking
-    startSessionFn.addPermission('AdminApiInvokeStartSession', {
-      principal: new iam.ServicePrincipal('apigateway.amazonaws.com'),
-      sourceArn: `arn:aws:execute-api:${this.region}:${this.account}:*/*/*`
-    });
-
-    // Lambda for POST /chime/stop-session
-    const stopSessionFn = new lambdaNode.NodejsFunction(this, 'StopSessionFn', {
-      functionName: `${this.stackName}-StopSession`,
-      entry: path.join(__dirname, '..', '..', 'services', 'chime', 'stop-session.ts'),
-      handler: 'handler',
-      runtime: lambda.Runtime.NODEJS_20_X,
-      timeout: Duration.seconds(15), // FIX: Increased timeout for call cleanup
-      environment: {
-        AGENT_PRESENCE_TABLE_NAME: this.agentPresenceTable.tableName,
-        CALL_QUEUE_TABLE_NAME: this.callQueueTable.tableName, // FIX: Added for active call cleanup
-        SMA_ID_MAP: smaIdMapJson, // FIX: Added for SMA hangup during cleanup
-        JWT_SECRET: jwtSecretValue,
-        CHIME_MEDIA_REGION: chimeMediaRegion,
-        AWS_XRAY_TRACING_ENABLED: 'true',
-        AWS_XRAY_CONTEXT_MISSING: 'LOG_ERROR',
-        // Push Notifications Integration (for agent offline supervisor alerts)
-        SEND_PUSH_FUNCTION_ARN: props.sendPushFunctionArn || '',
-      },
-    });
-    stopSessionFn.addToRolePolicy(chimeSdkPolicy);
-    // FIX: Add SMA call update permission for hangup during session stop
-    stopSessionFn.addToRolePolicy(new iam.PolicyStatement({
-      effect: iam.Effect.ALLOW,
-      actions: [
-        'chime:UpdateSipMediaApplicationCall',
-        'chime-sdk-voice:UpdateSipMediaApplicationCall',
-      ],
-      resources: [`arn:aws:chime:${this.region}:${this.account}:sma/*`],
-    }));
-    this.agentPresenceTable.grantReadWriteData(stopSessionFn);
-    this.callQueueTable.grantReadWriteData(stopSessionFn); // FIX: Added for call cleanup
-    stopSessionFn.addPermission('AdminApiInvokeStopSession', {
-      principal: new iam.ServicePrincipal('apigateway.amazonaws.com'),
-      sourceArn: `arn:aws:execute-api:${this.region}:${this.account}:*/*/*`
-    });
-    // Push notifications permissions for stop-session (agent offline alerts)
-    if (props.sendPushFunctionArn) {
-      stopSessionFn.addToRolePolicy(new iam.PolicyStatement({
-        effect: iam.Effect.ALLOW,
-        actions: ['lambda:InvokeFunction'],
-        resources: [props.sendPushFunctionArn],
-      }));
-    }
-
     // Lambda for POST /chime/agent/active
     // Push-first availability toggle (writes AgentActive table; may also ring queued calls).
     const agentActiveFn = new lambdaNode.NodejsFunction(this, 'AgentActiveFn', {
@@ -2220,95 +2125,6 @@ export class ChimeStack extends Stack {
     });
 
     // ========================================
-    // 3b. SUPERVISOR TOOLS
-    // ========================================
-
-    // Supervisor Sessions DynamoDB table
-    this.supervisorSessionsTable = new dynamodb.Table(this, 'SupervisorSessionsTable', {
-      tableName: `${this.stackName}-SupervisorSessions`,
-      partitionKey: { name: 'sessionId', type: dynamodb.AttributeType.STRING },
-      billingMode: dynamodb.BillingMode.PAY_PER_REQUEST,
-      removalPolicy: RemovalPolicy.DESTROY,
-      pointInTimeRecovery: true,
-      timeToLiveAttribute: 'ttl',
-    });
-    applyTags(this.supervisorSessionsTable, { Table: 'supervisor-sessions' });
-
-    // GSI for querying sessions by supervisor
-    this.supervisorSessionsTable.addGlobalSecondaryIndex({
-      indexName: 'supervisorId-index',
-      partitionKey: { name: 'supervisorId', type: dynamodb.AttributeType.STRING },
-      sortKey: { name: 'startedAt', type: dynamodb.AttributeType.STRING },
-      projectionType: dynamodb.ProjectionType.ALL,
-    });
-
-    // Lambda for GET /call-center/supervisor/live-calls
-    const supervisorLiveCallsFn = new lambdaNode.NodejsFunction(this, 'SupervisorLiveCallsFn', {
-      functionName: `${this.stackName}-SupervisorLiveCalls`,
-      entry: path.join(__dirname, '..', '..', 'services', 'chime', 'supervisor-live-calls.ts'),
-      handler: 'handler',
-      runtime: lambda.Runtime.NODEJS_20_X,
-      timeout: Duration.seconds(15),
-      environment: {
-        CALL_QUEUE_TABLE_NAME: this.callQueueTable.tableName,
-        AGENT_PRESENCE_TABLE_NAME: this.agentPresenceTable.tableName,
-        JWT_SECRET: jwtSecretValue,
-        AWS_XRAY_TRACING_ENABLED: 'true',
-        AWS_XRAY_CONTEXT_MISSING: 'LOG_ERROR',
-      },
-    });
-    this.callQueueTable.grantReadData(supervisorLiveCallsFn);
-    this.agentPresenceTable.grantReadData(supervisorLiveCallsFn);
-    supervisorLiveCallsFn.addPermission('AdminApiInvokeSupervisorLiveCalls', {
-      principal: new iam.ServicePrincipal('apigateway.amazonaws.com'),
-      sourceArn: `arn:aws:execute-api:${this.region}:${this.account}:*/*/*`,
-    });
-
-    // Lambda for POST/PUT/DELETE /call-center/supervisor/monitor
-    const supervisorMonitorFn = new lambdaNode.NodejsFunction(this, 'SupervisorMonitorFn', {
-      functionName: `${this.stackName}-SupervisorMonitor`,
-      entry: path.join(__dirname, '..', '..', 'services', 'chime', 'supervisor-monitor.ts'),
-      handler: 'handler',
-      runtime: lambda.Runtime.NODEJS_20_X,
-      timeout: Duration.seconds(15),
-      environment: {
-        CALL_QUEUE_TABLE_NAME: this.callQueueTable.tableName,
-        SUPERVISOR_SESSIONS_TABLE_NAME: this.supervisorSessionsTable.tableName,
-        CHIME_MEDIA_REGION: chimeMediaRegion,
-        JWT_SECRET: jwtSecretValue,
-        AWS_XRAY_TRACING_ENABLED: 'true',
-        AWS_XRAY_CONTEXT_MISSING: 'LOG_ERROR',
-      },
-    });
-    this.callQueueTable.grantReadWriteData(supervisorMonitorFn);
-    this.supervisorSessionsTable.grantReadWriteData(supervisorMonitorFn);
-    supervisorMonitorFn.addToRolePolicy(chimeSdkPolicy);
-    supervisorMonitorFn.addPermission('AdminApiInvokeSupervisorMonitor', {
-      principal: new iam.ServicePrincipal('apigateway.amazonaws.com'),
-      sourceArn: `arn:aws:execute-api:${this.region}:${this.account}:*/*/*`,
-    });
-
-    // Lambda for POST/GET/PUT /call-center/supervisor/whisper
-    const supervisorWhisperFn = new lambdaNode.NodejsFunction(this, 'SupervisorWhisperFn', {
-      functionName: `${this.stackName}-SupervisorWhisper`,
-      entry: path.join(__dirname, '..', '..', 'services', 'chime', 'supervisor-whisper.ts'),
-      handler: 'handler',
-      runtime: lambda.Runtime.NODEJS_20_X,
-      timeout: Duration.seconds(10),
-      environment: {
-        AGENT_PRESENCE_TABLE_NAME: this.agentPresenceTable.tableName,
-        JWT_SECRET: jwtSecretValue,
-        AWS_XRAY_TRACING_ENABLED: 'true',
-        AWS_XRAY_CONTEXT_MISSING: 'LOG_ERROR',
-      },
-    });
-    this.agentPresenceTable.grantReadWriteData(supervisorWhisperFn);
-    supervisorWhisperFn.addPermission('AdminApiInvokeSupervisorWhisper', {
-      principal: new iam.ServicePrincipal('apigateway.amazonaws.com'),
-      sourceArn: `arn:aws:execute-api:${this.region}:${this.account}:*/*/*`,
-    });
-
-    // ========================================
     // 3c. QUEUE MONITOR (Scheduled)
     // ========================================
 
@@ -2567,14 +2383,6 @@ export class ChimeStack extends Stack {
       exportName: `${this.stackName}-SmaIdMapParameterName`,
     });
 
-    new CfnOutput(this, 'StartSessionFnArn', {
-      value: startSessionFn.functionArn,
-      exportName: `${this.stackName}-StartSessionArn`,
-    });
-    new CfnOutput(this, 'StopSessionFnArn', {
-      value: stopSessionFn.functionArn,
-      exportName: `${this.stackName}-StopSessionArn`,
-    });
     new CfnOutput(this, 'AgentActiveFnArn', {
       value: agentActiveFn.functionArn,
       exportName: `${this.stackName}-AgentActiveArn`,
@@ -2656,20 +2464,6 @@ export class ChimeStack extends Stack {
       exportName: `${this.stackName}-GetJoinableCallsArn`,
     });
 
-    // Supervisor Tools ARNs
-    new CfnOutput(this, 'SupervisorLiveCallsFnArn', {
-      value: supervisorLiveCallsFn.functionArn,
-      exportName: `${this.stackName}-SupervisorLiveCallsArn`,
-    });
-    new CfnOutput(this, 'SupervisorMonitorFnArn', {
-      value: supervisorMonitorFn.functionArn,
-      exportName: `${this.stackName}-SupervisorMonitorArn`,
-    });
-    new CfnOutput(this, 'SupervisorWhisperFnArn', {
-      value: supervisorWhisperFn.functionArn,
-      exportName: `${this.stackName}-SupervisorWhisperArn`,
-    });
-
     // Voicemail Bucket
     new CfnOutput(this, 'VoicemailBucketName', {
       value: this.voicemailBucket.bucketName,
@@ -2694,35 +2488,8 @@ export class ChimeStack extends Stack {
 
 
     // ========================================
-    // 6. Heartbeat and Cleanup Monitor
+    // 6. Cleanup Monitor
     // ========================================
-
-    const heartbeatFn = new lambdaNode.NodejsFunction(this, 'HeartbeatFn', {
-      functionName: `${this.stackName}-Heartbeat`,
-      entry: path.join(__dirname, '..', '..', 'services', 'chime', 'heartbeat.ts'),
-      handler: 'handler',
-      memorySize: 256,
-      runtime: lambda.Runtime.NODEJS_20_X,
-      timeout: Duration.seconds(10),
-      environment: {
-        AGENT_PRESENCE_TABLE_NAME: this.agentPresenceTable.tableName,
-        JWT_SECRET: jwtSecretValue,
-        AWS_XRAY_TRACING_ENABLED: 'true',
-        AWS_XRAY_CONTEXT_MISSING: 'LOG_ERROR',
-      },
-    });
-
-    this.agentPresenceTable.grantReadWriteData(heartbeatFn);
-
-    heartbeatFn.addPermission('AdminApiInvokeHeartbeat', {
-      principal: new iam.ServicePrincipal('apigateway.amazonaws.com'),
-      sourceArn: `arn:aws:execute-api:${this.region}:${this.account}:*/*/*`
-    });
-
-    new CfnOutput(this, 'HeartbeatFnArn', {
-      value: heartbeatFn.functionArn,
-      exportName: `${this.stackName}-HeartbeatArn`,
-    });
 
     const cleanupMonitorFn = new lambdaNode.NodejsFunction(this, 'CleanupMonitorFn', {
       functionName: `${this.stackName}-CleanupMonitor`,
@@ -3202,8 +2969,9 @@ export class ChimeStack extends Stack {
           AUTO_TRANSCRIBE_RECORDINGS: 'true', // FIXED: Renamed from ENABLE_TRANSCRIPTION
           ENABLE_SENTIMENT_ANALYSIS: 'true',
           MEDICAL_VOCABULARY_NAME: props.medicalVocabularyName || '',
-          ENABLE_LANGUAGE_IDENTIFICATION: 'false', // Set to true to auto-detect language
+          ENABLE_LANGUAGE_IDENTIFICATION: 'false',
           DEFAULT_LANGUAGE_CODE: 'en-US',
+          SEND_PUSH_FUNCTION_ARN: props.sendPushFunctionArn || '',
         },
         logRetention: logs.RetentionDays.ONE_MONTH,
       });
@@ -3254,6 +3022,15 @@ export class ChimeStack extends Stack {
         ],
         resources: ['*']
       }));
+
+      // Push notification permissions (recording-ready alerts)
+      if (props.sendPushFunctionArn) {
+        recordingProcessorFn.addToRolePolicy(new iam.PolicyStatement({
+          effect: iam.Effect.ALLOW,
+          actions: ['lambda:InvokeFunction'],
+          resources: [props.sendPushFunctionArn],
+        }));
+      }
 
       // Trigger Lambda on new recordings
       // CRITICAL FIX: Only add event notifications to owned buckets
@@ -3607,14 +3384,6 @@ export class ChimeStack extends Stack {
     };
 
     // Create alarms for all Lambda functions
-    createLambdaErrorAlarm(startSessionFn, 'StartSession');
-    createLambdaThrottleAlarm(startSessionFn, 'StartSession');
-    createLambdaDurationAlarm(startSessionFn, 'StartSession', 8000); // 10s timeout, 80% = 8s
-
-    createLambdaErrorAlarm(stopSessionFn, 'StopSession');
-    createLambdaThrottleAlarm(stopSessionFn, 'StopSession');
-    createLambdaDurationAlarm(stopSessionFn, 'StopSession', 8000);
-
     createLambdaErrorAlarm(outboundCallFn, 'OutboundCall');
     createLambdaThrottleAlarm(outboundCallFn, 'OutboundCall');
     createLambdaDurationAlarm(outboundCallFn, 'OutboundCall', 9000); // Complex operation
@@ -3646,10 +3415,6 @@ export class ChimeStack extends Stack {
     createLambdaErrorAlarm(resumeCallFn, 'ResumeCall');
     createLambdaThrottleAlarm(resumeCallFn, 'ResumeCall');
     createLambdaDurationAlarm(resumeCallFn, 'ResumeCall', 8000);
-
-    createLambdaErrorAlarm(heartbeatFn, 'Heartbeat');
-    createLambdaThrottleAlarm(heartbeatFn, 'Heartbeat');
-    createLambdaDurationAlarm(heartbeatFn, 'Heartbeat', 8000);
 
     createLambdaErrorAlarm(cleanupMonitorFn, 'CleanupMonitor');
     createLambdaThrottleAlarm(cleanupMonitorFn, 'CleanupMonitor');

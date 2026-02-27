@@ -18,7 +18,7 @@ import { validateStateTransition, CALL_STATE_MACHINE } from '../shared/utils/sta
 import { verifyIdToken } from '../../shared/utils/auth-helper';
 import { getUserIdFromJwt, getClinicsFromJwtPayload } from '../../shared/utils/permissions-helper';
 import { randomUUID } from 'crypto';
-import { sendIncomingCallToAgents, isPushNotificationsEnabled } from './utils/push-notifications';
+import { sendIncomingCallToAgents, sendTransferIncomingToAgent, isPushNotificationsEnabled } from './utils/push-notifications';
 
 const ddb = getDynamoDBClient();
 
@@ -32,7 +32,6 @@ const chime = new ChimeSDKMeetingsClient({ region: CHIME_MEDIA_REGION });
 const AGENT_PRESENCE_TABLE_NAME = process.env.AGENT_PRESENCE_TABLE_NAME;
 const CALL_QUEUE_TABLE_NAME = process.env.CALL_QUEUE_TABLE_NAME;
 
-// FIX #31: Use centralized config for transfer note length
 import { CHIME_CONFIG } from './config';
 import { sanitizeText } from '../shared/utils/input-sanitization';
 
@@ -557,20 +556,22 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
 
                 console.log(`[transfer-call] SMA notification sent successfully for transfer from ${fromAgentId} to ${toAgentId}`);
 
-                // Push notification to target agent's mobile/web app
                 if (isPushNotificationsEnabled() && CHIME_CONFIG.PUSH.ENABLE_TRANSFER_PUSH) {
                     try {
-                        await sendIncomingCallToAgents([toAgentId], {
+                        await sendTransferIncomingToAgent(toAgentId, {
                             callId,
                             clinicId,
                             clinicName: clinicId,
                             callerPhoneNumber: callRecord.phoneNumber || undefined,
-                            callerName: `Transfer from ${fromAgentId}`,
+                            callerName: callRecord.callerName,
+                            fromAgentId,
+                            transferNotes: transferNotes,
+                            transferType: isConferenceTransfer ? 'conference' : (transferMode as 'warm' | 'cold'),
                             timestamp: new Date().toISOString(),
                         });
-                        console.log(`[transfer-call] 📲 Transfer push notification sent to agent ${toAgentId}`);
+                        console.log(`[transfer-call] 📲 Transfer push sent to agent ${toAgentId}`);
                     } catch (pushErr) {
-                        console.warn('[transfer-call] Push notification failed (non-fatal):', pushErr);
+                        console.warn('[transfer-call] Transfer push failed (non-fatal):', pushErr);
                     }
                 }
             } catch (updateError) {
