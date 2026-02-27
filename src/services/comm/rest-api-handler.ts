@@ -578,7 +578,8 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
 
         // User Preferences endpoints
         else if (path.match(/^\/api\/preferences\/[^/]+$/) && httpMethod === 'GET') {
-            const targetUserID = pathParameters?.userID || path.split('/')[3];
+            const rawUserID = pathParameters?.userID || path.split('/')[3];
+            const targetUserID = decodeURIComponent(rawUserID);
             log.info('Routing to getPublicUserPreferences', { ...logCtx, targetUserID });
             routeMatched = true;
             result = await restGetUserPreferences(authedUserID, targetUserID, logCtx);
