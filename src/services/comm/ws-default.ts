@@ -1,6 +1,6 @@
 import { APIGatewayEvent, APIGatewayProxyResult } from 'aws-lambda';
 import { DynamoDBClient } from '@aws-sdk/client-dynamodb';
-import { DynamoDBDocumentClient, BatchGetCommand, DeleteCommand, GetCommand, PutCommand, UpdateCommand, QueryCommand, ScanCommand } from '@aws-sdk/lib-dynamodb';
+import { DynamoDBDocumentClient, BatchGetCommand, BatchWriteCommand, DeleteCommand, GetCommand, PutCommand, UpdateCommand, QueryCommand, ScanCommand } from '@aws-sdk/lib-dynamodb';
 import { ApiGatewayManagementApiClient, PostToConnectionCommand } from '@aws-sdk/client-apigatewaymanagementapi';
 import { S3Client, PutObjectCommand, GetObjectCommand, DeleteObjectCommand } from '@aws-sdk/client-s3';
 import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
@@ -151,7 +151,7 @@ interface FavorRequest {
     createdAt: string;
     updatedAt: string;
     userID: string;
-    requestType: 'General' | 'Assign Task' | 'Ask a Favor' | 'Other';
+    requestType: 'General' | 'Assign Task' | 'IT Ticket' | 'Ask a Favor' | 'Other';
     unreadCount: number;
     initialMessage: string;
     deadline?: string;
@@ -321,6 +321,19 @@ export const handler = async (event: APIGatewayEvent): Promise<APIGatewayProxyRe
                 break;
             case 'getForwardHistory':
                 await getForwardHistory(senderID, payload, connectionId, apiGwManagement);
+                break;
+            // Legacy Task Actions (from useTaskAssignment hook)
+            case 'acknowledgeTask':
+                await acknowledgeTask(senderID, payload, connectionId, apiGwManagement);
+                break;
+            case 'assignTask':
+                await handleAssignTask(senderID, payload, connectionId, apiGwManagement);
+                break;
+            case 'updateTaskStatus':
+                await handleUpdateTaskStatus(senderID, payload, connectionId, apiGwManagement);
+                break;
+            case 'fetchTasks':
+                await handleFetchTasks(senderID, payload, connectionId, apiGwManagement);
                 break;
             case 'deleteConversation':
                 await deleteConversation(senderID, payload, connectionId, apiGwManagement);
@@ -2072,7 +2085,10 @@ async function sendMessage(
     const { favorRequestID, content, fileKey, fileDetails, parentMessageID } = payload;
     const senderConnectionId = (await getSenderInfoByUserID(senderID))?.connectionId;
 
+    console.log(`📨 [sendMessage] senderID=${senderID}, favorRequestID=${favorRequestID}, hasContent=${!!content}, hasFile=${!!fileKey}`);
+
     if (!favorRequestID || ((!content || content.trim() === '') && !fileKey)) {
+        console.log(`❌ [sendMessage] Validation failed: missing favorRequestID or content/file`);
         if (senderConnectionId) {
             await sendToClient(apiGwManagement, senderConnectionId, { type: 'error', message: 'Missing favorRequestID or message content/file key.' });
         }
@@ -2089,15 +2105,20 @@ async function sendMessage(
     const favor = favorResult.Item as FavorRequest;
 
     if (!favor) {
+        console.log(`❌ [sendMessage] FavorRequest NOT FOUND: ${favorRequestID}`);
         if (senderConnectionId) {
             await sendToClient(apiGwManagement, senderConnectionId, { type: 'error', message: 'Favor request not found.' });
         }
         return;
     }
 
+    console.log(`📋 [sendMessage] Favor found: senderID=${favor.senderID}, receiverID=${favor.receiverID}, teamID=${favor.teamID}, status=${favor.status}, participantKey=${favor.participantKey}`);
+
     // 2. Verify the sender is a participant in this request
     const isParticipant = await isUserParticipant(favor, senderID);
+    console.log(`🔍 [sendMessage] isUserParticipant(${senderID}): ${isParticipant} | favor.senderID=${favor.senderID} | favor.receiverID=${favor.receiverID}`);
     if (!isParticipant) {
+        console.log(`❌ [sendMessage] PARTICIPANT CHECK FAILED: senderID="${senderID}" is not senderID="${favor.senderID}" nor receiverID="${favor.receiverID}"`);
         if (senderConnectionId) {
             await sendToClient(apiGwManagement, senderConnectionId, { type: 'error', message: 'Unauthorized: You are not a participant in this request.' });
         }
@@ -2106,11 +2127,13 @@ async function sendMessage(
 
     // Determine the list of all non-sending recipients
     const recipientIDs = await getRecipientIDs(favor, senderID);
+    console.log(`📤 [sendMessage] recipientIDs=[${recipientIDs.join(', ')}], count=${recipientIDs.length}`);
 
     // Allow messaging for active workflows (pending/active/in_progress/forwarded).
     // Only block messaging for closed tasks.
     const isClosed = favor.status === 'completed' || favor.status === 'rejected';
     if (isClosed || recipientIDs.length === 0) {
+        console.log(`❌ [sendMessage] BLOCKED: isClosed=${isClosed}, recipientCount=${recipientIDs.length}, status=${favor.status}`);
         if (senderConnectionId) {
             await sendToClient(apiGwManagement, senderConnectionId, { type: 'error', message: 'Request is closed or has no recipients.' });
         }
@@ -3163,6 +3186,8 @@ async function sendToAll(
     const connectionPromises = userIDs.map(id => getConnectionRecordsByUserID(id));
     const connectionsByUser = await Promise.all(connectionPromises);
 
+    console.log(`📡 [sendToAll] Broadcasting to ${userIDs.length} users: [${userIDs.join(', ')}]`);
+
     // Device-aware push: exclude devices that are already connected via WS
     const excludeDeviceIds = new Set<string>();
     const pushRecipients = options.notifyOffline
@@ -3173,14 +3198,19 @@ async function sendToAll(
         const userID = userIDs[i];
         const conns = connectionsByUser[i];
 
+        console.log(`📡 [sendToAll] User "${userID}": ${conns?.length || 0} active connections`);
+
         if (conns && conns.length > 0) {
             // User is online (at least one active WS connection), send via WebSocket to ALL devices/tabs
             for (const conn of conns) {
+                console.log(`📡 [sendToAll] Sending to connection ${conn.connectionId} for user "${userID}"`);
                 await sendToClient(apiGwManagement, conn.connectionId, data);
                 if (pushRecipients.includes(userID) && conn.deviceId) {
                     excludeDeviceIds.add(conn.deviceId);
                 }
             }
+        } else {
+            console.log(`⚠️ [sendToAll] User "${userID}" has NO active connections — message will not be delivered via WS`);
         }
     }
 
@@ -4028,8 +4058,392 @@ async function getForwardHistory(
     });
 }
 
+// ========================================
+// LEGACY TASK ACTIONS (from useTaskAssignment hook)
+// ========================================
+
 /**
- * Delete a conversation/task (soft delete or archive).
+ * Handles acknowledging a task/group request.
+ * Adds the user to the `acknowledgedBy` array on the FavorRequest.
+ */
+async function acknowledgeTask(
+    senderID: string,
+    payload: any,
+    connectionId: string,
+    apiGwManagement: ApiGatewayManagementApiClient
+): Promise<void> {
+    const { favorRequestID } = payload;
+
+    if (!favorRequestID) {
+        await sendToClient(apiGwManagement, connectionId, { type: 'error', message: 'Missing favorRequestID.' });
+        return;
+    }
+
+    try {
+        const favorResult = await ddb.send(new GetCommand({
+            TableName: FAVORS_TABLE,
+            Key: { favorRequestID },
+        }));
+        const favor = favorResult.Item as FavorRequest;
+
+        if (!favor) {
+            await sendToClient(apiGwManagement, connectionId, { type: 'error', message: 'Favor request not found.' });
+            return;
+        }
+
+        // Check if user is a participant
+        const isParticipant = await isUserParticipant(favor, senderID);
+        if (!isParticipant) {
+            await sendToClient(apiGwManagement, connectionId, { type: 'error', message: 'Unauthorized: You are not a participant.' });
+            return;
+        }
+
+        // Check if already acknowledged
+        const currentAck = (favor as any).acknowledgedBy || [];
+        if (currentAck.includes(senderID)) {
+            // Already acknowledged — just confirm
+            await sendToClient(apiGwManagement, connectionId, {
+                type: 'taskAcknowledged',
+                favorRequestID,
+                acknowledgedBy: senderID,
+            });
+            return;
+        }
+
+        // Add to acknowledgedBy list
+        const nowIso = new Date().toISOString();
+        await ddb.send(new UpdateCommand({
+            TableName: FAVORS_TABLE,
+            Key: { favorRequestID },
+            UpdateExpression: 'SET updatedAt = :ua ADD acknowledgedBy :ack',
+            ExpressionAttributeValues: {
+                ':ua': nowIso,
+                ':ack': new Set([senderID]),
+            },
+        }));
+
+        // Broadcast to all participants
+        const recipientIDs = await getRecipientIDs(favor, senderID);
+        const allParticipants = [senderID, ...recipientIDs];
+
+        await sendToAll(apiGwManagement, allParticipants, {
+            type: 'taskAcknowledged',
+            favorRequestID,
+            acknowledgedBy: senderID,
+        }, { notifyOffline: false });
+
+        // Send a system message
+        const systemMessage: MessageData = {
+            messageID: `msg-${Date.now()}-ack`,
+            favorRequestID,
+            senderID: 'system',
+            content: `Task acknowledged`,
+            timestamp: Date.now(),
+            type: 'system',
+        };
+        await ddb.send(new PutCommand({ TableName: MESSAGES_TABLE, Item: systemMessage }));
+
+        console.log(`Task ${favorRequestID} acknowledged by ${senderID}`);
+    } catch (e) {
+        console.error('Error acknowledging task:', e);
+        await sendToClient(apiGwManagement, connectionId, { type: 'error', message: 'Failed to acknowledge task.' });
+    }
+}
+
+/**
+ * Handles assigning a task to a user within a conversation.
+ * Creates a task message (type: 'task') in the messages table and broadcasts to participants.
+ */
+async function handleAssignTask(
+    senderID: string,
+    payload: any,
+    connectionId: string,
+    apiGwManagement: ApiGatewayManagementApiClient
+): Promise<void> {
+    const { favorRequestID, assignedTo, taskTitle, taskDescription, priority, dueDate, estimatedHours, fileKey, fileDetails } = payload;
+
+    if (!favorRequestID || !assignedTo || !taskTitle) {
+        await sendToClient(apiGwManagement, connectionId, { type: 'error', message: 'Missing favorRequestID, assignedTo, or taskTitle.' });
+        return;
+    }
+
+    try {
+        // 1. Validate conversation exists
+        const favorResult = await ddb.send(new GetCommand({
+            TableName: FAVORS_TABLE,
+            Key: { favorRequestID },
+        }));
+        const favor = favorResult.Item as FavorRequest;
+
+        if (!favor) {
+            await sendToClient(apiGwManagement, connectionId, { type: 'error', message: 'Conversation not found.' });
+            return;
+        }
+
+        // 2. Verify participant
+        const isParticipant = await isUserParticipant(favor, senderID);
+        if (!isParticipant) {
+            await sendToClient(apiGwManagement, connectionId, { type: 'error', message: 'Unauthorized: You are not a participant.' });
+            return;
+        }
+
+        const timestamp = Date.now();
+        const taskID = uuidv4();
+        const nowIso = new Date().toISOString();
+
+        // 3. Create the task object
+        const task = {
+            taskID,
+            favorRequestID,
+            assignedBy: senderID,
+            assignedTo,
+            taskTitle: String(taskTitle),
+            taskDescription: taskDescription ? String(taskDescription) : '',
+            priority: priority || 'medium',
+            status: 'pending',
+            ...(dueDate && { dueDate }),
+            ...(estimatedHours && { estimatedHours: Number(estimatedHours) }),
+            ...(fileKey && { attachments: [{ fileKey, ...(fileDetails || {}) }] }),
+            createdAt: nowIso,
+            updatedAt: nowIso,
+        };
+
+        // 4. Save as a task message in MESSAGES_TABLE
+        const taskMessage: MessageData = {
+            messageID: taskID,
+            favorRequestID,
+            senderID,
+            content: `Task assigned: ${taskTitle}`,
+            timestamp,
+            type: 'task',
+            taskTitle: String(taskTitle),
+            taskDescription: taskDescription ? String(taskDescription) : undefined,
+            taskPriority: priority || 'medium',
+            taskDeadline: dueDate,
+            ...(fileKey && { fileKey: sanitizeFileKey(fileKey), fileDetails }),
+        };
+
+        await ddb.send(new PutCommand({ TableName: MESSAGES_TABLE, Item: taskMessage }));
+
+        // 5. Update conversation metadata
+        await ddb.send(new UpdateCommand({
+            TableName: FAVORS_TABLE,
+            Key: { favorRequestID },
+            UpdateExpression: 'SET updatedAt = :ua, lastMessage = :lm, lastMessageAt = :lma, lastMessageSenderID = :lms',
+            ExpressionAttributeValues: {
+                ':ua': nowIso,
+                ':lm': `Task: ${taskTitle}`,
+                ':lma': nowIso,
+                ':lms': senderID,
+            },
+        }));
+
+        // 6. Broadcast to all participants
+        const recipientIDs = await getRecipientIDs(favor, senderID);
+        const allParticipants = [senderID, ...recipientIDs];
+
+        await sendToAll(apiGwManagement, allParticipants, {
+            type: 'taskAssigned',
+            task,
+        }, { notifyOffline: true, senderID });
+
+        // Also broadcast as new message so it appears in the chat feed
+        await sendToAll(apiGwManagement, allParticipants, {
+            type: 'newMessage',
+            message: taskMessage,
+        }, { notifyOffline: false });
+
+        console.log(`Task ${taskID} assigned to ${assignedTo} by ${senderID} in ${favorRequestID}`);
+    } catch (e) {
+        console.error('Error assigning task:', e);
+        await sendToClient(apiGwManagement, connectionId, { type: 'error', message: 'Failed to assign task.' });
+    }
+}
+
+/**
+ * Handles updating the status of a task.
+ * Looks up the task message by taskID (messageID), updates its status, and broadcasts.
+ */
+async function handleUpdateTaskStatus(
+    senderID: string,
+    payload: any,
+    connectionId: string,
+    apiGwManagement: ApiGatewayManagementApiClient
+): Promise<void> {
+    const { taskID, status, completionNotes } = payload;
+
+    if (!taskID || !status) {
+        await sendToClient(apiGwManagement, connectionId, { type: 'error', message: 'Missing taskID or status.' });
+        return;
+    }
+
+    const validStatuses = ['pending', 'in-progress', 'completed', 'cancelled'];
+    if (!validStatuses.includes(status)) {
+        await sendToClient(apiGwManagement, connectionId, { type: 'error', message: `Invalid status: ${status}` });
+        return;
+    }
+
+    try {
+        // Find the task message by querying with messageID index or scanning
+        // Task messages have messageID = taskID
+        const scanResult = await ddb.send(new ScanCommand({
+            TableName: MESSAGES_TABLE,
+            FilterExpression: 'messageID = :mid AND #t = :task',
+            ExpressionAttributeNames: { '#t': 'type' },
+            ExpressionAttributeValues: {
+                ':mid': taskID,
+                ':task': 'task',
+            },
+            Limit: 1,
+        }));
+
+        const taskMessage = scanResult.Items?.[0];
+        if (!taskMessage) {
+            await sendToClient(apiGwManagement, connectionId, { type: 'error', message: 'Task not found.' });
+            return;
+        }
+
+        const favorRequestID = taskMessage.favorRequestID as string;
+        const nowIso = new Date().toISOString();
+
+        // Update task message with new status
+        const updateExpr = status === 'completed'
+            ? 'SET #s = :st, updatedAt = :ua, completedAt = :ca' + (completionNotes ? ', completionNotes = :cn' : '')
+            : 'SET #s = :st, updatedAt = :ua';
+
+        const exprValues: Record<string, any> = {
+            ':st': status,
+            ':ua': nowIso,
+        };
+        if (status === 'completed') {
+            exprValues[':ca'] = nowIso;
+        }
+        if (completionNotes) {
+            exprValues[':cn'] = completionNotes;
+        }
+
+        await ddb.send(new UpdateCommand({
+            TableName: MESSAGES_TABLE,
+            Key: {
+                favorRequestID: taskMessage.favorRequestID,
+                timestamp: taskMessage.timestamp,
+            },
+            UpdateExpression: updateExpr,
+            ExpressionAttributeNames: { '#s': 'status' },
+            ExpressionAttributeValues: exprValues,
+        }));
+
+        // Get conversation to determine participants
+        const favorResult = await ddb.send(new GetCommand({
+            TableName: FAVORS_TABLE,
+            Key: { favorRequestID },
+        }));
+        const favor = favorResult.Item as FavorRequest;
+
+        if (favor) {
+            const recipientIDs = await getRecipientIDs(favor, senderID);
+            const allParticipants = [senderID, ...recipientIDs];
+
+            await sendToAll(apiGwManagement, allParticipants, {
+                type: 'taskStatusUpdated',
+                taskID,
+                status,
+                updatedBy: senderID,
+                updatedAt: nowIso,
+                ...(completionNotes && { completionNotes }),
+            }, { notifyOffline: true, senderID });
+        }
+
+        console.log(`Task ${taskID} status updated to ${status} by ${senderID}`);
+    } catch (e) {
+        console.error('Error updating task status:', e);
+        await sendToClient(apiGwManagement, connectionId, { type: 'error', message: 'Failed to update task status.' });
+    }
+}
+
+/**
+ * Handles fetching all tasks for a specific conversation.
+ * Returns task messages (type: 'task') from the messages table.
+ */
+async function handleFetchTasks(
+    senderID: string,
+    payload: any,
+    connectionId: string,
+    apiGwManagement: ApiGatewayManagementApiClient
+): Promise<void> {
+    const { favorRequestID } = payload;
+
+    if (!favorRequestID) {
+        await sendToClient(apiGwManagement, connectionId, { type: 'error', message: 'Missing favorRequestID.' });
+        return;
+    }
+
+    try {
+        // Validate conversation exists and user is a participant
+        const favorResult = await ddb.send(new GetCommand({
+            TableName: FAVORS_TABLE,
+            Key: { favorRequestID },
+        }));
+        const favor = favorResult.Item as FavorRequest;
+
+        if (!favor) {
+            await sendToClient(apiGwManagement, connectionId, { type: 'error', message: 'Conversation not found.' });
+            return;
+        }
+
+        const isParticipant = await isUserParticipant(favor, senderID);
+        if (!isParticipant) {
+            await sendToClient(apiGwManagement, connectionId, { type: 'error', message: 'Unauthorized: You are not a participant.' });
+            return;
+        }
+
+        // Query task messages for this conversation
+        const queryResult = await ddb.send(new QueryCommand({
+            TableName: MESSAGES_TABLE,
+            KeyConditionExpression: 'favorRequestID = :fid',
+            FilterExpression: '#t = :task',
+            ExpressionAttributeNames: { '#t': 'type' },
+            ExpressionAttributeValues: {
+                ':fid': favorRequestID,
+                ':task': 'task',
+            },
+            ScanIndexForward: false, // newest first
+        }));
+
+        const tasks = (queryResult.Items || []).map((item: any) => ({
+            taskID: item.messageID || item.taskID,
+            favorRequestID: item.favorRequestID,
+            assignedBy: item.senderID,
+            assignedTo: item.assignedTo || '',
+            taskTitle: item.taskTitle || item.content || '',
+            taskDescription: item.taskDescription || '',
+            priority: item.taskPriority || item.priority || 'medium',
+            status: item.status || 'pending',
+            dueDate: item.taskDeadline || item.dueDate,
+            createdAt: new Date(item.timestamp).toISOString(),
+            updatedAt: item.updatedAt || new Date(item.timestamp).toISOString(),
+            ...(item.completedAt && { completedAt: item.completedAt }),
+            ...(item.completionNotes && { completionNotes: item.completionNotes }),
+            ...(item.estimatedHours && { estimatedHours: item.estimatedHours }),
+        }));
+
+        await sendToClient(apiGwManagement, connectionId, {
+            type: 'tasksList',
+            favorRequestID,
+            tasks,
+        });
+
+        console.log(`Fetched ${tasks.length} tasks for ${favorRequestID}`);
+    } catch (e) {
+        console.error('Error fetching tasks:', e);
+        await sendToClient(apiGwManagement, connectionId, { type: 'error', message: 'Failed to fetch tasks.' });
+    }
+}
+
+/**
+ * Delete a conversation/task.
+ * - Tasks: soft-delete (add to deletedBy, preserves data)
+ * - Chats: hard-delete (permanently removes FavorRequest + all messages)
  */
 async function deleteConversation(
     senderID: string,
@@ -4063,9 +4477,13 @@ async function deleteConversation(
         return;
     }
 
-    // 3. Delete based on type
-    const deleteType = payload.deleteType || 'forMe'; // 'forMe' or 'forEveryone'
+    // 3. Determine if this is a task (tasks use soft-delete, chats use hard-delete)
+    const deleteType = payload.deleteType || 'forMe';
     const nowIso = new Date().toISOString();
+    const isTask = favor.isTask === true ||
+        favor.requestType === 'Assign Task' ||
+        favor.requestType === 'IT Ticket' ||
+        favor.requestType === 'Ask a Favor';
 
     if (deleteType === 'forEveryone') {
         // === PERMANENT DELETE: Set status to 'deleted' — hides for ALL participants ===
@@ -4090,8 +4508,8 @@ async function deleteConversation(
         }, { notifyOffline: false });
 
         console.log(`Conversation ${favorRequestID} permanently deleted by ${senderID}`);
-    } else {
-        // === PER-USER DELETE: Add senderID to deletedBy list ===
+    } else if (isTask) {
+        // === TASK: Soft-delete only (add to deletedBy) — tasks are preserved ===
         const currentDeletedBy = favor.deletedBy || [];
         if (!currentDeletedBy.includes(senderID)) {
             const updatedDeletedBy = [...currentDeletedBy, senderID];
@@ -4106,7 +4524,7 @@ async function deleteConversation(
             }));
         }
 
-        // Notify only the deleting user (per-user delete)
+        // Notify only the deleting user
         await sendToClient(apiGwManagement, connectionId, {
             type: 'conversationDeleted',
             favorRequestID,
@@ -4114,7 +4532,58 @@ async function deleteConversation(
             deleteType: 'forMe',
         });
 
-        console.log(`Conversation ${favorRequestID} deleted from view by ${senderID}`);
+        console.log(`Task ${favorRequestID} soft-deleted from view by ${senderID}`);
+    } else {
+        // === CHAT (non-task): HARD DELETE — remove FavorRequest + all messages permanently ===
+        console.log(`🗑️ Hard-deleting non-task chat ${favorRequestID} by ${senderID}`);
+
+        // Step 1: Delete all messages for this conversation
+        try {
+            const messagesResult = await ddb.send(new QueryCommand({
+                TableName: MESSAGES_TABLE,
+                KeyConditionExpression: 'favorRequestID = :fid',
+                ExpressionAttributeValues: { ':fid': favorRequestID },
+                ProjectionExpression: 'favorRequestID, #ts',
+                ExpressionAttributeNames: { '#ts': 'timestamp' },
+            }));
+            const messages = messagesResult.Items || [];
+            console.log(`🗑️ Found ${messages.length} messages to delete for ${favorRequestID}`);
+
+            // Batch delete messages (DynamoDB allows max 25 items per batch)
+            for (let i = 0; i < messages.length; i += 25) {
+                const batch = messages.slice(i, i + 25);
+                await ddb.send(new BatchWriteCommand({
+                    RequestItems: {
+                        [MESSAGES_TABLE]: batch.map((msg: any) => ({
+                            DeleteRequest: {
+                                Key: {
+                                    favorRequestID: msg.favorRequestID,
+                                    timestamp: msg.timestamp,
+                                },
+                            },
+                        })),
+                    },
+                }));
+            }
+        } catch (msgErr) {
+            console.error(`Failed to delete messages for ${favorRequestID}:`, msgErr);
+        }
+
+        // Step 2: Delete the FavorRequest record itself
+        await ddb.send(new DeleteCommand({
+            TableName: FAVORS_TABLE,
+            Key: { favorRequestID },
+        }));
+
+        // Notify the deleting user
+        await sendToClient(apiGwManagement, connectionId, {
+            type: 'conversationDeleted',
+            favorRequestID,
+            deletedBy: senderID,
+            deleteType: 'hardDelete',
+        });
+
+        console.log(`🗑️ Chat ${favorRequestID} hard-deleted (FavorRequest + messages) by ${senderID}`);
     }
 }
 

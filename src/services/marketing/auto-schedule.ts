@@ -1,7 +1,7 @@
 import { APIGatewayProxyEvent, APIGatewayProxyResult } from 'aws-lambda';
 import { DynamoDBClient } from '@aws-sdk/client-dynamodb';
 import { DynamoDBDocumentClient, GetCommand, PutCommand, QueryCommand } from '@aws-sdk/lib-dynamodb';
-import { buildCorsHeaders } from '../../shared/utils/cors';
+import { buildCorsHeadersAsync } from '../../shared/utils/cors';
 import {
   ayrshareSetAutoSchedule,
   ayrshareGetAutoSchedule,
@@ -17,7 +17,7 @@ const POSTS_TABLE = process.env.MARKETING_POSTS_TABLE!;
 const API_KEY = process.env.AYRSHARE_API_KEY!;
 
 export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayProxyResult> => {
-  const corsHeaders = buildCorsHeaders({ allowMethods: ['OPTIONS', 'POST', 'GET', 'DELETE'] });
+  const corsHeaders = await buildCorsHeadersAsync({ allowMethods: ['OPTIONS', 'POST', 'GET', 'DELETE'] }, event.headers?.origin || event.headers?.Origin);
 
   if (event.httpMethod === 'OPTIONS') {
     return { statusCode: 200, headers: corsHeaders, body: '' };
@@ -38,9 +38,9 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
         return {
           statusCode: 400,
           headers: corsHeaders,
-          body: JSON.stringify({ 
-            success: false, 
-            error: 'clinicId, title, and schedule are required' 
+          body: JSON.stringify({
+            success: false,
+            error: 'clinicId, title, and schedule are required'
           })
         };
       }
@@ -148,9 +148,9 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
         return {
           statusCode: 400,
           headers: corsHeaders,
-          body: JSON.stringify({ 
-            success: false, 
-            error: 'clinicId and title are required' 
+          body: JSON.stringify({
+            success: false,
+            error: 'clinicId and title are required'
           })
         };
       }
@@ -198,8 +198,8 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
     return {
       statusCode: 500,
       headers: corsHeaders,
-      body: JSON.stringify({ 
-        success: false, 
+      body: JSON.stringify({
+        success: false,
         error: err.message,
         code: 'AUTO_SCHEDULE_ERROR'
       })

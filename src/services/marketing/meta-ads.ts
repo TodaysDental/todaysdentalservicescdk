@@ -23,7 +23,7 @@ import {
     QueryCommand, UpdateCommand, DeleteCommand,
 } from '@aws-sdk/lib-dynamodb';
 import { v4 as uuidv4 } from 'uuid';
-import { buildCorsHeaders } from '../../shared/utils/cors';
+import { buildCorsHeadersAsync } from '../../shared/utils/cors';
 import {
     getUserPermissions, hasModulePermission, PermissionType,
 } from '../../shared/utils/permissions-helper';
@@ -54,7 +54,7 @@ const META_ADS_CAMPAIGNS_TABLE = process.env.META_ADS_CAMPAIGNS_TABLE || 'MetaAd
 // ============================================
 
 export async function handler(event: APIGatewayProxyEvent): Promise<APIGatewayProxyResult> {
-    const corsHeaders = buildCorsHeaders({}, event.headers?.origin || event.headers?.Origin);
+    const corsHeaders = await buildCorsHeadersAsync({}, event.headers?.origin || event.headers?.Origin);
     const method = event.httpMethod;
     const path = event.path;
     const pathParts = path.split('/').filter(Boolean);

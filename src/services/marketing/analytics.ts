@@ -2,7 +2,7 @@ import { APIGatewayProxyEvent, APIGatewayProxyResult } from 'aws-lambda';
 import { DynamoDBClient } from '@aws-sdk/client-dynamodb';
 import { DynamoDBDocumentClient, GetCommand, QueryCommand, ScanCommand } from '@aws-sdk/lib-dynamodb';
 import { ayrshareGetAnalytics, ayrshareGetSocialStats, ayrshareGetLinkAnalytics } from './ayrshare-client';
-import { buildCorsHeaders } from '../../shared/utils/cors';
+import { buildCorsHeadersAsync } from '../../shared/utils/cors';
 
 const ddb = DynamoDBDocumentClient.from(new DynamoDBClient({}), {
   marshallOptions: { removeUndefinedValues: true }
@@ -13,7 +13,7 @@ const PROFILES_TABLE = process.env.MARKETING_PROFILES_TABLE!;
 const API_KEY = process.env.AYRSHARE_API_KEY!;
 
 export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayProxyResult> => {
-  const corsHeaders = buildCorsHeaders({ allowMethods: ['OPTIONS', 'GET'] });
+  const corsHeaders = await buildCorsHeadersAsync({ allowMethods: ['OPTIONS', 'GET'] }, event.headers?.origin || event.headers?.Origin);
 
   if (event.httpMethod === 'OPTIONS') {
     return { statusCode: 200, headers: corsHeaders, body: '' };

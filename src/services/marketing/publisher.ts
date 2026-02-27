@@ -26,7 +26,7 @@ import {
   ayrshareValidateMedia,
   ayrshareVerifyMediaUrl,
 } from './ayrshare-client';
-import { buildCorsHeaders } from '../../shared/utils/cors';
+import { buildCorsHeadersAsync } from '../../shared/utils/cors';
 import { getAyrshareApiKey } from '../../shared/utils/secrets-helper';
 
 const ddb = DynamoDBDocumentClient.from(new DynamoDBClient({}), {
@@ -337,7 +337,7 @@ export const handler = async (event: any): Promise<any> => {
   // ============================================
   const apiGwEvent = event as APIGatewayProxyEvent;
   const origin = apiGwEvent.headers?.origin || apiGwEvent.headers?.Origin;
-  const corsHeaders = buildCorsHeaders({ allowMethods: ['OPTIONS', 'POST', 'GET', 'DELETE'] }, origin);
+  const corsHeaders = await buildCorsHeadersAsync({ allowMethods: ['OPTIONS', 'POST', 'GET', 'DELETE'] }, origin);
 
   if (apiGwEvent.httpMethod === 'OPTIONS') {
     return { statusCode: 200, headers: corsHeaders, body: '' };
@@ -957,33 +957,36 @@ export const handler = async (event: any): Promise<any> => {
         let posts: any[] = [];
 
         if (clinicId) {
-          // Query by clinic ID
           const queryRes = await ddb.send(new QueryCommand({
             TableName: POSTS_TABLE,
             IndexName: 'ByClinic',
             KeyConditionExpression: 'clinicId = :clinicId',
-            FilterExpression: 'attribute_exists(scheduledDate) AND scheduledDate <> :null',
+            FilterExpression: '(attribute_exists(scheduledDate) AND scheduledDate <> :null) OR (attribute_exists(scheduleDate) AND scheduleDate <> :null)',
             ExpressionAttributeValues: {
               ':clinicId': clinicId,
               ':null': null,
             },
-            Limit: 100,
+            Limit: 200,
           }));
           posts = queryRes.Items || [];
         } else {
-          // Scan for all scheduled posts
           const scanRes = await ddb.send(new ScanCommand({
             TableName: POSTS_TABLE,
-            FilterExpression: 'attribute_exists(scheduledDate) AND scheduledDate <> :null',
+            FilterExpression: '(attribute_exists(scheduledDate) AND scheduledDate <> :null) OR (attribute_exists(scheduleDate) AND scheduleDate <> :null)',
             ExpressionAttributeValues: {
               ':null': null,
             },
-            Limit: 200,
+            Limit: 500,
           }));
           posts = scanRes.Items || [];
         }
 
-        // Filter by date range if provided
+        // Normalize: unify scheduledDate / scheduleDate
+        posts = posts.map(post => ({
+          ...post,
+          scheduledDate: post.scheduledDate || post.scheduleDate,
+        }));
+
         if (startDate || endDate) {
           posts = posts.filter(post => {
             const postDate = post.scheduledDate;
@@ -994,7 +997,6 @@ export const handler = async (event: any): Promise<any> => {
           });
         }
 
-        // Sort by scheduled date
         posts.sort((a, b) =>
           new Date(a.scheduledDate).getTime() - new Date(b.scheduledDate).getTime()
         );

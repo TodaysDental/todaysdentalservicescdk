@@ -16,7 +16,7 @@
  */
 
 import { APIGatewayProxyEvent, APIGatewayProxyResult } from 'aws-lambda';
-import { buildCorsHeaders } from '../../shared/utils/cors';
+import { buildCorsHeadersAsync } from '../../shared/utils/cors';
 import {
   getUserPermissions,
   hasModulePermission,
@@ -80,7 +80,7 @@ export async function handler(event: APIGatewayProxyEvent): Promise<APIGatewayPr
   };
 
   try {
-    const corsHeaders = buildCorsHeaders({}, event.headers?.origin || event.headers?.Origin);
+    const corsHeaders = await buildCorsHeadersAsync({}, event.headers?.origin || event.headers?.Origin);
     const method = event.httpMethod;
     const path = event.path;
     const pathParts = path.split('/').filter(Boolean);

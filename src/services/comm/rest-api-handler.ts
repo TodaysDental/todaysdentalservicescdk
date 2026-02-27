@@ -1,6 +1,6 @@
 import { APIGatewayProxyEvent, APIGatewayProxyResult } from 'aws-lambda';
 import { DynamoDBClient } from '@aws-sdk/client-dynamodb';
-import { DynamoDBDocumentClient, GetCommand, PutCommand, UpdateCommand, QueryCommand, DeleteCommand, ScanCommand } from '@aws-sdk/lib-dynamodb';
+import { DynamoDBDocumentClient, GetCommand, PutCommand, UpdateCommand, QueryCommand, DeleteCommand, ScanCommand, BatchWriteCommand } from '@aws-sdk/lib-dynamodb';
 import { v4 as uuidv4 } from 'uuid';
 import { createHash, randomBytes, timingSafeEqual } from 'crypto';
 import { AuditService } from './audit-service';
@@ -211,7 +211,7 @@ interface FavorRequest {
     createdAt: string;
     updatedAt: string;
     userID: string;
-    requestType: 'General' | 'Assign Task' | 'Ask a Favor' | 'Other';
+    requestType: 'General' | 'Assign Task' | 'IT Ticket' | 'Ask a Favor' | 'Other';
     unreadCount: number;
     initialMessage: string;
     deadline?: string;
@@ -302,16 +302,23 @@ function getUserIdFromEvent(event: APIGatewayProxyEvent): string | null {
     console.log('DEBUG: Claims from authorizer:', JSON.stringify(claims, null, 2));
 
     // Try multiple ways to extract user ID
-    const userID = claims?.sub || claims?.['cognito:username'] || claims?.['sub'] || authorizer?.principalId;
+    // For Lambda authorizer: context values are directly on `authorizer` (no `claims` wrapper)
+    // For Cognito authorizer: claims are at `authorizer.claims`
+    const userID = claims?.sub
+        || claims?.['cognito:username']
+        || claims?.['sub']
+        || authorizer?.principalId
+        || authorizer?.email;  // Lambda authorizer context sets email directly
 
     if (!userID) {
-        console.error('ERROR: Could not extract userID from claims or principalId');
+        console.error('ERROR: Could not extract userID from claims, principalId, or email');
         console.error('DEBUG: Authorizer keys:', Object.keys(authorizer));
     } else {
         console.log('DEBUG: Successfully extracted userID:', userID);
     }
 
-    return userID || null;
+    // Normalize to lowercase to prevent case-sensitivity mismatches
+    return userID ? String(userID).toLowerCase() : null;
 }
 
 function uniqStrings(values: Array<string | undefined | null>): string[] {
@@ -955,6 +962,12 @@ async function deleteConversation(userID: string, favorRequestID: string, params
 
     const nowIso = new Date().toISOString();
 
+    // Determine if this is a task conversation (tasks are preserved with soft-delete)
+    const isTask = favor.isTask === true ||
+        favor.requestType === 'Assign Task' ||
+        favor.requestType === 'IT Ticket' ||
+        favor.requestType === 'Ask a Favor';
+
     if (deleteType === 'forEveryone') {
         // === PERMANENT DELETE: Set status to 'deleted' — hides for ALL participants ===
         const updateStart = Date.now();
@@ -975,20 +988,20 @@ async function deleteConversation(userID: string, favorRequestID: string, params
             message: 'Conversation permanently deleted for everyone',
             deleted: { conversationID: favorRequestID, deleteType: 'forEveryone' },
         });
-    } else {
-        // === PER-USER DELETE: Add userID to deletedBy list — hides only for this user ===
+    } else if (isTask) {
+        // === TASK: Soft-delete only (add to deletedBy) — tasks should be preserved ===
         const currentDeletedBy = favor.deletedBy || [];
         if (currentDeletedBy.includes(userID)) {
             return response(200, {
                 success: true,
-                message: 'Conversation already deleted from your view',
+                message: 'Task already deleted from your view',
                 deleted: { conversationID: favorRequestID, deleteType: 'forMe' },
             });
         }
         const updatedDeletedBy = [...currentDeletedBy, userID];
 
         const updateStart = Date.now();
-        log.dbOperation('UpdateItem', FAVORS_TABLE, { favorRequestID, action: 'per-user-delete', deletedByUser: userID }, fnCtx);
+        log.dbOperation('UpdateItem', FAVORS_TABLE, { favorRequestID, action: 'soft-delete-task', deletedByUser: userID }, fnCtx);
         await ddb.send(new UpdateCommand({
             TableName: FAVORS_TABLE,
             Key: { favorRequestID },
@@ -997,12 +1010,66 @@ async function deleteConversation(userID: string, favorRequestID: string, params
         }));
         log.dbResult('UpdateItem', FAVORS_TABLE, 1, Date.now() - updateStart, fnCtx);
 
-        log.info('deleteConversation completed (forMe)', { ...fnCtx, deletedByUser: userID, totalDeletedBy: updatedDeletedBy.length, durationMs: Date.now() - fnStart });
+        log.info('deleteConversation completed (soft-delete task)', { ...fnCtx, deletedByUser: userID, totalDeletedBy: updatedDeletedBy.length, durationMs: Date.now() - fnStart });
 
         return response(200, {
             success: true,
-            message: 'Conversation deleted from your view',
+            message: 'Task deleted from your view',
             deleted: { conversationID: favorRequestID, deleteType: 'forMe' },
+        });
+    } else {
+        // === CHAT (non-task): HARD DELETE — remove FavorRequest + all messages permanently ===
+        // This ensures creating a new chat with the same person creates a fresh conversation.
+        log.info('Hard-deleting non-task chat conversation', { ...fnCtx, deletedByUser: userID });
+
+        // Step 1: Delete all messages for this conversation
+        try {
+            const messagesResult = await ddb.send(new QueryCommand({
+                TableName: MESSAGES_TABLE,
+                KeyConditionExpression: 'favorRequestID = :fid',
+                ExpressionAttributeValues: { ':fid': favorRequestID },
+                ProjectionExpression: 'favorRequestID, #ts',
+                ExpressionAttributeNames: { '#ts': 'timestamp' },
+            }));
+            const messages = messagesResult.Items || [];
+            log.info('Found messages to delete', { ...fnCtx, messageCount: messages.length });
+
+            // Batch delete messages (DynamoDB allows max 25 items per batch)
+            for (let i = 0; i < messages.length; i += 25) {
+                const batch = messages.slice(i, i + 25);
+                await ddb.send(new BatchWriteCommand({
+                    RequestItems: {
+                        [MESSAGES_TABLE]: batch.map((msg: any) => ({
+                            DeleteRequest: {
+                                Key: {
+                                    favorRequestID: msg.favorRequestID,
+                                    timestamp: msg.timestamp,
+                                },
+                            },
+                        })),
+                    },
+                }));
+            }
+            log.info('Deleted all messages', { ...fnCtx, deletedMessages: messages.length });
+        } catch (msgErr) {
+            log.error('Failed to delete messages (continuing with FavorRequest deletion)', fnCtx, msgErr as Error);
+        }
+
+        // Step 2: Delete the FavorRequest record itself
+        const deleteStart = Date.now();
+        log.dbOperation('DeleteItem', FAVORS_TABLE, { favorRequestID, action: 'hard-delete-chat' }, fnCtx);
+        await ddb.send(new DeleteCommand({
+            TableName: FAVORS_TABLE,
+            Key: { favorRequestID },
+        }));
+        log.dbResult('DeleteItem', FAVORS_TABLE, 1, Date.now() - deleteStart, fnCtx);
+
+        log.info('deleteConversation completed (hard-delete chat)', { ...fnCtx, deletedByUser: userID, durationMs: Date.now() - fnStart });
+
+        return response(200, {
+            success: true,
+            message: 'Chat conversation permanently deleted',
+            deleted: { conversationID: favorRequestID, deleteType: 'hardDelete' },
         });
     }
 }

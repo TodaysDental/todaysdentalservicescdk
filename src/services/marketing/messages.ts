@@ -1,7 +1,7 @@
 import { APIGatewayProxyEvent, APIGatewayProxyResult } from 'aws-lambda';
 import { DynamoDBClient } from '@aws-sdk/client-dynamodb';
 import { DynamoDBDocumentClient, GetCommand } from '@aws-sdk/lib-dynamodb';
-import { buildCorsHeaders } from '../../shared/utils/cors';
+import { buildCorsHeadersAsync } from '../../shared/utils/cors';
 import { ayrshareGetMessages, ayrshareSendMessage } from './ayrshare-client';
 
 const ddb = DynamoDBDocumentClient.from(new DynamoDBClient({}), {
@@ -12,7 +12,7 @@ const PROFILES_TABLE = process.env.MARKETING_PROFILES_TABLE!;
 const API_KEY = process.env.AYRSHARE_API_KEY!;
 
 export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayProxyResult> => {
-  const corsHeaders = buildCorsHeaders({ allowMethods: ['OPTIONS', 'POST', 'GET'] });
+  const corsHeaders = await buildCorsHeadersAsync({ allowMethods: ['OPTIONS', 'POST', 'GET'] }, event.headers?.origin || event.headers?.Origin);
 
   if (event.httpMethod === 'OPTIONS') {
     return { statusCode: 200, headers: corsHeaders, body: '' };
@@ -93,9 +93,9 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
         return {
           statusCode: 400,
           headers: corsHeaders,
-          body: JSON.stringify({ 
-            success: false, 
-            error: 'clinicId, platform, recipientId, and message are required' 
+          body: JSON.stringify({
+            success: false,
+            error: 'clinicId, platform, recipientId, and message are required'
           })
         };
       }
@@ -149,8 +149,8 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
     return {
       statusCode: 500,
       headers: corsHeaders,
-      body: JSON.stringify({ 
-        success: false, 
+      body: JSON.stringify({
+        success: false,
         error: err.message,
         code: 'MESSAGES_ERROR'
       })

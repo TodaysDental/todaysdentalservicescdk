@@ -5,7 +5,7 @@ import { S3Client, PutObjectCommand, DeleteObjectCommand, GetObjectCommand } fro
 import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
 import { v4 as uuidv4 } from 'uuid';
 import axios from 'axios';
-import { buildCorsHeaders, ALLOWED_ORIGINS_LIST } from '../../shared/utils/cors';
+import { buildCorsHeadersAsync, getAllowedOriginsAsync } from '../../shared/utils/cors';
 import { ayrshareResizeImage, ayrshareVerifyMediaUrl } from './ayrshare-client';
 
 const ddb = DynamoDBDocumentClient.from(new DynamoDBClient({}), {
@@ -18,10 +18,11 @@ const API_KEY = process.env.AYRSHARE_API_KEY!;
 
 // Cache allowed hosts for SSRF protection in /media/import
 let allowedHostsCache: Set<string> | null = null;
-function getAllowedHosts(): Set<string> {
+async function getAllowedHosts(): Promise<Set<string>> {
   if (allowedHostsCache) return allowedHostsCache;
+  const origins = await getAllowedOriginsAsync();
   const hosts = new Set<string>();
-  for (const origin of ALLOWED_ORIGINS_LIST) {
+  for (const origin of origins) {
     try {
       const u = new URL(origin);
       if (u.hostname) hosts.add(u.hostname);
@@ -29,7 +30,6 @@ function getAllowedHosts(): Set<string> {
       // Ignore invalid origins
     }
   }
-  allowedHostsCache = hosts;
   return hosts;
 }
 
@@ -44,7 +44,7 @@ function inferExtensionFromContentType(contentType?: string): string {
 }
 
 export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayProxyResult> => {
-  const corsHeaders = buildCorsHeaders({ allowMethods: ['OPTIONS', 'POST', 'GET', 'DELETE'] });
+  const corsHeaders = await buildCorsHeadersAsync({ allowMethods: ['OPTIONS', 'POST', 'GET', 'DELETE'] }, event.headers?.origin || event.headers?.Origin);
 
   if (event.httpMethod === 'OPTIONS') {
     return { statusCode: 200, headers: corsHeaders, body: '' };
@@ -168,7 +168,7 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
         };
       }
 
-      const allowedHosts = getAllowedHosts();
+      const allowedHosts = await getAllowedHosts();
       if (!allowedHosts.has(parsedUrl.hostname)) {
         return {
           statusCode: 403,
@@ -413,7 +413,7 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
 
       const fileId = uuidv4();
       const key = `temp/uploads/${fileId}_${fileName}`;
-      
+
       // Create presigned URL for upload
       const putCommand = new PutObjectCommand({
         Bucket: MEDIA_BUCKET,
@@ -448,9 +448,9 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
         return {
           statusCode: 400,
           headers: corsHeaders,
-          body: JSON.stringify({ 
-            success: false, 
-            error: 'imageUrl, width, and height are required' 
+          body: JSON.stringify({
+            success: false,
+            error: 'imageUrl, width, and height are required'
           })
         };
       }
@@ -473,8 +473,8 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
         return {
           statusCode: 500,
           headers: corsHeaders,
-          body: JSON.stringify({ 
-            success: false, 
+          body: JSON.stringify({
+            success: false,
             error: err.message,
             code: 'RESIZE_ERROR'
           })
