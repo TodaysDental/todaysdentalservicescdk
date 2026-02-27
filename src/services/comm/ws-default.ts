@@ -2066,6 +2066,7 @@ async function startFavorRequest(
 
     // 4. Send email notification (for BOTH single and group tasks)
     try {
+        console.log(`📧 startFavorRequest: Sending task assignment email. isGroup=${isGroupRequest}, sender=${senderID}, recipients=${JSON.stringify(isGroupRequest ? recipients : [receiverID])}`);
         if (isGroupRequest) {
             // Group task: fetch team details and send to all members
             const teamResult = await ddb.send(new GetCommand({
@@ -2100,8 +2101,17 @@ async function startFavorRequest(
                 isGroup: false,
             });
         }
-    } catch (e) {
-        console.error("Failed to send SES notification email:", e);
+        console.log('✅ Task assignment email sent successfully from startFavorRequest');
+    } catch (e: any) {
+        console.error("❌ Failed to send SES notification email from startFavorRequest:", {
+            error: e?.message || e,
+            name: e?.name,
+            code: e?.$metadata?.httpStatusCode,
+            requestId: e?.$metadata?.requestId,
+            senderID,
+            receiverID,
+            teamID,
+        });
     }
 
     // 5. Send push notifications to recipients (for offline users)
@@ -3396,9 +3406,16 @@ Please log in to the application to view and respond to this task.
         ? `📋 New ${requestType} in ${teamName}: ${taskTitle}`
         : `📋 New ${requestType} from ${sender.fullName}: ${taskTitle}`;
 
-    const emailPromises = recipientDetails
-        .filter(r => r.email)
-        .map(recipient =>
+    const validRecipients = recipientDetails.filter(r => r.email);
+    console.log(`📧 sendTaskAssignmentEmail: sender=${sender.fullName} (${sender.email}), recipients=${validRecipients.map(r => r.email).join(', ')}, from=${SES_SOURCE_EMAIL}, subject=${emailSubject}`);
+
+    if (validRecipients.length === 0) {
+        console.warn('⚠️ No valid recipient emails found. Skipping email send.');
+        return;
+    }
+
+    const results = await Promise.allSettled(
+        validRecipients.map(recipient =>
             ses.send(new SendEmailCommand({
                 Destination: { ToAddresses: [recipient.email as string] },
                 Content: {
@@ -3412,10 +3429,27 @@ Please log in to the application to view and respond to this task.
                 },
                 FromEmailAddress: SES_SOURCE_EMAIL,
             }))
-        );
+        )
+    );
 
-    await Promise.all(emailPromises);
-    console.log(`Task assignment email sent to ${emailPromises.length} recipient(s) for "${taskTitle}" from ${sender.fullName}.`);
+    // Log results
+    results.forEach((result, idx) => {
+        const email = validRecipients[idx]?.email;
+        if (result.status === 'fulfilled') {
+            console.log(`✅ Email sent to ${email} (MessageId: ${result.value?.MessageId})`);
+        } else {
+            const err = result.reason;
+            console.error(`❌ Email FAILED to ${email}:`, {
+                error: err?.message || err,
+                name: err?.name,
+                code: err?.$metadata?.httpStatusCode,
+                requestId: err?.$metadata?.requestId,
+            });
+        }
+    });
+
+    const successCount = results.filter(r => r.status === 'fulfilled').length;
+    console.log(`📧 Task email: ${successCount}/${validRecipients.length} sent for "${taskTitle}" from ${sender.fullName}.`);
 }
 
 async function fetchHistory(
@@ -4630,6 +4664,7 @@ async function handleAssignTask(
 
         // 7. Send email notification to the assigned user
         try {
+            console.log(`📧 Attempting to send task assignment email to ${assignedTo} for task "${taskTitle}"...`);
             await sendTaskAssignmentEmail({
                 senderID,
                 recipientIDs: Array.isArray(assignedTo) ? assignedTo : [assignedTo],
@@ -4640,9 +4675,17 @@ async function handleAssignTask(
                 priority: priority || 'medium',
                 isGroup: false,
             });
-            console.log(`📧 Task assignment email sent to ${assignedTo} for task "${taskTitle}"`);
-        } catch (emailError) {
-            console.error('Failed to send task assignment email (non-blocking):', emailError);
+            console.log(`✅ Task assignment email sent successfully to ${assignedTo} for task "${taskTitle}"`);
+        } catch (emailError: any) {
+            console.error('❌ Failed to send task assignment email:', {
+                error: emailError?.message || emailError,
+                name: emailError?.name,
+                code: emailError?.$metadata?.httpStatusCode,
+                requestId: emailError?.$metadata?.requestId,
+                recipientID: assignedTo,
+                taskTitle,
+                senderID,
+            });
         }
     } catch (e) {
         console.error('Error assigning task:', e);

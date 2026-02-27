@@ -446,9 +446,9 @@ export class CommStack extends Stack {
     this.fileBucket.grantReadWrite(defaultFn);
     this.notificationsTopic.grantPublish(defaultFn);
 
-    // CRITICAL NEW FEATURE: Grant SES SendEmail permissions
+    // CRITICAL: Grant SES SendEmail permissions (v1 + v2 API actions)
     defaultFn.addToRolePolicy(new iam.PolicyStatement({
-      actions: ['ses:SendEmail', 'ses:SendRawEmail'],
+      actions: ['ses:SendEmail', 'ses:SendRawEmail', 'ses:SendBulkEmail', 'ses:SendTemplatedEmail'],
       resources: ['*'],
     }));
 
