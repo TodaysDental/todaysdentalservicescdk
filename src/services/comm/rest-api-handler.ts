@@ -1035,58 +1035,35 @@ async function deleteConversation(userID: string, favorRequestID: string, params
             deleted: { conversationID: favorRequestID, deleteType: 'forMe' },
         });
     } else {
-        // === CHAT (non-task): HARD DELETE — remove FavorRequest + all messages permanently ===
-        // This ensures creating a new chat with the same person creates a fresh conversation.
-        log.info('Hard-deleting non-task chat conversation', { ...fnCtx, deletedByUser: userID });
+        // === CHAT (non-task): SOFT DELETE — add to deletedBy (same as tasks) ===
+        // Previously this was a hard delete which permanently removed the conversation
+        // for ALL users. Now we use soft-delete so it only hides for the deleting user.
+        log.info('Soft-deleting non-task chat conversation', { ...fnCtx, deletedByUser: userID });
 
-        // Step 1: Delete all messages for this conversation
-        try {
-            const messagesResult = await ddb.send(new QueryCommand({
-                TableName: MESSAGES_TABLE,
-                KeyConditionExpression: 'favorRequestID = :fid',
-                ExpressionAttributeValues: { ':fid': favorRequestID },
-                ProjectionExpression: 'favorRequestID, #ts',
-                ExpressionAttributeNames: { '#ts': 'timestamp' },
-            }));
-            const messages = messagesResult.Items || [];
-            log.info('Found messages to delete', { ...fnCtx, messageCount: messages.length });
+        const currentDeletedBy = favor.deletedBy || [];
+        const updatedDeletedBy = currentDeletedBy.includes(userID)
+            ? currentDeletedBy
+            : [...currentDeletedBy, userID];
 
-            // Batch delete messages (DynamoDB allows max 25 items per batch)
-            for (let i = 0; i < messages.length; i += 25) {
-                const batch = messages.slice(i, i + 25);
-                await ddb.send(new BatchWriteCommand({
-                    RequestItems: {
-                        [MESSAGES_TABLE]: batch.map((msg: any) => ({
-                            DeleteRequest: {
-                                Key: {
-                                    favorRequestID: msg.favorRequestID,
-                                    timestamp: msg.timestamp,
-                                },
-                            },
-                        })),
-                    },
-                }));
-            }
-            log.info('Deleted all messages', { ...fnCtx, deletedMessages: messages.length });
-        } catch (msgErr) {
-            log.error('Failed to delete messages (continuing with FavorRequest deletion)', fnCtx, msgErr as Error);
-        }
-
-        // Step 2: Delete the FavorRequest record itself
-        const deleteStart = Date.now();
-        log.dbOperation('DeleteItem', FAVORS_TABLE, { favorRequestID, action: 'hard-delete-chat' }, fnCtx);
-        await ddb.send(new DeleteCommand({
+        const updateStart = Date.now();
+        log.dbOperation('UpdateItem', FAVORS_TABLE, { favorRequestID, action: 'soft-delete-chat', deletedByUser: userID }, fnCtx);
+        await ddb.send(new UpdateCommand({
             TableName: FAVORS_TABLE,
             Key: { favorRequestID },
+            UpdateExpression: 'SET deletedBy = :db, updatedAt = :ua',
+            ExpressionAttributeValues: {
+                ':db': updatedDeletedBy,
+                ':ua': nowIso,
+            },
         }));
-        log.dbResult('DeleteItem', FAVORS_TABLE, 1, Date.now() - deleteStart, fnCtx);
+        log.dbResult('UpdateItem', FAVORS_TABLE, 1, Date.now() - updateStart, fnCtx);
 
-        log.info('deleteConversation completed (hard-delete chat)', { ...fnCtx, deletedByUser: userID, durationMs: Date.now() - fnStart });
+        log.info('deleteConversation completed (soft-delete chat)', { ...fnCtx, deletedByUser: userID, totalDeletedBy: updatedDeletedBy.length, durationMs: Date.now() - fnStart });
 
         return response(200, {
             success: true,
-            message: 'Chat conversation permanently deleted',
-            deleted: { conversationID: favorRequestID, deleteType: 'hardDelete' },
+            message: 'Chat deleted from your view',
+            deleted: { conversationID: favorRequestID, deleteType: 'forMe' },
         });
     }
 }

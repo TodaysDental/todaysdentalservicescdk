@@ -4063,6 +4063,40 @@ async function forwardTask(
 
     await sendToAll(apiGwManagement, notifyList, notificationPayload, { notifyOffline: true, senderID });
 
+    // 6. Save a task message in the chat so it appears as a task card in the message feed
+    const forwardTaskMessage: MessageData = {
+        messageID: forwardID,
+        favorRequestID,
+        senderID,
+        content: `Task forwarded: ${favor.title || 'Untitled Task'}`,
+        timestamp: Date.now(),
+        type: 'task',
+        taskTitle: favor.title || 'Forwarded Task',
+        taskDescription: message || favor.initialMessage || favor.description || '',
+        taskPriority: favor.priority || 'medium',
+        taskDeadline: deadline || favor.deadline,
+    };
+
+    await ddb.send(new PutCommand({ TableName: MESSAGES_TABLE, Item: forwardTaskMessage }));
+
+    // Update conversation metadata to show the forwarded task as the latest message
+    await ddb.send(new UpdateCommand({
+        TableName: FAVORS_TABLE,
+        Key: { favorRequestID },
+        UpdateExpression: 'SET lastMessage = :lm, lastMessageAt = :lma, lastMessageSenderID = :lms',
+        ExpressionAttributeValues: {
+            ':lm': `Task forwarded: ${favor.title || 'Untitled Task'}`,
+            ':lma': nowIso,
+            ':lms': senderID,
+        },
+    }));
+
+    // Broadcast the task message to all participants so it appears in the chat feed
+    await sendToAll(apiGwManagement, notifyList, {
+        type: 'newMessage',
+        message: forwardTaskMessage,
+    }, { notifyOffline: false });
+
     // Send task-specific push notification to the forwardee
     const senderDetails = await getUserDetails(senderID);
     await sendTaskPushNotification(
@@ -4890,56 +4924,34 @@ async function deleteConversation(
 
         console.log(`Task ${favorRequestID} soft-deleted from view by ${senderID}`);
     } else {
-        // === CHAT (non-task): HARD DELETE — remove FavorRequest + all messages permanently ===
-        console.log(`🗑️ Hard-deleting non-task chat ${favorRequestID} by ${senderID}`);
+        // === CHAT (non-task): SOFT DELETE — add to deletedBy (same as tasks) ===
+        // Previously this was a hard delete which permanently removed the conversation
+        // for ALL users. Now we use soft-delete so it only hides for the deleting user.
+        console.log(`🗑️ Soft-deleting non-task chat ${favorRequestID} for user ${senderID}`);
 
-        // Step 1: Delete all messages for this conversation
-        try {
-            const messagesResult = await ddb.send(new QueryCommand({
-                TableName: MESSAGES_TABLE,
-                KeyConditionExpression: 'favorRequestID = :fid',
-                ExpressionAttributeValues: { ':fid': favorRequestID },
-                ProjectionExpression: 'favorRequestID, #ts',
-                ExpressionAttributeNames: { '#ts': 'timestamp' },
+        const currentDeletedBy = favor.deletedBy || [];
+        if (!currentDeletedBy.includes(senderID)) {
+            const updatedDeletedBy = [...currentDeletedBy, senderID];
+            await ddb.send(new UpdateCommand({
+                TableName: FAVORS_TABLE,
+                Key: { favorRequestID },
+                UpdateExpression: 'SET deletedBy = :db, updatedAt = :ua',
+                ExpressionAttributeValues: {
+                    ':db': updatedDeletedBy,
+                    ':ua': nowIso,
+                },
             }));
-            const messages = messagesResult.Items || [];
-            console.log(`🗑️ Found ${messages.length} messages to delete for ${favorRequestID}`);
-
-            // Batch delete messages (DynamoDB allows max 25 items per batch)
-            for (let i = 0; i < messages.length; i += 25) {
-                const batch = messages.slice(i, i + 25);
-                await ddb.send(new BatchWriteCommand({
-                    RequestItems: {
-                        [MESSAGES_TABLE]: batch.map((msg: any) => ({
-                            DeleteRequest: {
-                                Key: {
-                                    favorRequestID: msg.favorRequestID,
-                                    timestamp: msg.timestamp,
-                                },
-                            },
-                        })),
-                    },
-                }));
-            }
-        } catch (msgErr) {
-            console.error(`Failed to delete messages for ${favorRequestID}:`, msgErr);
         }
 
-        // Step 2: Delete the FavorRequest record itself
-        await ddb.send(new DeleteCommand({
-            TableName: FAVORS_TABLE,
-            Key: { favorRequestID },
-        }));
-
-        // Notify the deleting user
+        // Notify only the deleting user
         await sendToClient(apiGwManagement, connectionId, {
             type: 'conversationDeleted',
             favorRequestID,
             deletedBy: senderID,
-            deleteType: 'hardDelete',
+            deleteType: 'forMe',
         });
 
-        console.log(`🗑️ Chat ${favorRequestID} hard-deleted (FavorRequest + messages) by ${senderID}`);
+        console.log(`🗑️ Chat ${favorRequestID} soft-deleted from view by ${senderID}`);
     }
 }
 
