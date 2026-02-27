@@ -333,6 +333,7 @@ export class MarketingStack extends Stack {
       handler: 'handler',
       runtime: lambda.Runtime.NODEJS_20_X,
       timeout: Duration.seconds(30),
+      memorySize: 10240,
       environment: envVars,
     });
 
@@ -342,6 +343,7 @@ export class MarketingStack extends Stack {
       handler: 'handler',
       runtime: lambda.Runtime.NODEJS_20_X,
       timeout: Duration.seconds(60),
+      memorySize: 10240,
       environment: envVars,
     });
 
@@ -351,6 +353,7 @@ export class MarketingStack extends Stack {
       handler: 'handler',
       runtime: lambda.Runtime.NODEJS_20_X,
       timeout: Duration.seconds(30),
+      memorySize: 10240,
       environment: envVars,
     });
 
@@ -360,6 +363,7 @@ export class MarketingStack extends Stack {
       handler: 'handler',
       runtime: lambda.Runtime.NODEJS_20_X,
       timeout: Duration.seconds(30),
+      memorySize: 10240,
       environment: envVars,
     });
 
@@ -369,6 +373,7 @@ export class MarketingStack extends Stack {
       handler: 'handler',
       runtime: lambda.Runtime.NODEJS_20_X,
       timeout: Duration.seconds(60),
+      memorySize: 10240,
       environment: envVars,
     });
 
@@ -378,6 +383,7 @@ export class MarketingStack extends Stack {
       handler: 'handler',
       runtime: lambda.Runtime.NODEJS_20_X,
       timeout: Duration.seconds(30),
+      memorySize: 10240,
       environment: envVars,
     });
 
@@ -387,6 +393,7 @@ export class MarketingStack extends Stack {
       handler: 'handler',
       runtime: lambda.Runtime.NODEJS_20_X,
       timeout: Duration.seconds(300),
+      memorySize: 10240,
       environment: envVars,
     });
 
@@ -396,6 +403,7 @@ export class MarketingStack extends Stack {
       handler: 'handler',
       runtime: lambda.Runtime.NODEJS_20_X,
       timeout: Duration.seconds(30),
+      memorySize: 10240,
       environment: envVars,
     });
 
@@ -405,6 +413,7 @@ export class MarketingStack extends Stack {
       handler: 'handler',
       runtime: lambda.Runtime.NODEJS_20_X,
       timeout: Duration.seconds(30),
+      memorySize: 10240,
       environment: envVars,
     });
 
@@ -414,6 +423,7 @@ export class MarketingStack extends Stack {
       handler: 'handler',
       runtime: lambda.Runtime.NODEJS_20_X,
       timeout: Duration.seconds(30),
+      memorySize: 10240,
       environment: envVars,
     });
 
@@ -423,6 +433,7 @@ export class MarketingStack extends Stack {
       handler: 'handler',
       runtime: lambda.Runtime.NODEJS_20_X,
       timeout: Duration.seconds(30),
+      memorySize: 10240,
       environment: envVars,
     });
 
@@ -432,6 +443,7 @@ export class MarketingStack extends Stack {
       handler: 'handler',
       runtime: lambda.Runtime.NODEJS_20_X,
       timeout: Duration.seconds(30),
+      memorySize: 10240,
       environment: envVars,
     });
 
@@ -441,7 +453,7 @@ export class MarketingStack extends Stack {
       handler: 'handler',
       runtime: lambda.Runtime.NODEJS_20_X,
       timeout: Duration.seconds(30),
-      memorySize: 256,
+      memorySize: 10240,
       environment: {
         ...envVars,
         DESIGN_TEMPLATES_TABLE: designTemplatesTable.tableName,
@@ -466,6 +478,7 @@ export class MarketingStack extends Stack {
       handler: 'handler',
       runtime: lambda.Runtime.NODEJS_20_X,
       timeout: Duration.seconds(60),
+      memorySize: 10240,
       environment: metaAdsEnvVars,
     });
 
@@ -484,7 +497,7 @@ export class MarketingStack extends Stack {
       handler: 'handler',
       runtime: lambda.Runtime.NODEJS_20_X,
       timeout: Duration.seconds(60),
-      memorySize: 512, // Higher memory for image processing
+      memorySize: 10240, // Maximum memory for image processing
       environment: imageGeneratorEnvVars,
       bundling: {
         // Use local bundling - Sharp functionality will be limited without Lambda layer
@@ -511,7 +524,7 @@ export class MarketingStack extends Stack {
       handler: 'handler',
       runtime: lambda.Runtime.NODEJS_20_X,
       timeout: Duration.seconds(120), // Async worker mode needs generous timeout for slow Ayrshare calls
-      memorySize: 256,
+      memorySize: 10240,
       environment: publisherEnvVars,
     });
 

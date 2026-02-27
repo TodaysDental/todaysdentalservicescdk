@@ -993,9 +993,8 @@ feeScheduleSyncStack.addDependency(openDentalStack); // Explicit - uses SFTP ser
 feeScheduleSyncStack.addDependency(secretsStack); // Explicit - uses GlobalSecrets for SFTP password
 
 // Email Stack - Clinic-specific email operations (Gmail REST API + IMAP/SMTP)
-// Domain-level credentials are defined as constants in email-stack.ts:
-// - GMAIL_CLIENT_ID, GMAIL_CLIENT_SECRET: Google OAuth2 credentials
-// - DOMAIN_SMTP_USER, DOMAIN_SMTP_PASSWORD: Domain email credentials
+// Includes Email Router: scheduled Lambda that polls inboxes, classifies with Bedrock AI,
+// and routes emails to Callbacks table or Comm FavorRequests table
 const emailStack = new EmailStack(app, 'TodaysDentalInsightsEmailN1', {
   env,
   // Pass secrets table names for dynamic secret retrieval
@@ -1003,9 +1002,19 @@ const emailStack = new EmailStack(app, 'TodaysDentalInsightsEmailN1', {
   clinicSecretsTableName: secretsStack.clinicSecretsTable.tableName,
   clinicConfigTableName: secretsStack.clinicConfigTable.tableName,
   secretsEncryptionKeyArn: secretsStack.secretsEncryptionKey.keyArn,
+  // Email Router cross-stack integration
+  commFavorsTableName: communicationsStack.favorsTable.tableName,
+  commFavorsTableArn: communicationsStack.favorsTable.tableArn,
+  commFilesBucketName: communicationsStack.fileBucket.bucketName,
+  commFilesBucketArn: communicationsStack.fileBucket.bucketArn,
+  callbackTablePrefix: callbackStack.callbackTablePrefix,
+  defaultCallbackTableName: callbackStack.defaultCallbackTableName,
+  defaultCallbackTableArn: callbackStack.defaultCallbackTableArn,
 });
-emailStack.addDependency(coreStack); // Explicit - imports AuthorizerFunctionArn (if needed later)
+emailStack.addDependency(coreStack); // Explicit - imports AuthorizerFunctionArn
 emailStack.addDependency(secretsStack); // Explicit - uses GlobalSecrets table for Gmail/cPanel credentials
+emailStack.addDependency(communicationsStack); // Explicit - email router writes to FavorRequests table and S3 bucket
+emailStack.addDependency(callbackStack); // Explicit - email router writes to callback tables
 
 // Accounting Stack - Invoice intake (Accounts Payable) and Bank Reconciliation
 // Integrates with OpenDental for payment data and Odoo for bank transactions

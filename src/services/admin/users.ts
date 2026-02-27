@@ -508,6 +508,10 @@ async function handleUpdateUser(
       'ProviderNum', 'providerName', 'ClinicNum', 'emailAddress',
       'IsHidden', 'UserNumCEMT', 'userGroupNums', 'moduleAccess',
       'openDentalUserNum', 'openDentalUsername', 'employeeNum',
+      // Payment Posting role fee fields
+      'perClaimFeeOpenDental', 'perClaimFeePortal', 'perPreAuthFee',
+      // Claims role fee fields
+      'perClaimsPostedAmount', 'perEobsAttachedAmount', 'statusDeniedAmount',
     ];
 
     for (const clinicRole of body.clinicRoles) {
