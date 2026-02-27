@@ -600,11 +600,11 @@ export class CommStack extends Stack {
     createLambdaDurationAlarm(deadlineReminderFn, 'deadline-reminder',
       Math.floor(Duration.seconds(120).toMilliseconds() * 0.8));
 
-    // EventBridge cron rule: Runs every day at 1:00 PM UTC (8:00 AM EST / 9:00 AM EDT)
+    // EventBridge cron rule: Runs EVERY HOUR for granular deadline reminders (1h, 12h, 18h, 24h)
     new events.Rule(this, 'DeadlineReminderSchedule', {
-      ruleName: `${this.stackName}-DeadlineReminderDaily`,
-      description: 'Triggers the Deadline Reminder Lambda daily at 8 AM EST to check for upcoming/overdue tasks',
-      schedule: events.Schedule.cron({ minute: '0', hour: '13', day: '*', month: '*' }),
+      ruleName: `${this.stackName}-DeadlineReminderHourly`,
+      description: 'Triggers the Deadline Reminder Lambda hourly to check for upcoming/overdue tasks (1h, 12h, 18h, 24h intervals)',
+      schedule: events.Schedule.rate(Duration.hours(1)),
       targets: [new targets.LambdaFunction(deadlineReminderFn, {
         retryAttempts: 2,
       })],

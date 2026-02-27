@@ -2765,9 +2765,15 @@ async function getConnectionRecordsByUserID(userID: string): Promise<ConnectionR
 
 /** Helper function to fetch user's first name and email from Cognito. */
 async function getUserDetails(userID: string): Promise<{ email?: string; fullName: string; }> {
+    // Fallback: if userID looks like an email, use it directly as the email
+    const isEmail = userID.includes('@');
+
     if (!USER_POOL_ID) {
-        console.error("USER_POOL_ID is missing for user detail lookup.");
-        return { fullName: userID };
+        console.warn("USER_POOL_ID is missing for user detail lookup. Using userID fallback.");
+        return {
+            email: isEmail ? userID : undefined,
+            fullName: isEmail ? userID.split('@')[0] : userID,
+        };
     }
 
     try {
@@ -2783,12 +2789,15 @@ async function getUserDetails(userID: string): Promise<{ email?: string; fullNam
         const familyNameAttr = response.UserAttributes?.find(attr => attr.Name === 'family_name')?.Value;
 
         return {
-            email: emailAttr,
+            email: emailAttr || (isEmail ? userID : undefined),
             fullName: `${givenNameAttr || ''} ${familyNameAttr || ''}`.trim() || userID,
         };
     } catch (e) {
         console.error(`Error fetching Cognito user details for ${userID}:`, e);
-        return { fullName: userID };
+        return {
+            email: isEmail ? userID : undefined,
+            fullName: isEmail ? userID.split('@')[0] : userID,
+        };
     }
 }
 
