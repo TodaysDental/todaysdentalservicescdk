@@ -741,6 +741,13 @@ export class CommStack extends Stack {
     const preferencesByUser = preferences.addResource('{userID}');
     preferencesByUser.addMethod('GET', restIntegration, { authorizer }); // Get another user's public prefs
 
+    // /api/audit-logs endpoints (Audit Trail)
+    const auditLogs = api.addResource('audit-logs');
+    auditLogs.addMethod('GET', restIntegration, { authorizer });  // Get current user's audit logs
+    const auditLogsByResource = auditLogs.addResource('resource');
+    const auditLogsByResourceId = auditLogsByResource.addResource('{resourceID}');
+    auditLogsByResourceId.addMethod('GET', restIntegration, { authorizer }); // Get audit logs for a specific resource
+
     // CloudWatch alarms for REST API handler
     createLambdaErrorAlarm(restApiHandler, 'rest-api-handler');
     createLambdaThrottleAlarm(restApiHandler, 'rest-api-handler');

@@ -5,6 +5,7 @@ import { ApiGatewayManagementApiClient, PostToConnectionCommand } from '@aws-sdk
 import { S3Client, PutObjectCommand, GetObjectCommand, DeleteObjectCommand } from '@aws-sdk/client-s3';
 import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
 import { SNSClient, PublishCommand } from '@aws-sdk/client-sns';
+import { sendMentionNotification } from './push-notifications';
 import { LambdaClient, InvokeCommand } from '@aws-sdk/client-lambda';
 import { v4 as uuidv4 } from 'uuid';
 import { SESv2Client, SendEmailCommand } from '@aws-sdk/client-sesv2';
@@ -233,6 +234,16 @@ interface MessageData {
         createdAt: number;
         isClosed?: boolean;
     };
+    // Thread support
+    parentMessageID?: string;
+    // Mention metadata
+    mentions?: Array<{
+        type: 'user' | 'channel' | 'everyone' | 'here';
+        id?: string;
+        displayName: string;
+        startIndex: number;
+        endIndex: number;
+    }>;
 }
 
 // ========================================
@@ -631,6 +642,11 @@ export const handler = async (event: APIGatewayEvent): Promise<APIGatewayProxyRe
                 break;
             case 'closePoll':
                 await handleClosePoll(senderID, payload, apiGwManagement);
+                break;
+
+            // ======= MENTIONS =======
+            case 'sendMessageWithMentions':
+                await handleSendMessageWithMentions(senderID, payload, connectionId, apiGwManagement);
                 break;
 
             default:
@@ -2250,6 +2266,8 @@ async function sendMessage(
     // 4. Save message and broadcast (sends 'newMessage' payload)
     await _saveAndBroadcastMessage(messageData, apiGwManagement, recipientIDs); // PASS RECIPIENTS
 
+    // 5. Detect inline @mentions from message content and send notifications
+    await _detectAndNotifyInlineMentions(senderID, content || '', favorRequestID, recipientIDs);
 }
 
 /**
@@ -2734,6 +2752,251 @@ async function _saveAndBroadcastMessage(
     await sendToAll(apiGwManagement, participants, broadcastPayload, { notifyOffline: true, senderID: messageData.senderID });
 }
 
+
+// ========================================
+// @MENTION HANDLER
+// ========================================
+
+/**
+ * Handles sending a message with explicit @mentions.
+ * - Saves the message with mention metadata
+ * - Broadcasts to all participants
+ * - Sends mentionNotification to each mentioned user via WebSocket
+ * - Sends push notifications to offline mentioned users
+ */
+async function handleSendMessageWithMentions(
+    senderID: string,
+    payload: any,
+    connectionId: string,
+    apiGwManagement: ApiGatewayManagementApiClient
+): Promise<void> {
+    const { favorRequestID, content, mentions, parentMessageID } = payload;
+    const senderConnectionId = (await getSenderInfoByUserID(senderID))?.connectionId;
+
+    console.log(`📨 [sendMessageWithMentions] senderID=${senderID}, favorRequestID=${favorRequestID}, mentionCount=${mentions?.length || 0}`);
+
+    if (!favorRequestID || (!content || content.trim() === '')) {
+        if (senderConnectionId) {
+            await sendToClient(apiGwManagement, senderConnectionId, { type: 'error', message: 'Missing favorRequestID or content.' });
+        }
+        return;
+    }
+
+    // 1. Validate favor request & participation (same as sendMessage)
+    const favorResult = await ddb.send(new GetCommand({
+        TableName: FAVORS_TABLE,
+        Key: { favorRequestID },
+    }));
+    const favor = favorResult.Item as FavorRequest;
+
+    if (!favor) {
+        if (senderConnectionId) {
+            await sendToClient(apiGwManagement, senderConnectionId, { type: 'error', message: 'Conversation not found.' });
+        }
+        return;
+    }
+
+    const isParticipant = await isUserParticipant(favor, senderID);
+    if (!isParticipant) {
+        if (senderConnectionId) {
+            await sendToClient(apiGwManagement, senderConnectionId, { type: 'error', message: 'Unauthorized: Not a participant.' });
+        }
+        return;
+    }
+
+    // Admin-only check (same as sendMessage)
+    if (favor.teamID) {
+        try {
+            const teamResult = await ddb.send(new GetCommand({
+                TableName: TEAMS_TABLE!,
+                Key: { teamID: favor.teamID },
+            }));
+            const teamData = teamResult.Item;
+            if (teamData && teamData.adminOnlyMessages) {
+                const isOwner = teamData.ownerID === senderID;
+                const isAdmin = isOwner || (teamData.admins || []).includes(senderID);
+                if (!isAdmin) {
+                    if (senderConnectionId) {
+                        await sendToClient(apiGwManagement, senderConnectionId, {
+                            type: 'error',
+                            message: 'Only admins can send messages in this group.',
+                        });
+                    }
+                    return;
+                }
+            }
+        } catch (e) {
+            console.error('Error checking adminOnlyMessages:', e);
+        }
+    }
+
+    const recipientIDs = await getRecipientIDs(favor, senderID);
+
+    // Block closed conversations
+    const isClosed = favor.status === 'completed' || favor.status === 'rejected';
+    if (isClosed || recipientIDs.length === 0) {
+        if (senderConnectionId) {
+            await sendToClient(apiGwManagement, senderConnectionId, { type: 'error', message: 'Request is closed or has no recipients.' });
+        }
+        return;
+    }
+
+    // 2. Update favor unread count
+    const incrementAmount = recipientIDs.length;
+    const updateResult = await ddb.send(new UpdateCommand({
+        TableName: FAVORS_TABLE,
+        Key: { favorRequestID },
+        UpdateExpression: 'SET updatedAt = :ua ADD unreadCount :incr',
+        ExpressionAttributeValues: {
+            ':ua': new Date().toISOString(),
+            ':incr': incrementAmount,
+        },
+        ReturnValues: 'ALL_NEW',
+    }));
+
+    const updatedFavor = updateResult.Attributes as FavorRequest;
+    const allParticipants = [...recipientIDs, senderID];
+
+    await sendToAll(apiGwManagement, allParticipants, {
+        type: 'favorRequestUpdated',
+        favor: updatedFavor,
+    }, { notifyOffline: false });
+
+    // 3. Create message with mention metadata
+    const timestamp = Date.now();
+    const messageData: MessageData = {
+        messageID: uuidv4(),
+        favorRequestID,
+        senderID,
+        content: content.trim(),
+        timestamp,
+        type: 'text',
+        mentions: Array.isArray(mentions) ? mentions : undefined,
+        ...(parentMessageID && { parentMessageID }),
+    };
+
+    // 4. Save & broadcast the message
+    await _saveAndBroadcastMessage(messageData, apiGwManagement, recipientIDs);
+
+    // 5. Send mention notifications to each mentioned user
+    if (Array.isArray(mentions) && mentions.length > 0) {
+        // Get sender display name for the notification
+        const senderDisplayName = await _getUserDisplayName(senderID);
+        const messagePreview = content.length > 80 ? content.substring(0, 80) + '...' : content;
+
+        for (const mention of mentions) {
+            // Handle @everyone and @here — notify all participants
+            if (mention.type === 'everyone' || mention.type === 'here') {
+                console.log(`📢 [mentions] Broadcasting @${mention.type} mention to all participants`);
+                for (const recipientID of recipientIDs) {
+                    // Send WS notification
+                    await sendToAll(apiGwManagement, [recipientID], {
+                        type: 'mentionNotification',
+                        favorRequestID,
+                        mentionedBy: senderID,
+                        mentionedByName: senderDisplayName,
+                        mentionType: mention.type,
+                        messagePreview,
+                        messageID: messageData.messageID,
+                        timestamp,
+                    }, { notifyOffline: false });
+
+                    // Send push notification
+                    try {
+                        await sendMentionNotification(ddb, recipientID, senderDisplayName, messagePreview, favorRequestID);
+                    } catch (e) {
+                        console.warn(`Failed to send mention push to ${recipientID}:`, e);
+                    }
+                }
+            } else if (mention.type === 'user' && mention.id) {
+                // Individual @mention
+                const mentionedUserID = mention.id;
+                if (mentionedUserID === senderID) continue; // Don't notify self
+
+                console.log(`📢 [mentions] Sending mention notification to ${mentionedUserID}`);
+
+                // Send WS notification
+                await sendToAll(apiGwManagement, [mentionedUserID], {
+                    type: 'mentionNotification',
+                    favorRequestID,
+                    mentionedBy: senderID,
+                    mentionedByName: senderDisplayName,
+                    mentionType: 'user',
+                    displayName: mention.displayName,
+                    messagePreview,
+                    messageID: messageData.messageID,
+                    timestamp,
+                }, { notifyOffline: false });
+
+                // Send push notification
+                try {
+                    await sendMentionNotification(ddb, mentionedUserID, senderDisplayName, messagePreview, favorRequestID);
+                } catch (e) {
+                    console.warn(`Failed to send mention push to ${mentionedUserID}:`, e);
+                }
+            }
+        }
+    }
+
+    console.log(`✅ [sendMessageWithMentions] Completed: ${mentions?.length || 0} mentions processed`);
+}
+
+/**
+ * Detect inline @mentions in message content and send push notifications.
+ * This catches mentions that come through the regular sendMessage path
+ * (e.g., user types @Name manually without the autocomplete).
+ */
+async function _detectAndNotifyInlineMentions(
+    senderID: string,
+    content: string,
+    favorRequestID: string,
+    recipientIDs: string[]
+): Promise<void> {
+    if (!content || !content.includes('@')) return;
+
+    try {
+        // Look for @everyone and @here
+        const hasAtEveryone = content.includes('@everyone');
+        const hasAtHere = content.includes('@here');
+
+        if (hasAtEveryone || hasAtHere) {
+            const senderDisplayName = await _getUserDisplayName(senderID);
+            const messagePreview = content.length > 80 ? content.substring(0, 80) + '...' : content;
+
+            for (const recipientID of recipientIDs) {
+                try {
+                    await sendMentionNotification(ddb, recipientID, senderDisplayName, messagePreview, favorRequestID);
+                } catch (e) {
+                    // Silently ignore push failures
+                }
+            }
+        }
+    } catch (e) {
+        console.warn('[_detectAndNotifyInlineMentions] Error:', e);
+    }
+}
+
+/**
+ * Get a user's display name from their connections or Cognito.
+ */
+async function _getUserDisplayName(userID: string): Promise<string> {
+    try {
+        // Try to get from Cognito
+        if (USER_POOL_ID) {
+            const cognito = new CognitoIdentityProviderClient({ region: REGION });
+            const result = await cognito.send(new AdminGetUserCommand({
+                UserPoolId: USER_POOL_ID,
+                Username: userID,
+            }));
+            const givenName = result.UserAttributes?.find(a => a.Name === 'given_name')?.Value || '';
+            const familyName = result.UserAttributes?.find(a => a.Name === 'family_name')?.Value || '';
+            if (givenName || familyName) return `${givenName} ${familyName}`.trim();
+        }
+    } catch (e) {
+        // Fall through
+    }
+    return userID.substring(0, 12);
+}
 
 // ========================================
 // HELPER FUNCTIONS 
@@ -4330,6 +4593,23 @@ async function handleAssignTask(
         }, { notifyOffline: false });
 
         console.log(`Task ${taskID} assigned to ${assignedTo} by ${senderID} in ${favorRequestID}`);
+
+        // 7. Send email notification to the assigned user
+        try {
+            await sendTaskAssignmentEmail({
+                senderID,
+                recipientIDs: Array.isArray(assignedTo) ? assignedTo : [assignedTo],
+                initialMessage: taskDescription || taskTitle,
+                requestType: 'Assign Task',
+                deadline: dueDate,
+                title: taskTitle,
+                priority: priority || 'medium',
+                isGroup: false,
+            });
+            console.log(`📧 Task assignment email sent to ${assignedTo} for task "${taskTitle}"`);
+        } catch (emailError) {
+            console.error('Failed to send task assignment email (non-blocking):', emailError);
+        }
     } catch (e) {
         console.error('Error assigning task:', e);
         await sendToClient(apiGwManagement, connectionId, { type: 'error', message: 'Failed to assign task.' });

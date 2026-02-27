@@ -1981,9 +1981,9 @@ async function createGroupTask(userID: string, body: any, logCtx?: LogContext): 
 async function createMeeting(userID: string, body: any, logCtx?: LogContext): Promise<APIGatewayProxyResult> {
     const fnStart = Date.now();
     const fnCtx = { ...logCtx, function: 'createMeeting' };
-    const { conversationID, title, description, startTime, endTime, location, participants } = body;
+    const { conversationID, title, description, startTime, endTime, location, participants, roomType, features } = body;
 
-    log.debug('Create meeting params', { ...fnCtx, conversationID, hasStartTime: !!startTime, participantCount: participants?.length || 0 });
+    log.debug('Create meeting params', { ...fnCtx, conversationID, hasStartTime: !!startTime, participantCount: participants?.length || 0, roomType });
 
     if (!MEETINGS_TABLE || !FAVORS_TABLE) {
         log.error('Meetings/Favors table not configured', { ...fnCtx, hasMeetingsTable: !!MEETINGS_TABLE, hasFavorsTable: !!FAVORS_TABLE });
@@ -1995,51 +1995,64 @@ async function createMeeting(userID: string, body: any, logCtx?: LogContext): Pr
         return response(400, { success: false, message: 'conversationID and description are required' });
     }
 
-    // 1) Verify the conversation exists and caller is a participant
-    const favorDbStart = Date.now();
-    log.dbOperation('GetItem', FAVORS_TABLE, { favorRequestID: conversationID }, fnCtx);
-    const favorResult = await ddb.send(new GetCommand({
-        TableName: FAVORS_TABLE,
-        Key: { favorRequestID: conversationID },
-    }));
-    log.dbResult('GetItem', FAVORS_TABLE, favorResult.Item ? 1 : 0, Date.now() - favorDbStart, fnCtx);
-    const favor = favorResult.Item as FavorRequest;
+    // ─── Standalone Meeting Room ───
+    // If the conversationID starts with 'meeting-room-', treat it as a standalone
+    // meeting room (like Zoom) that is NOT tied to any conversation.
+    const isStandaloneRoom = typeof conversationID === 'string' && conversationID.startsWith('meeting-room-');
+    let meetingParticipants: string[];
 
-    if (!favor) {
-        log.warn('Conversation not found for meeting creation', fnCtx);
-        return response(404, { success: false, message: 'Conversation not found' });
-    }
+    if (isStandaloneRoom) {
+        // Standalone room: participants come from request body, no conversation check needed
+        log.info('Creating standalone meeting room', { ...fnCtx, conversationID, roomType });
+        meetingParticipants = Array.isArray(participants) && participants.length > 0
+            ? uniqStrings([...(participants as any[]).map(String), userID])
+            : [userID];
+    } else {
+        // 1) Verify the conversation exists and caller is a participant
+        const favorDbStart = Date.now();
+        log.dbOperation('GetItem', FAVORS_TABLE, { favorRequestID: conversationID }, fnCtx);
+        const favorResult = await ddb.send(new GetCommand({
+            TableName: FAVORS_TABLE,
+            Key: { favorRequestID: conversationID },
+        }));
+        log.dbResult('GetItem', FAVORS_TABLE, favorResult.Item ? 1 : 0, Date.now() - favorDbStart, fnCtx);
+        const favor = favorResult.Item as FavorRequest;
 
-    let team: Team | null = null;
-    const directParticipant = isUserDirectConversationParticipant(favor, userID);
-    if (!directParticipant) {
-        log.debug('User not direct participant, checking team membership', { ...fnCtx, teamID: favor.teamID });
-        if (favor.teamID) {
-            team = await getTeamById(favor.teamID, fnCtx);
-            if (!team?.members?.includes(userID)) {
-                log.warn('Unauthorized meeting creation attempt (not in team)', { ...fnCtx, teamID: favor.teamID });
+        if (!favor) {
+            log.warn('Conversation not found for meeting creation', fnCtx);
+            return response(404, { success: false, message: 'Conversation not found' });
+        }
+
+        let team: Team | null = null;
+        const directParticipant = isUserDirectConversationParticipant(favor, userID);
+        if (!directParticipant) {
+            log.debug('User not direct participant, checking team membership', { ...fnCtx, teamID: favor.teamID });
+            if (favor.teamID) {
+                team = await getTeamById(favor.teamID, fnCtx);
+                if (!team?.members?.includes(userID)) {
+                    log.warn('Unauthorized meeting creation attempt (not in team)', { ...fnCtx, teamID: favor.teamID });
+                    return response(403, { success: false, message: 'Unauthorized' });
+                }
+            } else {
+                log.warn('Unauthorized meeting creation attempt', fnCtx);
                 return response(403, { success: false, message: 'Unauthorized' });
             }
-        } else {
-            log.warn('Unauthorized meeting creation attempt', fnCtx);
-            return response(403, { success: false, message: 'Unauthorized' });
+        } else if (favor.teamID) {
+            team = await getTeamById(favor.teamID, fnCtx);
         }
-    } else if (favor.teamID) {
-        // Load team for participant list (optional)
-        team = await getTeamById(favor.teamID, fnCtx);
+
+        const conversationParticipants = uniqStrings([
+            favor.senderID,
+            favor.receiverID,
+            favor.currentAssigneeID,
+            ...(team?.members || []),
+        ]);
+
+        meetingParticipants =
+            Array.isArray(participants) && participants.length > 0
+                ? uniqStrings([...(participants as any[]).map(String), userID])
+                : uniqStrings([...conversationParticipants, userID]);
     }
-
-    const conversationParticipants = uniqStrings([
-        favor.senderID,
-        favor.receiverID,
-        favor.currentAssigneeID,
-        ...(team?.members || []),
-    ]);
-
-    const meetingParticipants =
-        Array.isArray(participants) && participants.length > 0
-            ? uniqStrings([...(participants as any[]).map(String), userID])
-            : uniqStrings([...conversationParticipants, userID]);
 
     const meetingID = uuidv4();
     const nowIso = new Date().toISOString();
@@ -2066,6 +2079,9 @@ async function createMeeting(userID: string, body: any, logCtx?: LogContext): Pr
         updatedAt: nowIso,
         guestJoinTokenHash,
         guestJoinExpiresAt,
+        // Room type & features
+        ...(roomType && { roomType }),
+        ...(features && typeof features === 'object' && { features }),
     };
 
     const dbStart = Date.now();
@@ -2090,7 +2106,10 @@ async function createMeeting(userID: string, body: any, logCtx?: LogContext): Pr
         status: meetingRecord.status,
         createdAt: meetingRecord.createdAt,
         updatedAt: meetingRecord.updatedAt,
-    };
+        // Room type & features
+        ...(roomType && { roomType }),
+        ...(features && typeof features === 'object' && { features }),
+    } as Meeting;
 
     log.info('createMeeting completed', { ...fnCtx, meetingID, conversationID, participantCount: meeting.participants.length, durationMs: Date.now() - fnStart });
 
@@ -2117,7 +2136,10 @@ function sanitizeMeeting(meetingRecord: MeetingRecord): Meeting {
         status: meetingRecord.status,
         createdAt: meetingRecord.createdAt,
         updatedAt: meetingRecord.updatedAt,
-    };
+        // Room type & features (if present)
+        ...((meetingRecord as any).roomType && { roomType: (meetingRecord as any).roomType }),
+        ...((meetingRecord as any).features && { features: (meetingRecord as any).features }),
+    } as Meeting;
 }
 
 async function joinMeeting(userID: string, meetingID: string, body: any, logCtx?: LogContext): Promise<APIGatewayProxyResult> {
@@ -2159,8 +2181,13 @@ async function joinMeeting(userID: string, meetingID: string, body: any, logCtx?
         (Array.isArray(meetingRecord.participants) && meetingRecord.participants.includes(userID));
 
     if (!inMeetingParticipants) {
-        log.debug('User not in meeting participants, checking conversation membership', fnCtx);
-        if (meetingRecord.conversationID && FAVORS_TABLE) {
+        // For standalone meeting rooms, skip conversation lookup
+        const isStandaloneRoom = typeof meetingRecord.conversationID === 'string' && meetingRecord.conversationID.startsWith('meeting-room-');
+        if (isStandaloneRoom) {
+            // Standalone rooms: any authenticated user can join (they'll be added to participants)
+            log.info('Standalone meeting room join, allowing authenticated user', fnCtx);
+        } else if (meetingRecord.conversationID && FAVORS_TABLE) {
+            log.debug('User not in meeting participants, checking conversation membership', fnCtx);
             const favorDbStart = Date.now();
             log.dbOperation('GetItem', FAVORS_TABLE, { favorRequestID: meetingRecord.conversationID }, fnCtx);
             const favorResult = await ddb.send(new GetCommand({
