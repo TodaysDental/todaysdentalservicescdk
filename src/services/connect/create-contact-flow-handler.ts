@@ -167,7 +167,7 @@ export const handler = async (event: ContactFlowEvent): Promise<any> => {
 /**
  * Build the inbound contact flow content JSON with dynamic ARNs/IDs
  * 
- * Flow: setAttrs → voiceConfig → callerLookup → welcome → lex-asr → typingOnce → invoke-ai → speak-ai → loop
+ * Flow: setAttrs → initCall (voice+welcome in parallel) → welcome → lex-asr → typingOnce → invoke-ai → speak-ai → loop
  *
  * Architecture:
  * - Lex is used for ASR only (code hook stores transcript in Lex session attributes).
@@ -197,14 +197,12 @@ function buildContactFlowContent(params: {
       ActionMetadata: {
         'set-recording': { position: { x: 160, y: 20 } },
         'set-contact-attrs': { position: { x: 360, y: 20 } },
-        'invoke-voice-config': { position: { x: 560, y: 20 } },
+        'invoke-init-call': { position: { x: 560, y: 20 } },
         'set-tts-voice': { position: { x: 760, y: 20 } },
         'set-default-tts-voice': { position: { x: 860, y: 80 } },
-        'store-clinic-id': { position: { x: 960, y: 20 } },
-        'invoke-welcome-message': { position: { x: 1120, y: 20 } },
-        'store-welcome-attrs': { position: { x: 1280, y: 20 } },
-        'welcome-message': { position: { x: 1440, y: 20 } },
-        'welcome-message-static': { position: { x: 1440, y: 120 } },
+        'store-init-attrs': { position: { x: 960, y: 20 } },
+        'welcome-message': { position: { x: 1140, y: 20 } },
+        'welcome-message-static': { position: { x: 1140, y: 120 } },
         'set-disconnect-flow': { position: { x: 1640, y: 20 } },
         'lex-asr': { position: { x: 1840, y: 20 } },
         'typing-once': { position: { x: 2040, y: 20 } },
@@ -253,14 +251,16 @@ function buildContactFlowContent(params: {
           },
         },
         Transitions: {
-          NextAction: 'invoke-voice-config',
+          NextAction: 'invoke-init-call',
           Errors: [{ NextAction: 'disconnect-action', ErrorType: 'NoMatchingError' }],
         },
       },
 
-      // 3) Look up per-clinic voice settings via Lambda (uses dialedNumber -> clinicId mapping)
+      // 3) Combined init call: voice config + welcome message in a single Lambda invocation.
+      //    Runs voice settings lookup and patient/greeting lookup in parallel to minimize
+      //    dead air at call start (~500ms-1s faster than two sequential Lambda calls).
       {
-        Identifier: 'invoke-voice-config',
+        Identifier: 'invoke-init-call',
         Type: 'InvokeLambdaFunction',
         Parameters: {
           LambdaFunctionARN: lambdaFunctionArn,
@@ -268,17 +268,14 @@ function buildContactFlowContent(params: {
           InvocationType: 'SYNCHRONOUS',
           ResponseValidation: { ResponseType: 'STRING_MAP' },
           LambdaInvocationAttributes: {
-            requestType: 'voiceConfig',
+            requestType: 'initCall',
             callerNumber: '$.Attributes.callerNumber',
             dialedNumber: '$.Attributes.dialedNumber',
-            // For outbound flows, clinicId is often provided as a pre-set contact attribute.
             clinicId: '$.Attributes.clinicId',
           },
         },
         Transitions: {
-          // Fail open: if voice config fails, use Connect default voice (Joanna) and continue.
           NextAction: 'set-tts-voice',
-          // Avoid overwriting default prosody attrs with empty $.External.* on Lambda failure.
           Errors: [{ NextAction: 'welcome-message-static', ErrorType: 'NoMatchingError' }],
         },
       },
@@ -292,9 +289,7 @@ function buildContactFlowContent(params: {
           TextToSpeechEngine: '$.External.TextToSpeechEngine',
         },
         Transitions: {
-          NextAction: 'store-clinic-id',
-          // If voice/engine are invalid, Connect can take the Error branch and TTS may stop working for the contact.
-          // Attempt to restore a known-good default voice so prompts/responses are still audible.
+          NextAction: 'store-init-attrs',
           Errors: [{ NextAction: 'set-default-tts-voice', ErrorType: 'NoMatchingError' }],
         },
       },
@@ -308,14 +303,14 @@ function buildContactFlowContent(params: {
           TextToSpeechEngine: 'neural',
         },
         Transitions: {
-          NextAction: 'store-clinic-id',
-          Errors: [{ NextAction: 'store-clinic-id', ErrorType: 'NoMatchingError' }],
+          NextAction: 'store-init-attrs',
+          Errors: [{ NextAction: 'store-init-attrs', ErrorType: 'NoMatchingError' }],
         },
       },
 
-      // 5) Persist clinicId on the contact for downstream Lambda/Lex reads
+      // 5) Store all init attributes (clinic, prosody, patient, welcome) from the combined Lambda
       {
-        Identifier: 'store-clinic-id',
+        Identifier: 'store-init-attrs',
         Type: 'UpdateContactAttributes',
         Parameters: {
           Attributes: {
@@ -323,49 +318,11 @@ function buildContactFlowContent(params: {
             ttsSpeakingRate: '$.External.speakingRate',
             ttsPitch: '$.External.pitch',
             ttsVolume: '$.External.volume',
-          },
-        },
-        Transitions: {
-          NextAction: 'invoke-welcome-message',
-          Errors: [{ NextAction: 'invoke-welcome-message', ErrorType: 'NoMatchingError' }],
-        },
-      },
-
-      // 6) Resolve welcome message (existing patient -> "Hi [FName]...", otherwise AI-agents greeting)
-      {
-        Identifier: 'invoke-welcome-message',
-        Type: 'InvokeLambdaFunction',
-        Parameters: {
-          LambdaFunctionARN: lambdaFunctionArn,
-          InvocationTimeLimitSeconds: '8',
-          InvocationType: 'SYNCHRONOUS',
-          ResponseValidation: { ResponseType: 'STRING_MAP' },
-          LambdaInvocationAttributes: {
-            requestType: 'welcomeMessage',
-            callerNumber: '$.Attributes.callerNumber',
-            dialedNumber: '$.Attributes.dialedNumber',
-            clinicId: '$.Attributes.clinicId',
-          },
-        },
-        Transitions: {
-          NextAction: 'store-welcome-attrs',
-          // Fail open: fall back to a static greeting if lookup fails
-          Errors: [{ NextAction: 'welcome-message-static', ErrorType: 'NoMatchingError' }],
-        },
-      },
-
-      // 6b) Store welcome/patient attributes on the contact
-      {
-        Identifier: 'store-welcome-attrs',
-        Type: 'UpdateContactAttributes',
-        Parameters: {
-          Attributes: {
             welcomeMessage: '$.External.welcomeMessage',
             patientName: '$.External.patientName',
             patientFirstName: '$.External.patientFirstName',
             isNewPatient: '$.External.isNewPatient',
             timezone: '$.External.timezone',
-            // OpenDental identity (used to avoid re-asking name/DOB in Bedrock Agent)
             PatNum: '$.External.PatNum',
             FName: '$.External.FName',
             LName: '$.External.LName',

@@ -1406,9 +1406,98 @@ async function handleConnectDirectEvent(event: ConnectLambdaEvent): Promise<Conn
   const contactAttributes = contactData?.Attributes || {};
 
   // =====================================================================
-  // Voice-config request (used by Connect "Set voice" block)
+  // Request type routing
   // =====================================================================
   const requestType = String(params['requestType'] || params['functionType'] || '').trim();
+
+  // =====================================================================
+  // Combined init call: voiceConfig + welcomeMessage in a single Lambda
+  // invocation to eliminate a full roundtrip and reduce call-start latency.
+  // =====================================================================
+  if (requestType === 'initCall') {
+    let clinicId = String(contactAttributes['clinicId'] || params['clinicId'] || '').trim();
+
+    if (!clinicId && dialedNumber) {
+      const normalizedDialed = dialedNumber.replace(/\D/g, '');
+      for (const [phone, clinic] of Object.entries(aiPhoneNumberMap)) {
+        if (phone.replace(/\D/g, '') === normalizedDialed) {
+          clinicId = clinic;
+          break;
+        }
+      }
+    }
+    if (!clinicId) {
+      clinicId = DEFAULT_CLINIC_ID;
+    }
+
+    const patientLookupPromise = callerNumber
+      ? searchPatientByPhoneFast({
+        phoneNumber: callerNumber,
+        clinicId,
+        budgetMs: WELCOME_PATIENT_LOOKUP_BUDGET_MS,
+      })
+      : Promise.resolve({ patient: null, matchCount: 0, usedFormat: '' });
+
+    const [voice, patientLookup, greetingTemplate, clinicInfo] = await Promise.all([
+      getVoiceSettingsForClinic(clinicId),
+      patientLookupPromise,
+      getAiAgentsInboundGreetingTemplate(clinicId),
+      getClinicDisplayInfoFromConfig(clinicId),
+    ]);
+
+    const connectEngine = voice.engine === 'long-form' ? 'neural' : voice.engine;
+    const clinicDisplayName = clinicInfo.clinicName;
+    const clinicTimezone = clinicInfo.timezone;
+
+    const matchedPatient = patientLookup.matchCount === 1 ? patientLookup.patient : null;
+    const patNum = String((matchedPatient as any)?.PatNum || '').trim();
+    const patientFirstName = String((matchedPatient as any)?.FName || '').trim();
+    const patientLastName = String((matchedPatient as any)?.LName || '').trim();
+    const birthdate = String((matchedPatient as any)?.Birthdate || '').trim();
+    const dateFirstVisit = String((matchedPatient as any)?.DateFirstVisit || '').trim();
+    const patientName = [patientFirstName, patientLastName].filter(Boolean).join(' ').trim();
+
+    const isNewPatient =
+      matchedPatient
+        ? (dateFirstVisit === '0001-01-01' ? 'true' : 'false')
+        : 'true';
+
+    const welcomeMessage = patientLookup.matchCount === 1 && patientFirstName
+      ? `Hi ${patientFirstName}, how may I help you today?`
+      : renderGreetingTemplate(greetingTemplate, { clinicName: clinicDisplayName });
+
+    console.log('[LexBedrockHook] initCall resolved:', {
+      clinicId,
+      voiceId: voice.voiceId,
+      engine: connectEngine,
+      matchCount: patientLookup.matchCount,
+      hasFirstName: !!patientFirstName,
+    });
+
+    return {
+      aiResponse: '',
+      clinicId,
+      TextToSpeechVoice: voice.voiceId,
+      TextToSpeechEngine: connectEngine,
+      speakingRate: voice.speakingRate,
+      pitch: voice.pitch,
+      volume: voice.volume,
+      timezone: clinicTimezone,
+      welcomeMessage,
+      patientFirstName: patientFirstName || '',
+      patientName: patientName || '',
+      isNewPatient,
+      PatNum: patNum || '',
+      FName: patientFirstName || '',
+      LName: patientLastName || '',
+      Birthdate: birthdate || '',
+      IsNewPatient: isNewPatient,
+    };
+  }
+
+  // =====================================================================
+  // Voice-config request (used by Connect "Set voice" block) - legacy
+  // =====================================================================
   if (requestType === 'voiceConfig') {
     // Determine clinic from explicit attribute first, then dialed number mapping.
     let voiceClinicId = String(contactAttributes['clinicId'] || params['clinicId'] || '').trim();
