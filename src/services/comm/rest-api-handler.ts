@@ -595,7 +595,45 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
             result = await restSaveUserPreference(authedUserID, parsedBody, logCtx);
         }
 
-        // Audit Logs endpoint
+        // Audit Logs endpoints
+        else if (path.match(/^\/api\/audit-logs\/user$/) && httpMethod === 'GET') {
+            log.info('Routing to getUserAuditLogs', logCtx);
+            routeMatched = true;
+            const limit = parseInt(queryStringParameters?.limit || '50', 10);
+            try {
+                const logs = await AuditService.getUserAuditLogs(authedUserID, limit);
+                result = response(200, { success: true, auditLogs: logs });
+            } catch (err) {
+                log.error('Failed to fetch user audit logs', logCtx, err as Error);
+                result = response(500, { success: false, message: 'Failed to fetch audit logs' });
+            }
+        }
+        else if (path.match(/^\/api\/audit-logs\/resource\/[^/]+$/) && httpMethod === 'GET') {
+            const resourceID = path.split('/')[4];
+            log.info('Routing to getResourceAuditLogs', { ...logCtx, resourceID });
+            routeMatched = true;
+            const limit = parseInt(queryStringParameters?.limit || '50', 10);
+            try {
+                const logs = await AuditService.getResourceAuditLogs(resourceID, limit);
+                result = response(200, { success: true, auditLogs: logs });
+            } catch (err) {
+                log.error('Failed to fetch resource audit logs', logCtx, err as Error);
+                result = response(500, { success: false, message: 'Failed to fetch audit logs' });
+            }
+        }
+        else if (path.match(/^\/api\/audit-logs\/action\/[^/]+$/) && httpMethod === 'GET') {
+            const action = path.split('/')[4];
+            log.info('Routing to getActionAuditLogs', { ...logCtx, action });
+            routeMatched = true;
+            const limit = parseInt(queryStringParameters?.limit || '50', 10);
+            try {
+                const logs = await AuditService.getActionAuditLogs(action as any, limit);
+                result = response(200, { success: true, auditLogs: logs });
+            } catch (err) {
+                log.error('Failed to fetch action audit logs', logCtx, err as Error);
+                result = response(500, { success: false, message: 'Failed to fetch audit logs' });
+            }
+        }
         else if (path.match(/^\/api\/audit-logs$/) && httpMethod === 'GET') {
             log.info('Routing to getAuditLogs', logCtx);
             routeMatched = true;

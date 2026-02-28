@@ -744,9 +744,14 @@ export class CommStack extends Stack {
     // /api/audit-logs endpoints (Audit Trail)
     const auditLogs = api.addResource('audit-logs');
     auditLogs.addMethod('GET', restIntegration, { authorizer });  // Get current user's audit logs
+    const auditLogsByUser = auditLogs.addResource('user');
+    auditLogsByUser.addMethod('GET', restIntegration, { authorizer }); // Get current user's audit logs (explicit)
     const auditLogsByResource = auditLogs.addResource('resource');
     const auditLogsByResourceId = auditLogsByResource.addResource('{resourceID}');
     auditLogsByResourceId.addMethod('GET', restIntegration, { authorizer }); // Get audit logs for a specific resource
+    const auditLogsByAction = auditLogs.addResource('action');
+    const auditLogsByActionName = auditLogsByAction.addResource('{action}');
+    auditLogsByActionName.addMethod('GET', restIntegration, { authorizer }); // Get audit logs by action type
 
     // CloudWatch alarms for REST API handler
     createLambdaErrorAlarm(restApiHandler, 'rest-api-handler');

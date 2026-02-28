@@ -1808,11 +1808,7 @@ async function startFavorRequest(
             return;
         }
     } else {
-        // CRITICAL FIX: Prevent a user from starting a request with themselves (1-to-1 only)
-        if (senderID === receiverID) {
-            await sendToClient(apiGwManagement, senderConnectionId, { type: 'error', message: 'A favor request cannot be started with yourself. Please select another user.' });
-            return;
-        }
+        // Self-assignment is allowed (user can assign tasks to themselves)
         recipients = [receiverID as string];
     }
 
@@ -1981,6 +1977,44 @@ async function startFavorRequest(
             existingID,
             { priority: priority as TaskPriority, category: category as SystemModule }
         );
+
+        // Email notification for new task in existing conversation
+        try {
+            console.log(`📧 startFavorRequest (reused): Sending task assignment email for existing conversation ${existingID}`);
+            if (isGroupRequest) {
+                const teamResult2 = await ddb.send(new GetCommand({
+                    TableName: TEAMS_TABLE!,
+                    Key: { teamID },
+                }));
+                const team2 = teamResult2.Item;
+                await sendTaskAssignmentEmail({
+                    senderID,
+                    recipientIDs: recipients,
+                    initialMessage,
+                    requestType,
+                    deadline,
+                    title: updatedFavor.title || title,
+                    priority: updatedFavor.priority || priority,
+                    teamName: team2?.name || 'Unknown Group',
+                    teamMembers: team2?.members || recipients,
+                    isGroup: true,
+                });
+            } else {
+                await sendTaskAssignmentEmail({
+                    senderID,
+                    recipientIDs: [receiverID as string],
+                    initialMessage,
+                    requestType,
+                    deadline,
+                    title: updatedFavor.title || title,
+                    priority: updatedFavor.priority || priority,
+                    isGroup: false,
+                });
+            }
+            console.log('✅ Task assignment email sent successfully for reused conversation');
+        } catch (emailErr: any) {
+            console.error('❌ Failed to send task assignment email for reused conversation:', emailErr?.message || emailErr);
+        }
 
         // Confirm to sender — use same type so frontend handles it consistently
         await sendToClient(apiGwManagement, senderConnectionId, {
@@ -2477,12 +2511,13 @@ async function resolveRequest(
         await ddb.send(new UpdateCommand({
             TableName: FAVORS_TABLE,
             Key: { favorRequestID },
-            // Also reset unread count on resolve
-            UpdateExpression: 'SET #s = :resolved, updatedAt = :ua, unreadCount = :zero',
+            // Also reset unread count on resolve and set completedAt
+            UpdateExpression: 'SET #s = :resolved, updatedAt = :ua, completedAt = :ca, unreadCount = :zero',
             ExpressionAttributeNames: { '#s': 'status' },
             ExpressionAttributeValues: {
                 ':resolved': 'resolved',
                 ':ua': nowIso,
+                ':ca': nowIso,
                 ':zero': 0, // Reset unread count
             },
         }));
@@ -2495,7 +2530,8 @@ async function resolveRequest(
             type: 'requestResolved',
             favorRequestID,
             resolvedBy: senderID,
-            updatedAt: nowIso
+            updatedAt: nowIso,
+            completedAt: nowIso,
         };
 
         await sendToAll(apiGwManagement, participants, broadcastPayload, { notifyOffline: false });
