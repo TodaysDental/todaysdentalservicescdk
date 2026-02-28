@@ -513,6 +513,11 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
             log.info('Routing to updateTaskDeadline', { ...logCtx, taskID });
             routeMatched = true;
             result = await updateTaskDeadline(authedUserID, taskID, parsedBody, logCtx);
+        } else if (path.match(/^\/api\/tasks\/[^/]+$/) && httpMethod === 'PUT') {
+            const taskID = pathParameters?.taskID || path.split('/')[3];
+            log.info('Routing to updateTask', { ...logCtx, taskID });
+            routeMatched = true;
+            result = await updateTask(authedUserID, taskID, parsedBody, logCtx);
         } else if (path.match(/^\/api\/tasks$/) && httpMethod === 'POST') {
             log.info('Routing to createTask', logCtx);
             routeMatched = true;
@@ -1878,6 +1883,103 @@ async function updateTaskDeadline(userID: string, taskID: string, body: any, log
         success: true,
         message: 'Task deadline updated successfully',
         task: { taskID, deadline, updatedAt: nowIso },
+    });
+}
+
+/**
+ * PUT /api/tasks/{taskID}
+ * General task update — edits title, description, priority, category, deadline, requestType.
+ */
+async function updateTask(userID: string, taskID: string, body: any, logCtx?: LogContext): Promise<APIGatewayProxyResult> {
+    const fnStart = Date.now();
+    const fnCtx = { ...logCtx, function: 'updateTask', taskID };
+    const { title, description, priority, category, deadline, requestType } = body;
+    const nowIso = new Date().toISOString();
+
+    log.debug('Update task', { ...fnCtx, title, priority, category, deadline, requestType });
+
+    // Verify the task exists and user is a participant
+    const dbGetStart = Date.now();
+    log.dbOperation('GetItem', FAVORS_TABLE, { favorRequestID: taskID }, fnCtx);
+    const getResult = await ddb.send(new GetCommand({
+        TableName: FAVORS_TABLE,
+        Key: { favorRequestID: taskID },
+    }));
+    log.dbResult('GetItem', FAVORS_TABLE, getResult.Item ? 1 : 0, Date.now() - dbGetStart, fnCtx);
+
+    if (!getResult.Item) {
+        log.warn('Task not found', fnCtx);
+        return response(404, { success: false, message: 'Task not found' });
+    }
+
+    const favor = getResult.Item as FavorRequest;
+
+    // Check if user is a participant (sender, receiver, current assignee, or team member)
+    let isParticipant = isUserDirectConversationParticipant(favor, userID);
+    if (!isParticipant && favor.teamID) {
+        const team = await getTeamById(favor.teamID, fnCtx);
+        if (team && team.members.includes(userID)) {
+            isParticipant = true;
+        }
+    }
+
+    if (!isParticipant) {
+        log.warn('User not authorized to update task', { ...fnCtx, userID, senderID: favor.senderID, receiverID: favor.receiverID });
+        return response(403, { success: false, message: 'You are not authorized to update this task' });
+    }
+
+    // Build update expression dynamically based on provided fields
+    const expressionParts: string[] = ['updatedAt = :ua'];
+    const expressionAttrValues: Record<string, any> = { ':ua': nowIso };
+    const expressionAttrNames: Record<string, string> = {};
+
+    if (title !== undefined) {
+        expressionParts.push('title = :title');
+        expressionAttrValues[':title'] = title;
+    }
+    if (description !== undefined) {
+        expressionParts.push('description = :desc');
+        expressionAttrValues[':desc'] = description;
+    }
+    if (priority !== undefined) {
+        expressionParts.push('priority = :pri');
+        expressionAttrValues[':pri'] = priority;
+    }
+    if (category !== undefined) {
+        expressionParts.push('category = :cat');
+        expressionAttrValues[':cat'] = category;
+    }
+    if (deadline !== undefined) {
+        if (deadline) {
+            expressionParts.push('deadline = :dl');
+            expressionAttrValues[':dl'] = deadline;
+        }
+        // If deadline is empty/null, we still keep it (don't remove) for simplicity
+    }
+    if (requestType !== undefined) {
+        expressionParts.push('requestType = :rt');
+        expressionAttrValues[':rt'] = requestType;
+    }
+
+    const updateExpression = 'SET ' + expressionParts.join(', ');
+
+    const dbUpdateStart = Date.now();
+    log.dbOperation('UpdateItem', FAVORS_TABLE, { favorRequestID: taskID, fields: Object.keys(body) }, fnCtx);
+    await ddb.send(new UpdateCommand({
+        TableName: FAVORS_TABLE,
+        Key: { favorRequestID: taskID },
+        UpdateExpression: updateExpression,
+        ...(Object.keys(expressionAttrNames).length > 0 && { ExpressionAttributeNames: expressionAttrNames }),
+        ExpressionAttributeValues: expressionAttrValues,
+    }));
+    log.dbResult('UpdateItem', FAVORS_TABLE, 1, Date.now() - dbUpdateStart, fnCtx);
+
+    log.info('updateTask completed', { ...fnCtx, updatedFields: Object.keys(body).filter(k => body[k] !== undefined), durationMs: Date.now() - fnStart });
+
+    return response(200, {
+        success: true,
+        message: 'Task updated successfully',
+        task: { taskID, ...body, updatedAt: nowIso },
     });
 }
 
