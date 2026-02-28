@@ -2711,11 +2711,23 @@ async function fetchRequests(
             !(item.deletedBy && Array.isArray(item.deletedBy) && item.deletedBy.includes(callerID))
         );
 
+        // Convert DynamoDB Sets to Arrays before JSON serialization
+        // (JSON.stringify(Set) produces '{}', losing the data)
+        const serializableItems = items.map((item: any) => {
+            const cleaned = { ...item };
+            for (const key of Object.keys(cleaned)) {
+                if (cleaned[key] instanceof Set) {
+                    cleaned[key] = Array.from(cleaned[key]);
+                }
+            }
+            return cleaned;
+        });
+
         // Send the results back to the client
         await sendToClient(apiGwManagement, connectionId, {
             type: 'favorRequestsList',
             role,
-            items,
+            items: serializableItems,
             nextToken: newToken,
         });
 
