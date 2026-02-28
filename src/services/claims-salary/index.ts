@@ -165,37 +165,25 @@ SELECT
   SUM(t.EobsAttached) AS EobsAttached,
   SUM(t.DeniedClaims) AS DeniedClaims
 FROM (
-  /* Claims posted/entered by date of entry */
   SELECT
     u.UserName AS EnteredBy,
     COUNT(*) AS ClaimsPosted,
-    0 AS EobsAttached,
+    COUNT(DISTINCT sub.ClaimPaymentNum) AS EobsAttached,
     0 AS DeniedClaims
-  FROM claim c
-  INNER JOIN userod u ON u.UserNum = c.SecUserNumEntry
-  WHERE c.SecDateEntry BETWEEN @DateStart AND @DateEnd
+  FROM (
+    SELECT DISTINCT c.ClaimNum, cp.ClaimPaymentNum, cp.SecUserNumEntry
+    FROM claim c
+    INNER JOIN claimproc cp2 ON cp2.ClaimNum = c.ClaimNum
+    INNER JOIN claimpayment cp ON cp.ClaimPaymentNum = cp2.ClaimPaymentNum
+    INNER JOIN eobattach ea ON ea.ClaimPaymentNum = cp.ClaimPaymentNum
+    WHERE c.DateReceived BETWEEN @DateStart AND @DateEnd
+      AND ea.FileName IS NOT NULL AND ea.FileName <> ''
+  ) sub
+  INNER JOIN userod u ON u.UserNum = sub.SecUserNumEntry
   GROUP BY u.UserName
 
   UNION ALL
 
-  /* EOB attached per claim: claims that have at least one eobattach on any attached claimpayment */
-  SELECT
-    u.UserName AS EnteredBy,
-    0 AS ClaimsPosted,
-    COUNT(DISTINCT c.ClaimNum) AS EobsAttached,
-    0 AS DeniedClaims
-  FROM claim c
-  INNER JOIN claimproc cp2 ON cp2.ClaimNum = c.ClaimNum
-  INNER JOIN claimpayment cp ON cp.ClaimPaymentNum = cp2.ClaimPaymentNum
-  INNER JOIN eobattach ea ON ea.ClaimPaymentNum = cp.ClaimPaymentNum
-  INNER JOIN userod u ON u.UserNum = cp.SecUserNumEntry
-  WHERE c.SecDateEntry BETWEEN @DateStart AND @DateEnd
-    AND ea.FileName IS NOT NULL AND ea.FileName <> ''
-  GROUP BY u.UserName
-
-  UNION ALL
-
-  /* Denied claim status history entries */
   SELECT
     u.UserName AS EnteredBy,
     0 AS ClaimsPosted,
@@ -204,12 +192,12 @@ FROM (
   FROM claimtracking ct
   INNER JOIN definition d ON d.DefNum = ct.TrackingDefNum
   INNER JOIN userod u ON u.UserNum = ct.UserNum
-  WHERE ct.TrackingType = 'StatusHistory'
-    AND ct.DateTimeEntry >= CONCAT(@DateStart,' 00:00:00')
-    AND ct.DateTimeEntry <  DATE_ADD(CONCAT(@DateEnd,' 00:00:00'), INTERVAL 1 DAY)
-    AND LOWER(d.ItemName) LIKE '%denied%'
+  WHERE LOWER(d.ItemName) LIKE '%denied%'
+    AND ct.DateTimeEntry >= CONCAT(@DateStart, ' 00:00:00')
+    AND ct.DateTimeEntry < DATE_ADD(CONCAT(@DateEnd, ' 00:00:00'), INTERVAL 1 DAY)
   GROUP BY u.UserName
 ) t
+WHERE t.EnteredBy IS NOT NULL AND t.EnteredBy <> ''
 GROUP BY t.EnteredBy
 ORDER BY t.EnteredBy;
   `.trim();
