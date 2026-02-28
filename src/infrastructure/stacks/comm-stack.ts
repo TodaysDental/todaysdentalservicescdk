@@ -697,6 +697,7 @@ export class CommStack extends Stack {
     const tasksGroup = tasks.addResource('group');
     tasksGroup.addMethod('POST', restIntegration, { authorizer });
     const taskById = tasks.addResource('{taskID}');
+    taskById.addMethod('PUT', restIntegration, { authorizer });  // General task update (title, desc, priority, etc.)
     const taskForward = taskById.addResource('forward');
     taskForward.addMethod('POST', restIntegration, { authorizer });
     const taskDeadline = taskById.addResource('deadline');
