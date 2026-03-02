@@ -10,12 +10,12 @@ import {
   PermissionType,
   UserPermissions,
 } from '../../shared/utils/permissions-helper';
-import { 
-  getClinicConfig, 
-  getClinicSecrets, 
+import {
+  getClinicConfig,
+  getClinicSecrets,
   getGlobalSecret,
-  ClinicConfig, 
-  ClinicSecrets 
+  ClinicConfig,
+  ClinicSecrets
 } from '../../shared/utils/secrets-helper';
 import { APIGatewayProxyEvent, APIGatewayProxyResult, APIGatewayProxyEventQueryStringParameters } from 'aws-lambda';
 import { parse as parseCsv } from 'csv-parse/sync';
@@ -60,15 +60,15 @@ async function getClinicCreds(clinicId: string): Promise<ClinicCreds | null> {
   if (clinicCredsCache.has(clinicId)) {
     return clinicCredsCache.get(clinicId)!;
   }
-  
+
   // Fetch clinic secrets and global SFTP password in parallel
   const [secrets, sftpPassword] = await Promise.all([
     getClinicSecrets(clinicId),
     getGlobalSecret('consolidated_sftp', 'password'),
   ]);
-  
+
   if (!secrets) return null;
-  
+
   const creds: ClinicCreds = {
     developerKey: secrets.openDentalDeveloperKey,
     customerKey: secrets.openDentalCustomerKey,
@@ -78,7 +78,7 @@ async function getClinicCreds(clinicId: string): Promise<ClinicCreds | null> {
     sftpPassword: sftpPassword || '',
     sftpRemoteDir: 'QuerytemplateCSV',
   };
-  
+
   clinicCredsCache.set(clinicId, creds);
   return creds;
 }
@@ -132,146 +132,146 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
       return httpErr(event, 400, `No Open Dental credentials configured for clinicId=${clinicId}`);
     }
 
-  // Handle Open Dental SQL queries with SFTP delivery FIRST
-  if (proxy === 'queries' && method === 'POST') {
-    if (!body || !body.SqlCommand) return httpErr(event, 400, 'Missing SqlCommand');
+    // Handle Open Dental SQL queries with SFTP delivery FIRST
+    if (proxy === 'queries' && method === 'POST') {
+      if (!body || !body.SqlCommand) return httpErr(event, 400, 'Missing SqlCommand');
 
-    // Validate SFTP credentials are available
-    if (!creds.sftpHost) {
-      console.error('CONSOLIDATED_SFTP_HOST is not configured or empty');
-      return httpErr(event, 500, 'SFTP configuration error: Host not available');
+      // Validate SFTP credentials are available
+      if (!creds.sftpHost) {
+        console.error('CONSOLIDATED_SFTP_HOST is not configured or empty');
+        return httpErr(event, 500, 'SFTP configuration error: Host not available');
+      }
+      if (!creds.sftpPassword) {
+        console.error('CONSOLIDATED_SFTP_PASSWORD is not configured or empty');
+        return httpErr(event, 500, 'SFTP configuration error: Password not available');
+      }
+
+      // IMPORTANT: When multiple clinics run in parallel, each request must download
+      // its own CSV result file. Using "download latest CSV" can cross-wire responses.
+      const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
+      const safeClinicId = clinicId.replace(/[^a-zA-Z0-9_-]/g, '-');
+      const requestId = (() => {
+        const rid = (event.requestContext as any)?.requestId;
+        return typeof rid === 'string' && rid ? rid : randomUUID();
+      })();
+      const safeRequestId = requestId.replace(/[^a-zA-Z0-9_-]/g, '-').slice(0, 32);
+      const fileName = `query_${safeClinicId}_${timestamp}_${safeRequestId}.csv`;
+
+      // Clean hostname - remove any protocol or trailing slashes
+      const clean = (s: string) => (s || '').replace(/^(https?:\/\/)?/, '').replace(/^\/+|\/+$/g, '');
+      const host = clean(creds.sftpHost);
+      const username = clean(creds.sftpUsername);
+
+      // Validate components
+      if (!host) {
+        console.error('SFTP Host is empty after cleaning:', creds.sftpHost);
+        return httpErr(event, 500, 'SFTP configuration error: Invalid host');
+      }
+      if (!username) {
+        console.error('SFTP Username is empty after cleaning:', creds.sftpUsername);
+        return httpErr(event, 500, 'SFTP configuration error: Invalid username');
+      }
+
+      // CRITICAL FIX: Open Dental expects SftpAddress in format "hostname/path/to/file"
+      // The Transfer Family auth lambda maps "/" to "/bucket/sftp-home/sftpuser"
+      // So we need to provide just "hostname/filename.csv" which will write to the root
+      // of the sftpuser's home directory
+      const sftpAddress = `${host}/${fileName}`;
+
+      console.log('=== Open Dental Query Debug ===');
+      console.log('SFTP Host:', host);
+      console.log('SFTP Username:', username);
+      console.log('SFTP Address:', sftpAddress);
+      console.log('SFTP File Name:', fileName);
+      console.log('Expected S3 Path: s3://bucket/sftp-home/sftpuser/' + fileName);
+      console.log('CONSOLIDATED_SFTP_HOST env:', process.env.CONSOLIDATED_SFTP_HOST);
+      console.log('CONSOLIDATED_SFTP_PASSWORD available (from GlobalSecrets):', !!creds.sftpPassword);
+
+      const qp = buildQueryString(queryParams);
+      const fullPath = `${API_BASE}/${proxy}${qp}`;
+
+      const headers = {
+        Authorization: `ODFHIR ${creds.developerKey}/${creds.customerKey}`,
+        'Content-Type': 'application/json',
+      };
+
+      // Construct API body for Open Dental
+      const apiBody = {
+        SqlCommand: body.SqlCommand,
+        SftpAddress: sftpAddress,
+        SftpUsername: username,
+        SftpPassword: creds.sftpPassword,
+        SftpPort: creds.sftpPort || 22,
+        IsAsync: 'false',
+      };
+
+      console.log('Open Dental API Request Body:', JSON.stringify({
+        ...apiBody,
+        SqlCommand: apiBody.SqlCommand.substring(0, 100) + '...',
+        SftpPassword: '[REDACTED]'
+      }, null, 2));
+
+      // Send query to Open Dental API
+      const apiResponse = await makeOpenDentalRequest('POST', fullPath, headers, JSON.stringify(apiBody));
+
+      console.log('Open Dental API Response Status:', apiResponse.statusCode);
+      console.log('Open Dental API Response Body:', apiResponse.body.substring(0, 500));
+
+      if (apiResponse.statusCode !== 201) {
+        console.error('Open Dental API returned non-201 status');
+        return formatResponse(event, apiResponse);
+      }
+
+      // Wait a bit for Open Dental to write the file
+      await new Promise(resolve => setTimeout(resolve, 3000));
+
+      // Fetch *this request's* CSV over SFTP using ssh2.
+      // Look in the root directory (.) since that's where sftpuser's logical mapping points.
+      const csvData: string = await downloadCsvByName({
+        host,
+        port: creds.sftpPort || 22,
+        username: username,
+        password: creds.sftpPassword,
+        remoteDir: '.', // Root directory for sftpuser
+        fileName,
+      });
+
+      let jsonResult: any;
+      if (csvData.trim() === 'OK') {
+        jsonResult = { message: 'No results returned from query' };
+      } else {
+        jsonResult = parseCsv(csvData, { columns: true, skip_empty_lines: true, trim: true });
+      }
+
+      return { statusCode: 200, headers: corsHeaders, body: JSON.stringify(jsonResult) };
     }
-    if (!creds.sftpPassword) {
-      console.error('CONSOLIDATED_SFTP_PASSWORD is not configured or empty');
-      return httpErr(event, 500, 'SFTP configuration error: Password not available');
-    }
 
-    // IMPORTANT: When multiple clinics run in parallel, each request must download
-    // its own CSV result file. Using "download latest CSV" can cross-wire responses.
-    const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
-    const safeClinicId = clinicId.replace(/[^a-zA-Z0-9_-]/g, '-');
-    const requestId = (() => {
-      const rid = (event.requestContext as any)?.requestId;
-      return typeof rid === 'string' && rid ? rid : randomUUID();
-    })();
-    const safeRequestId = requestId.replace(/[^a-zA-Z0-9_-]/g, '-').slice(0, 32);
-    const fileName = `query_${safeClinicId}_${timestamp}_${safeRequestId}.csv`;
-
-    // Clean hostname - remove any protocol or trailing slashes
-    const clean = (s: string) => (s || '').replace(/^(https?:\/\/)?/, '').replace(/^\/+|\/+$/g, '');
-    const host = clean(creds.sftpHost);
-    const username = clean(creds.sftpUsername);
-
-    // Validate components
-    if (!host) {
-      console.error('SFTP Host is empty after cleaning:', creds.sftpHost);
-      return httpErr(event, 500, 'SFTP configuration error: Invalid host');
-    }
-    if (!username) {
-      console.error('SFTP Username is empty after cleaning:', creds.sftpUsername);
-      return httpErr(event, 500, 'SFTP configuration error: Invalid username');
-    }
-
-    // CRITICAL FIX: Open Dental expects SftpAddress in format "hostname/path/to/file"
-    // The Transfer Family auth lambda maps "/" to "/bucket/sftp-home/sftpuser"
-    // So we need to provide just "hostname/filename.csv" which will write to the root
-    // of the sftpuser's home directory
-    const sftpAddress = `${host}/${fileName}`;
-
-    console.log('=== Open Dental Query Debug ===');
-    console.log('SFTP Host:', host);
-    console.log('SFTP Username:', username);
-    console.log('SFTP Address:', sftpAddress);
-    console.log('SFTP File Name:', fileName);
-    console.log('Expected S3 Path: s3://bucket/sftp-home/sftpuser/' + fileName);
-    console.log('CONSOLIDATED_SFTP_HOST env:', process.env.CONSOLIDATED_SFTP_HOST);
-    console.log('CONSOLIDATED_SFTP_PASSWORD available (from GlobalSecrets):', !!creds.sftpPassword);
-
-    const qp = buildQueryString(queryParams);
-    const fullPath = `${API_BASE}/${proxy}${qp}`;
-
-    const headers = {
-      Authorization: `ODFHIR ${creds.developerKey}/${creds.customerKey}`,
-      'Content-Type': 'application/json',
-    };
-
-    // Construct API body for Open Dental
-    const apiBody = {
-      SqlCommand: body.SqlCommand,
-      SftpAddress: sftpAddress,
-      SftpUsername: username,
-      SftpPassword: creds.sftpPassword,
-      SftpPort: creds.sftpPort || 22,
-      IsAsync: 'false',
-    };
-
-    console.log('Open Dental API Request Body:', JSON.stringify({
-      ...apiBody,
-      SqlCommand: apiBody.SqlCommand.substring(0, 100) + '...',
-      SftpPassword: '[REDACTED]'
-    }, null, 2));
-
-    // Send query to Open Dental API
-    const apiResponse = await makeOpenDentalRequest('POST', fullPath, headers, JSON.stringify(apiBody));
-
-    console.log('Open Dental API Response Status:', apiResponse.statusCode);
-    console.log('Open Dental API Response Body:', apiResponse.body.substring(0, 500));
-
-    if (apiResponse.statusCode !== 201) {
-      console.error('Open Dental API returned non-201 status');
-      return formatResponse(event, apiResponse);
-    }
-
-    // Wait a bit for Open Dental to write the file
-    await new Promise(resolve => setTimeout(resolve, 3000));
-
-    // Fetch *this request's* CSV over SFTP using ssh2.
-    // Look in the root directory (.) since that's where sftpuser's logical mapping points.
-    const csvData: string = await downloadCsvByName({
-      host,
-      port: creds.sftpPort || 22,
-      username: username,
-      password: creds.sftpPassword,
-      remoteDir: '.', // Root directory for sftpuser
-      fileName,
-    });
-
-    let jsonResult: any;
-    if (csvData.trim() === 'OK') {
-      jsonResult = { message: 'No results returned from query' };
-    } else {
-      jsonResult = parseCsv(csvData, { columns: true, skip_empty_lines: true, trim: true });
-    }
-
-    return { statusCode: 200, headers: corsHeaders, body: JSON.stringify(jsonResult) };
-  }
-
-  if (['GET', 'POST', 'PUT'].includes(method) && /^(patients|appointments|queries|operatories|providers|appointmenttypes|schedules|clockevents|userods|employees|accountmodules|adjustments|allergies|allergydefs|apptfields|apptfielddefs|asapcomms|autonotecontrols|autonotes|benefits|carriers|chartmodules|claimforms|claimpayments|claimprocs|claims|claimtrackings|codegroups|commlogs|computers|covcats|covspans|definitions|discountplans|discountplansubs|diseasedefs|diseases|documents|ehrpatients|employers|eobattaches|etrans|etransmessagetexts|etranss|familymodules|fees|feescheds|histappointments|insplans|inssubs|insverifies|labcases|laboratories|labturnarounds|medicationpats|medications|patfielddefs|patfields|patientnotes|patientraces|patplans|payments|payplancharges|payplans|paysplits|pharmacies|periomeasures|popups|preferences|procedurecodes|procnotes|proctps|quickpastecats|quickpastenotes|recalls|recalltypes|refattaches|referrals|reports|rxpats|scheduleops|securityperms|securitylogs|sheetdefs|sheets|sheetfields|signalods|statements|subscriptions|substitutionlinks|tasklists|tasknotes|tasks|toothinitials|treatplanattaches|treatplans|usergroupattaches|usergroups)(\/|$)/.test(proxy)) {
-    let fullPath: string;
-    // This special path logic is likely only for GET, but we'll keep it for compatibility.
-    // POST/PUT requests will fall through to the else block.
-    const m = /^patients\/(\d+)$/.exec(proxy);
-    if (method === 'GET' && m) {
+    if (['GET', 'POST', 'PUT'].includes(method) && /^(patients|appointments|queries|operatories|providers|appointmenttypes|schedules|clockevents|userods|employees|accountmodules|adjustments|allergies|allergydefs|apptfields|apptfielddefs|asapcomms|autonotecontrols|autonotes|benefits|carriers|chartmodules|claimforms|claimpayments|claimprocs|claims|claimtrackings|codegroups|commlogs|computers|covcats|covspans|definitions|discountplans|discountplansubs|diseasedefs|diseases|documents|ehrpatients|employers|eobattaches|etrans|etransmessagetexts|etranss|familymodules|fees|feescheds|histappointments|insplans|inssubs|insverifies|labcases|laboratories|labturnarounds|medicationpats|medications|patfielddefs|patfields|patientnotes|patientraces|patplans|payments|payplancharges|payplans|paysplits|pharmacies|periomeasures|popups|preferences|procedurecodes|procedurelogs|procnotes|proctps|quickpastecats|quickpastenotes|recalls|recalltypes|refattaches|referrals|reports|rxpats|scheduleops|securityperms|securitylogs|sheetdefs|sheets|sheetfields|signalods|statements|subscriptions|substitutionlinks|tasklists|tasknotes|tasks|toothinitials|treatplanattaches|treatplans|usergroupattaches|usergroups)(\/|$)/.test(proxy)) {
+      let fullPath: string;
+      // This special path logic is likely only for GET, but we'll keep it for compatibility.
+      // POST/PUT requests will fall through to the else block.
+      const m = /^patients\/(\d+)$/.exec(proxy);
+      if (method === 'GET' && m) {
         const patNum = m[1];
         fullPath = `${API_BASE}/patients/Simple?PatNum=${patNum}`;
-    } else {
+      } else {
         const qp = buildQueryString(queryParams);
         fullPath = `${API_BASE}/${proxy}${qp}`;
-    }
+      }
 
-    const headers = {
+      const headers = {
         'Authorization': `ODFHIR ${creds.developerKey}/${creds.customerKey}`,
         'Content-Type': 'application/json',
-    };
+      };
 
-    // Conditionally include the body for POST and PUT requests
-    const requestBody = (method === 'POST' || method === 'PUT') ? JSON.stringify(body) : null;
+      // Conditionally include the body for POST and PUT requests
+      const requestBody = (method === 'POST' || method === 'PUT') ? JSON.stringify(body) : null;
 
-    const odRes = await makeOpenDentalRequest(method, fullPath, headers, requestBody);
-    return formatResponse(event, odRes);
-  }
+      const odRes = await makeOpenDentalRequest(method, fullPath, headers, requestBody);
+      return formatResponse(event, odRes);
+    }
 
-  return httpErr(event, 400, 'Unsupported request');
+    return httpErr(event, 400, 'Unsupported request');
   } catch (err: any) {
     return httpErr(event, 500, err?.message || 'Internal error');
   }
@@ -283,7 +283,7 @@ async function makeOpenDentalRequest(method: string, path: string, headers: Reco
   if (body) {
     finalHeaders['Content-Length'] = Buffer.byteLength(body).toString();
   }
-  
+
   const options = { hostname: API_HOST, path, method, headers: finalHeaders } as any;
   return new Promise<{ statusCode: number; headers: any; body: string }>((resolve, reject) => {
     const req = https.request(options, (res) => {
