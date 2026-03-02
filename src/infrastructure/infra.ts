@@ -47,6 +47,7 @@ import { EmailStack } from './stacks/email-stack';
 import { AccountingStack } from './stacks/accounting-stack';
 import { InsuranceAutomationStack } from './stacks/insurance-automation-stack';
 import { PaymentPostingSalaryStack } from './stacks/payment-posting-salary-stack';
+import { ClaimsSalaryStack } from './stacks/claims-salary-stack';
 import { SecretsStack } from './stacks/secrets-stack';
 import { ItTicketStack } from './stacks/it-ticket-stack';
 import { PushNotificationsStack } from './stacks/push-notifications-stack';
@@ -993,9 +994,8 @@ feeScheduleSyncStack.addDependency(openDentalStack); // Explicit - uses SFTP ser
 feeScheduleSyncStack.addDependency(secretsStack); // Explicit - uses GlobalSecrets for SFTP password
 
 // Email Stack - Clinic-specific email operations (Gmail REST API + IMAP/SMTP)
-// Domain-level credentials are defined as constants in email-stack.ts:
-// - GMAIL_CLIENT_ID, GMAIL_CLIENT_SECRET: Google OAuth2 credentials
-// - DOMAIN_SMTP_USER, DOMAIN_SMTP_PASSWORD: Domain email credentials
+// Includes Email Router: scheduled Lambda that polls inboxes, classifies with Bedrock AI,
+// and routes emails to Callbacks table or Comm FavorRequests table
 const emailStack = new EmailStack(app, 'TodaysDentalInsightsEmailN1', {
   env,
   // Pass secrets table names for dynamic secret retrieval
@@ -1003,9 +1003,19 @@ const emailStack = new EmailStack(app, 'TodaysDentalInsightsEmailN1', {
   clinicSecretsTableName: secretsStack.clinicSecretsTable.tableName,
   clinicConfigTableName: secretsStack.clinicConfigTable.tableName,
   secretsEncryptionKeyArn: secretsStack.secretsEncryptionKey.keyArn,
+  // Email Router cross-stack integration
+  commFavorsTableName: communicationsStack.favorsTable.tableName,
+  commFavorsTableArn: communicationsStack.favorsTable.tableArn,
+  commFilesBucketName: communicationsStack.fileBucket.bucketName,
+  commFilesBucketArn: communicationsStack.fileBucket.bucketArn,
+  callbackTablePrefix: callbackStack.callbackTablePrefix,
+  defaultCallbackTableName: callbackStack.defaultCallbackTableName,
+  defaultCallbackTableArn: callbackStack.defaultCallbackTableArn,
 });
-emailStack.addDependency(coreStack); // Explicit - imports AuthorizerFunctionArn (if needed later)
+emailStack.addDependency(coreStack); // Explicit - imports AuthorizerFunctionArn
 emailStack.addDependency(secretsStack); // Explicit - uses GlobalSecrets table for Gmail/cPanel credentials
+emailStack.addDependency(communicationsStack); // Explicit - email router writes to FavorRequests table and S3 bucket
+emailStack.addDependency(callbackStack); // Explicit - email router writes to callback tables
 
 // Accounting Stack - Invoice intake (Accounts Payable) and Bank Reconciliation
 // Integrates with OpenDental for payment data and Odoo for bank transactions
@@ -1035,6 +1045,20 @@ const paymentPostingSalaryStack = new PaymentPostingSalaryStack(app, 'TodaysDent
 paymentPostingSalaryStack.addDependency(coreStack); // Explicit - imports AuthorizerFunctionArn + StaffUser table export
 paymentPostingSalaryStack.addDependency(openDentalStack); // Explicit - uses consolidated Transfer server ID
 paymentPostingSalaryStack.addDependency(secretsStack); // Explicit - uses secrets tables for OpenDental creds + SFTP password
+
+// Claims Salary Analytics (Finance workflow)
+// Computes salary earnings for Claims team by assignee and location using OpenDental SQL queries delivered via SFTP
+const claimsSalaryStack = new ClaimsSalaryStack(app, 'TodaysDentalInsightsClaimsSalaryN1', {
+  env,
+  consolidatedTransferServerId: openDentalStack.consolidatedTransferServer.attrServerId,
+  globalSecretsTableName: secretsStack.globalSecretsTable.tableName,
+  clinicSecretsTableName: secretsStack.clinicSecretsTable.tableName,
+  clinicConfigTableName: secretsStack.clinicConfigTable.tableName,
+  secretsEncryptionKeyArn: secretsStack.secretsEncryptionKey.keyArn,
+});
+claimsSalaryStack.addDependency(coreStack); // Explicit - imports AuthorizerFunctionArn + StaffUser table export
+claimsSalaryStack.addDependency(openDentalStack); // Explicit - uses consolidated Transfer server ID
+claimsSalaryStack.addDependency(secretsStack); // Explicit - uses secrets tables for OpenDental creds + SFTP password
 
 // Insurance Automation Stack - Commission tracking and document processing for insurance team
 // Features: Commission tracking, Textract document processing, Note copying between patients

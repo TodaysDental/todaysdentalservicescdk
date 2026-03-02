@@ -1,4 +1,4 @@
-import { Duration, Stack, StackProps, CfnOutput, Tags, Fn, Aws } from 'aws-cdk-lib';
+import { Duration, RemovalPolicy, Stack, StackProps, CfnOutput, Tags, Fn, Aws } from 'aws-cdk-lib';
 import { Construct } from 'constructs';
 import * as path from 'path';
 import * as lambda from 'aws-cdk-lib/aws-lambda';
@@ -6,6 +6,9 @@ import * as lambdaNode from 'aws-cdk-lib/aws-lambda-nodejs';
 import * as apigw from 'aws-cdk-lib/aws-apigateway';
 import * as iam from 'aws-cdk-lib/aws-iam';
 import * as cloudwatch from 'aws-cdk-lib/aws-cloudwatch';
+import * as dynamodb from 'aws-cdk-lib/aws-dynamodb';
+import * as events from 'aws-cdk-lib/aws-events';
+import * as targets from 'aws-cdk-lib/aws-events-targets';
 import { getCdkCorsConfig, getCorsErrorHeaders } from '../../shared/utils/cors';
 
 // ========================================
@@ -57,12 +60,31 @@ export interface EmailStackProps extends StackProps {
   clinicConfigTableName: string;
   /** KMS key ARN for decrypting secrets */
   secretsEncryptionKeyArn: string;
+
+  // ========================================
+  // EMAIL ROUTER INTEGRATION (cross-stack)
+  // ========================================
+  /** Comm FavorRequests table name for creating tasks */
+  commFavorsTableName?: string;
+  /** Comm FavorRequests table ARN for IAM permissions */
+  commFavorsTableArn?: string;
+  /** Comm S3 files bucket name for uploading email attachments */
+  commFilesBucketName?: string;
+  /** Comm S3 files bucket ARN for IAM permissions */
+  commFilesBucketArn?: string;
+  /** Callback table prefix (e.g., 'todaysdentalinsights-callback-') */
+  callbackTablePrefix?: string;
+  /** Default callback table name for fallback */
+  defaultCallbackTableName?: string;
+  /** Default callback table ARN for IAM permissions */
+  defaultCallbackTableArn?: string;
 }
 
 export class EmailStack extends Stack {
   public readonly gmailHandlerFn: lambdaNode.NodejsFunction;
   public readonly imapSmtpHandlerFn: lambdaNode.NodejsFunction;
   public readonly userEmailHandlerFn: lambdaNode.NodejsFunction;
+  public readonly emailRouterFn: lambdaNode.NodejsFunction;
   public readonly emailApi: apigw.RestApi;
   public readonly authorizer: apigw.RequestAuthorizer;
 
@@ -387,6 +409,185 @@ export class EmailStack extends Stack {
     });
 
     // ========================================
+    // EMAIL ROUTER (Scheduled Inbox Poller + AI Classification)
+    // ========================================
+
+    const processedEmailsTable = new dynamodb.Table(this, 'ProcessedEmailsTable', {
+      tableName: `${this.stackName}-ProcessedEmails`,
+      partitionKey: { name: 'messageId', type: dynamodb.AttributeType.STRING },
+      billingMode: dynamodb.BillingMode.PAY_PER_REQUEST,
+      removalPolicy: RemovalPolicy.DESTROY,
+      timeToLiveAttribute: 'ttl',
+    });
+    applyTags(processedEmailsTable, { Table: 'processed-emails' });
+
+    // ========================================
+    // SYSTEM TASKS TABLE
+    // ========================================
+
+    const systemTasksTable = new dynamodb.Table(this, 'SystemTasksTable', {
+      tableName: `${this.stackName}-SystemTasks`,
+      partitionKey: { name: 'taskId', type: dynamodb.AttributeType.STRING },
+      billingMode: dynamodb.BillingMode.PAY_PER_REQUEST,
+      removalPolicy: RemovalPolicy.DESTROY,
+      timeToLiveAttribute: 'ttl',
+    });
+    applyTags(systemTasksTable, { Table: 'system-tasks' });
+
+    systemTasksTable.addGlobalSecondaryIndex({
+      indexName: 'ModuleIndex',
+      partitionKey: { name: 'module', type: dynamodb.AttributeType.STRING },
+      sortKey: { name: 'createdAt', type: dynamodb.AttributeType.STRING },
+      projectionType: dynamodb.ProjectionType.ALL,
+    });
+    systemTasksTable.addGlobalSecondaryIndex({
+      indexName: 'StatusIndex',
+      partitionKey: { name: 'status', type: dynamodb.AttributeType.STRING },
+      sortKey: { name: 'createdAt', type: dynamodb.AttributeType.STRING },
+      projectionType: dynamodb.ProjectionType.ALL,
+    });
+    systemTasksTable.addGlobalSecondaryIndex({
+      indexName: 'ClinicIndex',
+      partitionKey: { name: 'clinicId', type: dynamodb.AttributeType.STRING },
+      sortKey: { name: 'createdAt', type: dynamodb.AttributeType.STRING },
+      projectionType: dynamodb.ProjectionType.ALL,
+    });
+    systemTasksTable.addGlobalSecondaryIndex({
+      indexName: 'AssignedToIndex',
+      partitionKey: { name: 'assignedTo', type: dynamodb.AttributeType.STRING },
+      sortKey: { name: 'createdAt', type: dynamodb.AttributeType.STRING },
+      projectionType: dynamodb.ProjectionType.ALL,
+    });
+
+    // ========================================
+    // SYSTEM TASKS API HANDLER
+    // ========================================
+
+    const systemTasksHandler = new lambdaNode.NodejsFunction(this, 'SystemTasksHandlerFn', {
+      entry: path.join(__dirname, '..', '..', 'services', 'email', 'system-tasks-handler.ts'),
+      handler: 'handler',
+      runtime: lambda.Runtime.NODEJS_22_X,
+      memorySize: 256,
+      timeout: Duration.seconds(30),
+      bundling: { format: lambdaNode.OutputFormat.CJS, target: 'node22' },
+      environment: {
+        REGION: Stack.of(this).region,
+        SYSTEM_TASKS_TABLE: systemTasksTable.tableName,
+        FAVORS_TABLE: props.commFavorsTableName || '',
+      },
+    });
+    applyTags(systemTasksHandler, { Function: 'system-tasks-handler' });
+    systemTasksTable.grantReadWriteData(systemTasksHandler);
+
+    if (props.commFavorsTableArn) {
+      systemTasksHandler.addToRolePolicy(new iam.PolicyStatement({
+        actions: ['dynamodb:PutItem', 'dynamodb:UpdateItem'],
+        resources: [props.commFavorsTableArn],
+      }));
+    }
+
+    // System Tasks API routes: /system-tasks
+    const systemTasksIntegration = new apigw.LambdaIntegration(systemTasksHandler);
+    const systemTasksResource = this.emailApi.root.addResource('system-tasks');
+    systemTasksResource.addMethod('GET', systemTasksIntegration, {
+      authorizer: this.authorizer,
+      authorizationType: apigw.AuthorizationType.CUSTOM,
+    });
+    systemTasksResource.addMethod('PUT', systemTasksIntegration, {
+      authorizer: this.authorizer,
+      authorizationType: apigw.AuthorizationType.CUSTOM,
+    });
+    systemTasksResource.addMethod('POST', systemTasksIntegration, {
+      authorizer: this.authorizer,
+      authorizationType: apigw.AuthorizationType.CUSTOM,
+    });
+
+    this.emailRouterFn = new lambdaNode.NodejsFunction(this, 'EmailRouterFn', {
+      entry: path.join(__dirname, '..', '..', 'services', 'email', 'email-router.ts'),
+      handler: 'handler',
+      runtime: lambda.Runtime.NODEJS_22_X,
+      memorySize: 1536,
+      timeout: Duration.seconds(300),
+      bundling: {
+        format: lambdaNode.OutputFormat.CJS,
+        target: 'node22',
+      },
+      environment: {
+        PROCESSED_EMAILS_TABLE: processedEmailsTable.tableName,
+        CALLBACK_TABLE_PREFIX: props.callbackTablePrefix || 'todaysdentalinsights-callback-',
+        DEFAULT_CALLBACK_TABLE: props.defaultCallbackTableName || '',
+        FILES_BUCKET: props.commFilesBucketName || '',
+        GLOBAL_SECRETS_TABLE: props.globalSecretsTableName,
+        CLINIC_SECRETS_TABLE: props.clinicSecretsTableName,
+        CLINIC_CONFIG_TABLE: props.clinicConfigTableName,
+        SYSTEM_TASKS_TABLE: systemTasksTable.tableName,
+      },
+    });
+    applyTags(this.emailRouterFn, { Function: 'email-router' });
+    createLambdaErrorAlarm(this.emailRouterFn, 'email-router');
+    createLambdaThrottleAlarm(this.emailRouterFn, 'email-router');
+
+    // ProcessedEmails table read/write
+    processedEmailsTable.grantReadWriteData(this.emailRouterFn);
+    systemTasksTable.grantReadWriteData(this.emailRouterFn);
+
+    // Secrets tables read + KMS decrypt (same as other email lambdas)
+    this.emailRouterFn.addToRolePolicy(secretsReadPolicy);
+    this.emailRouterFn.addToRolePolicy(kmsDecryptPolicy);
+
+    // ClinicConfig Scan permission (for getAllClinicConfigs)
+    this.emailRouterFn.addToRolePolicy(new iam.PolicyStatement({
+      actions: ['dynamodb:Scan'],
+      resources: [
+        `arn:aws:dynamodb:${this.region}:${this.account}:table/${props.clinicConfigTableName}`,
+      ],
+    }));
+
+    // Callback tables write permission (wildcard for all clinic tables)
+    this.emailRouterFn.addToRolePolicy(new iam.PolicyStatement({
+      actions: ['dynamodb:PutItem'],
+      resources: [
+        `arn:aws:dynamodb:${this.region}:${this.account}:table/todaysdentalinsights-callback-*`,
+        `arn:aws:dynamodb:${this.region}:${this.account}:table/RequestCallBacks_*`,
+        ...(props.defaultCallbackTableArn ? [props.defaultCallbackTableArn] : []),
+      ],
+    }));
+
+    // Comm FavorRequests table write permission
+    if (props.commFavorsTableArn) {
+      this.emailRouterFn.addToRolePolicy(new iam.PolicyStatement({
+        actions: ['dynamodb:PutItem'],
+        resources: [props.commFavorsTableArn],
+      }));
+    }
+
+    // S3 attachment upload permission
+    if (props.commFilesBucketArn) {
+      this.emailRouterFn.addToRolePolicy(new iam.PolicyStatement({
+        actions: ['s3:PutObject'],
+        resources: [`${props.commFilesBucketArn}/email-router/*`],
+      }));
+    }
+
+    // Bedrock InvokeModel permission
+    this.emailRouterFn.addToRolePolicy(new iam.PolicyStatement({
+      effect: iam.Effect.ALLOW,
+      actions: ['bedrock:InvokeModel'],
+      resources: [
+        `arn:aws:bedrock:${this.region}::foundation-model/anthropic.claude-3-sonnet-20240229-v1:0`,
+        `arn:aws:bedrock:${this.region}::foundation-model/anthropic.claude-3-haiku-20240307-v1:0`,
+      ],
+    }));
+
+    // EventBridge cron: every 15 minutes
+    new events.Rule(this, 'EmailRouterSchedule', {
+      ruleName: `${this.stackName}-EmailRouterEvery15Min`,
+      description: 'Triggers the Email Router Lambda every 15 minutes to poll clinic inboxes',
+      schedule: events.Schedule.rate(Duration.minutes(15)),
+      targets: [new targets.LambdaFunction(this.emailRouterFn, { retryAttempts: 1 })],
+    });
+
+    // ========================================
     // OUTPUTS
     // ========================================
     
@@ -435,6 +636,22 @@ export class EmailStack extends Stack {
       value: 'https://apig.todaysdentalinsights.com/email',
       description: 'Email API Custom Domain URL',
       exportName: `${this.stackName}-EmailCustomDomainUrl`,
+    });
+
+    new CfnOutput(this, 'EmailRouterFnArn', {
+      value: this.emailRouterFn.functionArn,
+      description: 'Email Router Lambda ARN (scheduled inbox poller)',
+      exportName: `${this.stackName}-EmailRouterFnArn`,
+    });
+
+    new CfnOutput(this, 'ProcessedEmailsTableName', {
+      value: processedEmailsTable.tableName,
+      description: 'ProcessedEmails DynamoDB table for deduplication',
+      exportName: `${this.stackName}-ProcessedEmailsTableName`,
+    });
+
+    new CfnOutput(this, 'SystemTasksTableName', {
+      value: systemTasksTable.tableName,
     });
   }
 }

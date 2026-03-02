@@ -41,7 +41,17 @@ type RegisterClinic = {
   workLocation?: WorkLocation; // Remote/on-premise configuration
   hourlyPay?: number; // Hourly pay rate in dollars
   moduleAccess?: RegisterModuleAccess[]; // Optional - module-level permissions
-  
+
+  // Payment Posting role fee fields
+  perClaimFeeOpenDental?: number;
+  perClaimFeePortal?: number;
+  perPreAuthFee?: number;
+
+  // Claims role fee fields
+  perClaimsPostedAmount?: number; // Per Claims Posted Amount
+  perEobsAttachedAmount?: number; // Per EOB's Attached Amount
+  statusDeniedAmount?: number; // Status Denied Amount
+
   // Open Dental user fields (stored in StaffUser.clinicRoles)
   UserNum?: number; // Open Dental user number (primary key in userod table)
   UserName?: string; // Open Dental username
@@ -54,7 +64,7 @@ type RegisterClinic = {
   emailAddress?: string; // Open Dental email address
   IsHidden?: boolean; // Whether user is hidden/inactive in Open Dental
   UserNumCEMT?: number; // Central Enterprise Management Tool user number
-  
+
   // Legacy aliases (for backward compatibility)
   openDentalUserNum?: number; // Alias for UserNum
   openDentalUsername?: string; // Alias for UserName
@@ -117,11 +127,11 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
     const allowedClinics = getAllowedClinicIds(callerClinicRoles, callerIsSuperAdmin, callerIsGlobalSuperAdmin);
 
     // Parse request body
-  const body = parseBody(event.body) as RegisterBody;
-    
-  try {
-    validateBody(body);
-  } catch (e: any) {
+    const body = parseBody(event.body) as RegisterBody;
+
+    try {
+      validateBody(body);
+    } catch (e: any) {
       return httpErr(400, e?.message || 'invalid body');
     }
 
@@ -131,9 +141,9 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
     }
 
     // Validate clinic assignments
-  if (!body.makeGlobalSuperAdmin) {
+    if (!body.makeGlobalSuperAdmin) {
       const clinicIds = body.clinics.map(c => String(c.clinicId));
-      
+
       // Non-global admins can only assign users to clinics they have access to
       if (!callerIsGlobalSuperAdmin && !callerIsSuperAdmin) {
         const unauthorizedClinics = clinicIds.filter(cid => !hasClinicAccess(allowedClinics, cid));
@@ -166,7 +176,7 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
     try {
       console.log(`[register] Creating email account for user: ${username}`);
       const emailResult = await createEmailAccount(username, givenName, familyName);
-      
+
       if (emailResult.success && emailResult.email) {
         const creds = getEmailCredentials(emailResult.email);
         userEmailCredentials = {
@@ -189,37 +199,47 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
     }
 
     // Build per-clinic role assignments with module permissions and Open Dental fields
-    const clinicRoles = body.makeGlobalSuperAdmin 
-      ? [] 
+    const clinicRoles = body.makeGlobalSuperAdmin
+      ? []
       : body.clinics.map(c => ({
-          clinicId: String(c.clinicId),
-          role: c.role as UserRole,
-          basePay: c.basePay,
-          workLocation: c.workLocation,
-          hourlyPay: c.hourlyPay,
-          moduleAccess: c.moduleAccess?.map(ma => ({
-            module: ma.module,
-            permissions: ma.permissions,
-          })) as ModuleAccess[] | undefined,
-          
-          // Open Dental user fields
-          UserNum: c.UserNum ?? c.openDentalUserNum,
-          UserName: c.UserName ?? c.openDentalUsername,
-          userGroupNums: c.userGroupNums,
-          EmployeeNum: c.EmployeeNum ?? c.employeeNum,
-          employeeName: c.employeeName,
-          ProviderNum: c.ProviderNum,
-          providerName: c.providerName,
-          ClinicNum: c.ClinicNum,
-          emailAddress: c.emailAddress,
-          IsHidden: c.IsHidden,
-          UserNumCEMT: c.UserNumCEMT,
-          
-          // Keep legacy aliases for backward compatibility
-          openDentalUserNum: c.UserNum ?? c.openDentalUserNum,
-          openDentalUsername: c.UserName ?? c.openDentalUsername,
-          employeeNum: c.EmployeeNum ?? c.employeeNum,
-        }));
+        clinicId: String(c.clinicId),
+        role: c.role as UserRole,
+        basePay: c.basePay,
+        workLocation: c.workLocation,
+        hourlyPay: c.hourlyPay,
+        moduleAccess: c.moduleAccess?.map(ma => ({
+          module: ma.module,
+          permissions: ma.permissions,
+        })) as ModuleAccess[] | undefined,
+
+        // Payment Posting role fee fields
+        perClaimFeeOpenDental: c.perClaimFeeOpenDental,
+        perClaimFeePortal: c.perClaimFeePortal,
+        perPreAuthFee: c.perPreAuthFee,
+
+        // Claims role fee fields
+        perClaimsPostedAmount: c.perClaimsPostedAmount,
+        perEobsAttachedAmount: c.perEobsAttachedAmount,
+        statusDeniedAmount: c.statusDeniedAmount,
+
+        // Open Dental user fields
+        UserNum: c.UserNum ?? c.openDentalUserNum,
+        UserName: c.UserName ?? c.openDentalUsername,
+        userGroupNums: c.userGroupNums,
+        EmployeeNum: c.EmployeeNum ?? c.employeeNum,
+        employeeName: c.employeeName,
+        ProviderNum: c.ProviderNum,
+        providerName: c.providerName,
+        ClinicNum: c.ClinicNum,
+        emailAddress: c.emailAddress,
+        IsHidden: c.IsHidden,
+        UserNumCEMT: c.UserNumCEMT,
+
+        // Keep legacy aliases for backward compatibility
+        openDentalUserNum: c.UserNum ?? c.openDentalUserNum,
+        openDentalUsername: c.UserName ?? c.openDentalUsername,
+        employeeNum: c.EmployeeNum ?? c.employeeNum,
+      }));
 
     // Check if user has SuperAdmin role at any clinic
     const hasSuperAdminRole = clinicRoles.some(cr => cr.role === 'SuperAdmin');
@@ -248,12 +268,12 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
 
     // Save clinic-specific details to StaffClinicInfo table
     if (STAFF_INFO_TABLE && body.clinics.length > 0) {
-      const detailsToSave = body.openDentalPerClinic && body.openDentalPerClinic.length > 0 
-        ? body.openDentalPerClinic 
+      const detailsToSave = body.openDentalPerClinic && body.openDentalPerClinic.length > 0
+        ? body.openDentalPerClinic
         : body.staffDetails && body.staffDetails.length > 0
-        ? body.staffDetails
-        : body.clinics;
-      
+          ? body.staffDetails
+          : body.clinics;
+
       await saveStaffInfoToDynamoDB(username, detailsToSave);
     }
 
@@ -262,7 +282,7 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
       email: username,
       clinicRoles,
       userEmail: userEmailCredentials?.email || null,
-      message: userEmailCredentials 
+      message: userEmailCredentials
         ? `User created successfully with email ${userEmailCredentials.email}. They can now log in using OTP sent to their email.`
         : 'User created successfully. They can now log in using OTP sent to their email.',
     });
@@ -286,13 +306,13 @@ async function saveStaffInfoToDynamoDB(
 
   for (const detail of details) {
     if (!detail.clinicId) {
-        console.warn('Skipping staff detail item without a clinicId for user:', email);
-        continue;
+      console.warn('Skipping staff detail item without a clinicId for user:', email);
+      continue;
     }
-    
+
     // Build the item for DynamoDB - spread all fields except 'role'
     const { role, ...restOfDetail } = detail as any;
-    
+
     const item = {
       ...restOfDetail,
       email: email.toLowerCase(),
@@ -379,7 +399,7 @@ function validateBody(body: RegisterBody) {
       if (!USER_ROLES.includes(c.role as any)) {
         throw new Error(`invalid role: ${c.role}`);
       }
-      
+
       // Validate module access if provided
       if (c.moduleAccess && Array.isArray(c.moduleAccess)) {
         for (const ma of c.moduleAccess) {
@@ -408,12 +428,12 @@ function generateTemporaryPassword(): string {
   const charset = 'abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789!@#$%^&*';
   let password = '';
   const crypto = require('crypto');
-  
+
   for (let i = 0; i < length; i++) {
     const randomIndex = crypto.randomInt(0, charset.length);
     password += charset[randomIndex];
   }
-  
+
   return password;
 }
 

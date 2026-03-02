@@ -9,7 +9,7 @@ import * as iam from 'aws-cdk-lib/aws-iam';
 import * as cloudwatch from 'aws-cdk-lib/aws-cloudwatch';
 import { getCdkCorsConfig, getCorsErrorHeaders } from '../../shared/utils/cors';
 
-export interface PaymentPostingSalaryStackProps extends StackProps {
+export interface ClaimsSalaryStackProps extends StackProps {
   consolidatedTransferServerId: string;
   /** GlobalSecrets DynamoDB table name for retrieving SFTP credentials */
   globalSecretsTableName: string;
@@ -21,18 +21,18 @@ export interface PaymentPostingSalaryStackProps extends StackProps {
   secretsEncryptionKeyArn: string;
 }
 
-export class PaymentPostingSalaryStack extends Stack {
+export class ClaimsSalaryStack extends Stack {
   public readonly api: apigw.RestApi;
   public readonly authorizer: apigw.RequestAuthorizer;
   public readonly salaryFn: lambdaNode.NodejsFunction;
 
-  constructor(scope: Construct, id: string, props: PaymentPostingSalaryStackProps) {
+  constructor(scope: Construct, id: string, props: ClaimsSalaryStackProps) {
     super(scope, id, props);
 
     // Tags & alarm helpers
     const baseTags: Record<string, string> = {
       Stack: Stack.of(this).stackName,
-      Service: 'PaymentPostingSalary',
+      Service: 'ClaimsSalary',
       ManagedBy: 'cdk',
     };
     const applyTags = (resource: Construct, extra?: Record<string, string>) => {
@@ -73,9 +73,9 @@ export class PaymentPostingSalaryStack extends Stack {
     // ========================================
 
     const corsConfig = getCdkCorsConfig();
-    this.api = new apigw.RestApi(this, 'PaymentPostingSalaryApi', {
-      restApiName: 'PaymentPostingSalaryApi',
-      description: 'Payment Posting Salary Analytics API',
+    this.api = new apigw.RestApi(this, 'ClaimsSalaryApi', {
+      restApiName: 'ClaimsSalaryApi',
+      description: 'Claims Salary Analytics API',
       defaultCorsPreflightOptions: {
         allowOrigins: corsConfig.allowOrigins,
         allowHeaders: corsConfig.allowHeaders,
@@ -114,7 +114,7 @@ export class PaymentPostingSalaryStack extends Stack {
     // Import the shared authorizer Lambda from CoreStack's export
     const authorizerFunctionArn = Fn.importValue('AuthorizerFunctionArnN1');
     const authorizerFn = lambda.Function.fromFunctionArn(this, 'ImportedAuthorizerFn', authorizerFunctionArn);
-    this.authorizer = new apigw.RequestAuthorizer(this, 'PaymentPostingSalaryAuthorizer', {
+    this.authorizer = new apigw.RequestAuthorizer(this, 'ClaimsSalaryAuthorizer', {
       handler: authorizerFn,
       identitySources: [apigw.IdentitySource.header('Authorization')],
       resultsCacheTtl: Duration.minutes(5),
@@ -135,8 +135,8 @@ export class PaymentPostingSalaryStack extends Stack {
     // Import StaffUser table name from CoreStack
     const staffUserTableName = Fn.importValue('CoreStack-StaffUserTableName');
 
-    this.salaryFn = new lambdaNode.NodejsFunction(this, 'PaymentPostingSalaryFn', {
-      entry: path.join(__dirname, '..', '..', 'services', 'payment-posting-salary', 'index.ts'),
+    this.salaryFn = new lambdaNode.NodejsFunction(this, 'ClaimsSalaryFn', {
+      entry: path.join(__dirname, '..', '..', 'services', 'claims-salary', 'index.ts'),
       handler: 'handler',
       runtime: lambda.Runtime.NODEJS_22_X,
       memorySize: 10240,
@@ -151,7 +151,8 @@ export class PaymentPostingSalaryStack extends Stack {
       },
       environment: {
         STAFF_USER_TABLE: staffUserTableName,
-        CONSOLIDATED_SFTP_HOST: props.consolidatedTransferServerId + '.server.transfer.' + Stack.of(this).region + '.amazonaws.com',
+        CONSOLIDATED_SFTP_HOST:
+          props.consolidatedTransferServerId + '.server.transfer.' + Stack.of(this).region + '.amazonaws.com',
         NODE_OPTIONS: '--enable-source-maps',
         AWS_NODEJS_CONNECTION_REUSE_ENABLED: '1',
         // Secrets tables for dynamic credential retrieval
@@ -161,30 +162,34 @@ export class PaymentPostingSalaryStack extends Stack {
       },
       retryAttempts: 0,
     });
-    applyTags(this.salaryFn, { Function: 'payment-posting-salary' });
+    applyTags(this.salaryFn, { Function: 'claims-salary' });
 
     // Grant READ permissions to StaffUser table
     const staffUserTable = dynamodb.Table.fromTableName(this, 'StaffUserTable', staffUserTableName);
     staffUserTable.grantReadData(this.salaryFn);
 
     // Grant read access to secrets tables for OpenDental credentials and SFTP password (includes Scan for getClinicIds)
-    this.salaryFn.addToRolePolicy(new iam.PolicyStatement({
-      actions: ['dynamodb:GetItem', 'dynamodb:Query', 'dynamodb:Scan'],
-      resources: [
-        `arn:aws:dynamodb:${this.region}:${this.account}:table/${props.globalSecretsTableName}`,
-        `arn:aws:dynamodb:${this.region}:${this.account}:table/${props.globalSecretsTableName}/index/*`,
-        `arn:aws:dynamodb:${this.region}:${this.account}:table/${props.clinicSecretsTableName}`,
-        `arn:aws:dynamodb:${this.region}:${this.account}:table/${props.clinicSecretsTableName}/index/*`,
-        `arn:aws:dynamodb:${this.region}:${this.account}:table/${props.clinicConfigTableName}`,
-        `arn:aws:dynamodb:${this.region}:${this.account}:table/${props.clinicConfigTableName}/index/*`,
-      ],
-    }));
+    this.salaryFn.addToRolePolicy(
+      new iam.PolicyStatement({
+        actions: ['dynamodb:GetItem', 'dynamodb:Query', 'dynamodb:Scan'],
+        resources: [
+          `arn:aws:dynamodb:${this.region}:${this.account}:table/${props.globalSecretsTableName}`,
+          `arn:aws:dynamodb:${this.region}:${this.account}:table/${props.globalSecretsTableName}/index/*`,
+          `arn:aws:dynamodb:${this.region}:${this.account}:table/${props.clinicSecretsTableName}`,
+          `arn:aws:dynamodb:${this.region}:${this.account}:table/${props.clinicSecretsTableName}/index/*`,
+          `arn:aws:dynamodb:${this.region}:${this.account}:table/${props.clinicConfigTableName}`,
+          `arn:aws:dynamodb:${this.region}:${this.account}:table/${props.clinicConfigTableName}/index/*`,
+        ],
+      })
+    );
 
     // Grant KMS decryption for secrets encryption key
-    this.salaryFn.addToRolePolicy(new iam.PolicyStatement({
-      actions: ['kms:Decrypt', 'kms:DescribeKey'],
-      resources: [props.secretsEncryptionKeyArn],
-    }));
+    this.salaryFn.addToRolePolicy(
+      new iam.PolicyStatement({
+        actions: ['kms:Decrypt', 'kms:DescribeKey'],
+        resources: [props.secretsEncryptionKeyArn],
+      })
+    );
 
     // ========================================
     // API ROUTES
@@ -208,17 +213,21 @@ export class PaymentPostingSalaryStack extends Stack {
     // CloudWatch Alarms
     // ========================================
 
-    createLambdaErrorAlarm(this.salaryFn, 'payment-posting-salary');
-    createLambdaThrottleAlarm(this.salaryFn, 'payment-posting-salary');
-    createLambdaDurationAlarm(this.salaryFn, 'payment-posting-salary', Math.floor(Duration.minutes(15).toMilliseconds() * 0.8));
+    createLambdaErrorAlarm(this.salaryFn, 'claims-salary');
+    createLambdaThrottleAlarm(this.salaryFn, 'claims-salary');
+    createLambdaDurationAlarm(
+      this.salaryFn,
+      'claims-salary',
+      Math.floor(Duration.minutes(15).toMilliseconds() * 0.8)
+    );
 
     // ========================================
     // DOMAIN MAPPING
     // ========================================
 
-    new apigw.CfnBasePathMapping(this, 'PaymentPostingSalaryApiBasePathMapping', {
+    new apigw.CfnBasePathMapping(this, 'ClaimsSalaryApiBasePathMapping', {
       domainName: 'apig.todaysdentalinsights.com',
-      basePath: 'payment-posting',
+      basePath: 'claims-salary',
       restApiId: this.api.restApiId,
       stage: this.api.deploymentStage.stageName,
     });
@@ -227,10 +236,10 @@ export class PaymentPostingSalaryStack extends Stack {
     // OUTPUTS
     // ========================================
 
-    new CfnOutput(this, 'PaymentPostingSalaryApiUrl', {
-      value: 'https://apig.todaysdentalinsights.com/payment-posting/',
-      description: 'Payment Posting Salary Analytics API URL',
-      exportName: `${Stack.of(this).stackName}-PaymentPostingSalaryApiUrl`,
+    new CfnOutput(this, 'ClaimsSalaryApiUrl', {
+      value: 'https://apig.todaysdentalinsights.com/claims-salary/',
+      description: 'Claims Salary Analytics API URL',
+      exportName: `${Stack.of(this).stackName}-ClaimsSalaryApiUrl`,
     });
   }
 }

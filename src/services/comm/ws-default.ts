@@ -5,6 +5,7 @@ import { ApiGatewayManagementApiClient, PostToConnectionCommand } from '@aws-sdk
 import { S3Client, PutObjectCommand, GetObjectCommand, DeleteObjectCommand } from '@aws-sdk/client-s3';
 import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
 import { SNSClient, PublishCommand } from '@aws-sdk/client-sns';
+import { sendMentionNotification } from './push-notifications';
 import { LambdaClient, InvokeCommand } from '@aws-sdk/client-lambda';
 import { v4 as uuidv4 } from 'uuid';
 import { SESv2Client, SendEmailCommand } from '@aws-sdk/client-sesv2';
@@ -25,7 +26,7 @@ import {
     handleMarkDelivered, handleMarkMessagesRead,
     handleGetVoiceUploadUrl, handleSendVoiceMessage,
     handleUpdateConversationSettings, handleMuteConversation, handleUnmuteConversation,
-    handleArchiveConversation, handlePinConversation,
+    handleArchiveConversation, handlePinConversation, handleUnpinConversation,
     handleGetConversationAnalytics,
     handleSearchGifs, handleGetTrendingGifs, handleSendGif,
     handleGetStickerPacks, handleGetStickers, handleSendSticker,
@@ -81,6 +82,8 @@ interface Team {
     description?: string;
     members: string[]; // Set of userID strings
     admins: string[];  // Users with admin privileges (owner is always admin)
+    adminOnlyMessages?: boolean;  // Only admins can send messages
+    groupImageUrl?: string;       // Shared group profile image (S3 URL)
     createdAt: string;
     updatedAt: string;
 }
@@ -231,6 +234,16 @@ interface MessageData {
         createdAt: number;
         isClosed?: boolean;
     };
+    // Thread support
+    parentMessageID?: string;
+    // Mention metadata
+    mentions?: Array<{
+        type: 'user' | 'channel' | 'everyone' | 'here';
+        id?: string;
+        displayName: string;
+        startIndex: number;
+        endIndex: number;
+    }>;
 }
 
 // ========================================
@@ -489,6 +502,9 @@ export const handler = async (event: APIGatewayEvent): Promise<APIGatewayProxyRe
             case 'pinConversation':
                 await handlePinConversation(senderID, payload, connectionId, apiGwManagement);
                 break;
+            case 'unpinConversation':
+                await handleUnpinConversation(senderID, payload, connectionId, apiGwManagement);
+                break;
 
             // Disappearing Messages
             case 'setDisappearingMessages':
@@ -626,6 +642,11 @@ export const handler = async (event: APIGatewayEvent): Promise<APIGatewayProxyRe
                 break;
             case 'closePoll':
                 await handleClosePoll(senderID, payload, apiGwManagement);
+                break;
+
+            // ======= MENTIONS =======
+            case 'sendMessageWithMentions':
+                await handleSendMessageWithMentions(senderID, payload, connectionId, apiGwManagement);
                 break;
 
             default:
@@ -846,9 +867,13 @@ async function listTeams(
             teams: teams.map(t => ({
                 teamID: t.teamID,
                 name: t.name,
+                description: t.description,
                 ownerID: t.ownerID,
                 memberCount: t.members.length,
                 members: t.members,
+                admins: t.admins,
+                adminOnlyMessages: t.adminOnlyMessages,
+                groupImageUrl: (t as any).groupImageUrl || null,
                 createdAt: t.createdAt,
                 updatedAt: t.updatedAt,
             })),
@@ -890,9 +915,11 @@ async function addUserToTeam(
             return;
         }
 
-        // 2. Check if caller is the owner
-        if (team.ownerID !== callerID) {
-            await sendToClient(apiGwManagement, connectionId, { type: 'error', message: 'Unauthorized: Only the team owner can add members.' });
+        // 2. Check if caller is the owner or an admin
+        const isOwner = team.ownerID === callerID;
+        const isAdmin = (team.admins || []).includes(callerID);
+        if (!isOwner && !isAdmin) {
+            await sendToClient(apiGwManagement, connectionId, { type: 'error', message: 'Unauthorized: Only the team owner or admins can add members.' });
             return;
         }
 
@@ -973,11 +1000,22 @@ async function removeUserFromTeam(
             return;
         }
 
-        // 2. Authorization: owner can remove others, any member can remove themselves (self-leave)
+        // 2. Authorization: owner or admin can remove others, any member can remove themselves (self-leave)
         const isSelfLeave = callerID === userID;
-        if (!isSelfLeave && team.ownerID !== callerID) {
-            await sendToClient(apiGwManagement, connectionId, { type: 'error', message: 'Unauthorized: Only the team owner can remove other members.' });
+        const isOwner = team.ownerID === callerID;
+        const isAdmin = (team.admins || []).includes(callerID);
+        if (!isSelfLeave && !isOwner && !isAdmin) {
+            await sendToClient(apiGwManagement, connectionId, { type: 'error', message: 'Unauthorized: Only the team owner or admins can remove other members.' });
             return;
+        }
+
+        // Admins cannot remove other admins or the owner — only owner can
+        if (!isOwner && !isSelfLeave) {
+            const targetIsAdmin = (team.admins || []).includes(userID);
+            if (targetIsAdmin || userID === team.ownerID) {
+                await sendToClient(apiGwManagement, connectionId, { type: 'error', message: 'Only the owner can remove admins.' });
+                return;
+            }
         }
 
         // 3. Prevent owner from removing themselves
@@ -1045,7 +1083,7 @@ async function handleUpdateGroupSettings(
     connectionId: string,
     apiGwManagement: ApiGatewayManagementApiClient
 ): Promise<void> {
-    const { teamID, description, adminOnlyMessages, makeAdmin, dismissAdmin } = payload;
+    const { teamID, description, adminOnlyMessages, makeAdmin, dismissAdmin, groupImageUrl } = payload;
 
     if (!teamID) {
         await sendToClient(apiGwManagement, connectionId, { type: 'error', message: 'Missing teamID.' });
@@ -1066,17 +1104,27 @@ async function handleUpdateGroupSettings(
             return;
         }
 
-        // 2. Check if caller is owner or admin
+        // 2. Check if caller is owner or admin (for most settings)
+        //    Allow any member to update groupImageUrl
         const isOwner = team.ownerID === callerID;
         const isAdmin = (team.admins || []).includes(callerID);
-        if (!isOwner && !isAdmin) {
+        const isMember = team.members.includes(callerID);
+
+        // groupImageUrl can be updated by any member; other settings require admin
+        const isGroupImageOnly = groupImageUrl !== undefined && description === undefined && adminOnlyMessages === undefined && !makeAdmin && !dismissAdmin;
+        if (!isGroupImageOnly && !isOwner && !isAdmin) {
             await sendToClient(apiGwManagement, connectionId, { type: 'error', message: 'Unauthorized: Only admins can update group settings.' });
+            return;
+        }
+        if (isGroupImageOnly && !isMember) {
+            await sendToClient(apiGwManagement, connectionId, { type: 'error', message: 'Unauthorized: Only members can update group image.' });
             return;
         }
 
         const nowIso = new Date().toISOString();
         const updateExprParts: string[] = ['updatedAt = :updatedAt'];
         const exprValues: Record<string, any> = { ':updatedAt': nowIso };
+        const exprNames: Record<string, string> = {};
         const systemMessages: string[] = [];
 
         // 3. Update description if provided
@@ -1084,6 +1132,13 @@ async function handleUpdateGroupSettings(
             updateExprParts.push('description = :desc');
             exprValues[':desc'] = description || null;
             systemMessages.push(`Group description updated`);
+        }
+
+        // 3b. Update groupImageUrl if provided
+        if (groupImageUrl !== undefined) {
+            updateExprParts.push('groupImageUrl = :gimg');
+            exprValues[':gimg'] = groupImageUrl || null;
+            systemMessages.push(groupImageUrl ? `Group image updated` : `Group image removed`);
         }
 
         // 4. Update adminOnlyMessages if provided
@@ -1147,6 +1202,7 @@ async function handleUpdateGroupSettings(
             ...team,
             ...(description !== undefined && { description }),
             ...(adminOnlyMessages !== undefined && { adminOnlyMessages }),
+            ...(groupImageUrl !== undefined && { groupImageUrl }),
             admins: updatedAdmins,
             updatedAt: nowIso,
         };
@@ -1752,11 +1808,7 @@ async function startFavorRequest(
             return;
         }
     } else {
-        // CRITICAL FIX: Prevent a user from starting a request with themselves (1-to-1 only)
-        if (senderID === receiverID) {
-            await sendToClient(apiGwManagement, senderConnectionId, { type: 'error', message: 'A favor request cannot be started with yourself. Please select another user.' });
-            return;
-        }
+        // Self-assignment is allowed (user can assign tasks to themselves)
         recipients = [receiverID as string];
     }
 
@@ -1926,6 +1978,44 @@ async function startFavorRequest(
             { priority: priority as TaskPriority, category: category as SystemModule }
         );
 
+        // Email notification for new task in existing conversation
+        try {
+            console.log(`📧 startFavorRequest (reused): Sending task assignment email for existing conversation ${existingID}`);
+            if (isGroupRequest) {
+                const teamResult2 = await ddb.send(new GetCommand({
+                    TableName: TEAMS_TABLE!,
+                    Key: { teamID },
+                }));
+                const team2 = teamResult2.Item;
+                await sendTaskAssignmentEmail({
+                    senderID,
+                    recipientIDs: recipients,
+                    initialMessage,
+                    requestType,
+                    deadline,
+                    title: updatedFavor.title || title,
+                    priority: updatedFavor.priority || priority,
+                    teamName: team2?.name || 'Unknown Group',
+                    teamMembers: team2?.members || recipients,
+                    isGroup: true,
+                });
+            } else {
+                await sendTaskAssignmentEmail({
+                    senderID,
+                    recipientIDs: [receiverID as string],
+                    initialMessage,
+                    requestType,
+                    deadline,
+                    title: updatedFavor.title || title,
+                    priority: updatedFavor.priority || priority,
+                    isGroup: false,
+                });
+            }
+            console.log('✅ Task assignment email sent successfully for reused conversation');
+        } catch (emailErr: any) {
+            console.error('❌ Failed to send task assignment email for reused conversation:', emailErr?.message || emailErr);
+        }
+
         // Confirm to sender — use same type so frontend handles it consistently
         await sendToClient(apiGwManagement, senderConnectionId, {
             type: 'favorRequestStarted',
@@ -2010,6 +2100,7 @@ async function startFavorRequest(
 
     // 4. Send email notification (for BOTH single and group tasks)
     try {
+        console.log(`📧 startFavorRequest: Sending task assignment email. isGroup=${isGroupRequest}, sender=${senderID}, recipients=${JSON.stringify(isGroupRequest ? recipients : [receiverID])}`);
         if (isGroupRequest) {
             // Group task: fetch team details and send to all members
             const teamResult = await ddb.send(new GetCommand({
@@ -2044,8 +2135,17 @@ async function startFavorRequest(
                 isGroup: false,
             });
         }
-    } catch (e) {
-        console.error("Failed to send SES notification email:", e);
+        console.log('✅ Task assignment email sent successfully from startFavorRequest');
+    } catch (e: any) {
+        console.error("❌ Failed to send SES notification email from startFavorRequest:", {
+            error: e?.message || e,
+            name: e?.name,
+            code: e?.$metadata?.httpStatusCode,
+            requestId: e?.$metadata?.requestId,
+            senderID,
+            receiverID,
+            teamID,
+        });
     }
 
     // 5. Send push notifications to recipients (for offline users)
@@ -2129,6 +2229,33 @@ async function sendMessage(
     const recipientIDs = await getRecipientIDs(favor, senderID);
     console.log(`📤 [sendMessage] recipientIDs=[${recipientIDs.join(', ')}], count=${recipientIDs.length}`);
 
+    // ── Admin-only messaging check (group chats) ──
+    if (favor.teamID) {
+        try {
+            const teamResult = await ddb.send(new GetCommand({
+                TableName: TEAMS_TABLE!,
+                Key: { teamID: favor.teamID },
+            }));
+            const teamData = teamResult.Item;
+            if (teamData && teamData.adminOnlyMessages) {
+                const isOwner = teamData.ownerID === senderID;
+                const isAdmin = isOwner || (teamData.admins || []).includes(senderID);
+                if (!isAdmin) {
+                    console.log(`🚫 [sendMessage] BLOCKED: adminOnlyMessages is ON and senderID=${senderID} is not an admin/owner`);
+                    if (senderConnectionId) {
+                        await sendToClient(apiGwManagement, senderConnectionId, {
+                            type: 'error',
+                            message: 'Only admins can send messages in this group.',
+                        });
+                    }
+                    return;
+                }
+            }
+        } catch (e) {
+            console.error('Error checking adminOnlyMessages:', e);
+        }
+    }
+
     // Allow messaging for active workflows (pending/active/in_progress/forwarded).
     // Only block messaging for closed tasks.
     const isClosed = favor.status === 'completed' || favor.status === 'rejected';
@@ -2183,6 +2310,8 @@ async function sendMessage(
     // 4. Save message and broadcast (sends 'newMessage' payload)
     await _saveAndBroadcastMessage(messageData, apiGwManagement, recipientIDs); // PASS RECIPIENTS
 
+    // 5. Detect inline @mentions from message content and send notifications
+    await _detectAndNotifyInlineMentions(senderID, content || '', favorRequestID, recipientIDs);
 }
 
 /**
@@ -2382,12 +2511,13 @@ async function resolveRequest(
         await ddb.send(new UpdateCommand({
             TableName: FAVORS_TABLE,
             Key: { favorRequestID },
-            // Also reset unread count on resolve
-            UpdateExpression: 'SET #s = :resolved, updatedAt = :ua, unreadCount = :zero',
+            // Also reset unread count on resolve and set completedAt
+            UpdateExpression: 'SET #s = :resolved, updatedAt = :ua, completedAt = :ca, unreadCount = :zero',
             ExpressionAttributeNames: { '#s': 'status' },
             ExpressionAttributeValues: {
                 ':resolved': 'resolved',
                 ':ua': nowIso,
+                ':ca': nowIso,
                 ':zero': 0, // Reset unread count
             },
         }));
@@ -2400,7 +2530,8 @@ async function resolveRequest(
             type: 'requestResolved',
             favorRequestID,
             resolvedBy: senderID,
-            updatedAt: nowIso
+            updatedAt: nowIso,
+            completedAt: nowIso,
         };
 
         await sendToAll(apiGwManagement, participants, broadcastPayload, { notifyOffline: false });
@@ -2580,11 +2711,23 @@ async function fetchRequests(
             !(item.deletedBy && Array.isArray(item.deletedBy) && item.deletedBy.includes(callerID))
         );
 
+        // Convert DynamoDB Sets to Arrays before JSON serialization
+        // (JSON.stringify(Set) produces '{}', losing the data)
+        const serializableItems = items.map((item: any) => {
+            const cleaned = { ...item };
+            for (const key of Object.keys(cleaned)) {
+                if (cleaned[key] instanceof Set) {
+                    cleaned[key] = Array.from(cleaned[key]);
+                }
+            }
+            return cleaned;
+        });
+
         // Send the results back to the client
         await sendToClient(apiGwManagement, connectionId, {
             type: 'favorRequestsList',
             role,
-            items,
+            items: serializableItems,
             nextToken: newToken,
         });
 
@@ -2667,6 +2810,251 @@ async function _saveAndBroadcastMessage(
     await sendToAll(apiGwManagement, participants, broadcastPayload, { notifyOffline: true, senderID: messageData.senderID });
 }
 
+
+// ========================================
+// @MENTION HANDLER
+// ========================================
+
+/**
+ * Handles sending a message with explicit @mentions.
+ * - Saves the message with mention metadata
+ * - Broadcasts to all participants
+ * - Sends mentionNotification to each mentioned user via WebSocket
+ * - Sends push notifications to offline mentioned users
+ */
+async function handleSendMessageWithMentions(
+    senderID: string,
+    payload: any,
+    connectionId: string,
+    apiGwManagement: ApiGatewayManagementApiClient
+): Promise<void> {
+    const { favorRequestID, content, mentions, parentMessageID } = payload;
+    const senderConnectionId = (await getSenderInfoByUserID(senderID))?.connectionId;
+
+    console.log(`📨 [sendMessageWithMentions] senderID=${senderID}, favorRequestID=${favorRequestID}, mentionCount=${mentions?.length || 0}`);
+
+    if (!favorRequestID || (!content || content.trim() === '')) {
+        if (senderConnectionId) {
+            await sendToClient(apiGwManagement, senderConnectionId, { type: 'error', message: 'Missing favorRequestID or content.' });
+        }
+        return;
+    }
+
+    // 1. Validate favor request & participation (same as sendMessage)
+    const favorResult = await ddb.send(new GetCommand({
+        TableName: FAVORS_TABLE,
+        Key: { favorRequestID },
+    }));
+    const favor = favorResult.Item as FavorRequest;
+
+    if (!favor) {
+        if (senderConnectionId) {
+            await sendToClient(apiGwManagement, senderConnectionId, { type: 'error', message: 'Conversation not found.' });
+        }
+        return;
+    }
+
+    const isParticipant = await isUserParticipant(favor, senderID);
+    if (!isParticipant) {
+        if (senderConnectionId) {
+            await sendToClient(apiGwManagement, senderConnectionId, { type: 'error', message: 'Unauthorized: Not a participant.' });
+        }
+        return;
+    }
+
+    // Admin-only check (same as sendMessage)
+    if (favor.teamID) {
+        try {
+            const teamResult = await ddb.send(new GetCommand({
+                TableName: TEAMS_TABLE!,
+                Key: { teamID: favor.teamID },
+            }));
+            const teamData = teamResult.Item;
+            if (teamData && teamData.adminOnlyMessages) {
+                const isOwner = teamData.ownerID === senderID;
+                const isAdmin = isOwner || (teamData.admins || []).includes(senderID);
+                if (!isAdmin) {
+                    if (senderConnectionId) {
+                        await sendToClient(apiGwManagement, senderConnectionId, {
+                            type: 'error',
+                            message: 'Only admins can send messages in this group.',
+                        });
+                    }
+                    return;
+                }
+            }
+        } catch (e) {
+            console.error('Error checking adminOnlyMessages:', e);
+        }
+    }
+
+    const recipientIDs = await getRecipientIDs(favor, senderID);
+
+    // Block closed conversations
+    const isClosed = favor.status === 'completed' || favor.status === 'rejected';
+    if (isClosed || recipientIDs.length === 0) {
+        if (senderConnectionId) {
+            await sendToClient(apiGwManagement, senderConnectionId, { type: 'error', message: 'Request is closed or has no recipients.' });
+        }
+        return;
+    }
+
+    // 2. Update favor unread count
+    const incrementAmount = recipientIDs.length;
+    const updateResult = await ddb.send(new UpdateCommand({
+        TableName: FAVORS_TABLE,
+        Key: { favorRequestID },
+        UpdateExpression: 'SET updatedAt = :ua ADD unreadCount :incr',
+        ExpressionAttributeValues: {
+            ':ua': new Date().toISOString(),
+            ':incr': incrementAmount,
+        },
+        ReturnValues: 'ALL_NEW',
+    }));
+
+    const updatedFavor = updateResult.Attributes as FavorRequest;
+    const allParticipants = [...recipientIDs, senderID];
+
+    await sendToAll(apiGwManagement, allParticipants, {
+        type: 'favorRequestUpdated',
+        favor: updatedFavor,
+    }, { notifyOffline: false });
+
+    // 3. Create message with mention metadata
+    const timestamp = Date.now();
+    const messageData: MessageData = {
+        messageID: uuidv4(),
+        favorRequestID,
+        senderID,
+        content: content.trim(),
+        timestamp,
+        type: 'text',
+        mentions: Array.isArray(mentions) ? mentions : undefined,
+        ...(parentMessageID && { parentMessageID }),
+    };
+
+    // 4. Save & broadcast the message
+    await _saveAndBroadcastMessage(messageData, apiGwManagement, recipientIDs);
+
+    // 5. Send mention notifications to each mentioned user
+    if (Array.isArray(mentions) && mentions.length > 0) {
+        // Get sender display name for the notification
+        const senderDisplayName = await _getUserDisplayName(senderID);
+        const messagePreview = content.length > 80 ? content.substring(0, 80) + '...' : content;
+
+        for (const mention of mentions) {
+            // Handle @everyone and @here — notify all participants
+            if (mention.type === 'everyone' || mention.type === 'here') {
+                console.log(`📢 [mentions] Broadcasting @${mention.type} mention to all participants`);
+                for (const recipientID of recipientIDs) {
+                    // Send WS notification
+                    await sendToAll(apiGwManagement, [recipientID], {
+                        type: 'mentionNotification',
+                        favorRequestID,
+                        mentionedBy: senderID,
+                        mentionedByName: senderDisplayName,
+                        mentionType: mention.type,
+                        messagePreview,
+                        messageID: messageData.messageID,
+                        timestamp,
+                    }, { notifyOffline: false });
+
+                    // Send push notification
+                    try {
+                        await sendMentionNotification(ddb, recipientID, senderDisplayName, messagePreview, favorRequestID);
+                    } catch (e) {
+                        console.warn(`Failed to send mention push to ${recipientID}:`, e);
+                    }
+                }
+            } else if (mention.type === 'user' && mention.id) {
+                // Individual @mention
+                const mentionedUserID = mention.id;
+                if (mentionedUserID === senderID) continue; // Don't notify self
+
+                console.log(`📢 [mentions] Sending mention notification to ${mentionedUserID}`);
+
+                // Send WS notification
+                await sendToAll(apiGwManagement, [mentionedUserID], {
+                    type: 'mentionNotification',
+                    favorRequestID,
+                    mentionedBy: senderID,
+                    mentionedByName: senderDisplayName,
+                    mentionType: 'user',
+                    displayName: mention.displayName,
+                    messagePreview,
+                    messageID: messageData.messageID,
+                    timestamp,
+                }, { notifyOffline: false });
+
+                // Send push notification
+                try {
+                    await sendMentionNotification(ddb, mentionedUserID, senderDisplayName, messagePreview, favorRequestID);
+                } catch (e) {
+                    console.warn(`Failed to send mention push to ${mentionedUserID}:`, e);
+                }
+            }
+        }
+    }
+
+    console.log(`✅ [sendMessageWithMentions] Completed: ${mentions?.length || 0} mentions processed`);
+}
+
+/**
+ * Detect inline @mentions in message content and send push notifications.
+ * This catches mentions that come through the regular sendMessage path
+ * (e.g., user types @Name manually without the autocomplete).
+ */
+async function _detectAndNotifyInlineMentions(
+    senderID: string,
+    content: string,
+    favorRequestID: string,
+    recipientIDs: string[]
+): Promise<void> {
+    if (!content || !content.includes('@')) return;
+
+    try {
+        // Look for @everyone and @here
+        const hasAtEveryone = content.includes('@everyone');
+        const hasAtHere = content.includes('@here');
+
+        if (hasAtEveryone || hasAtHere) {
+            const senderDisplayName = await _getUserDisplayName(senderID);
+            const messagePreview = content.length > 80 ? content.substring(0, 80) + '...' : content;
+
+            for (const recipientID of recipientIDs) {
+                try {
+                    await sendMentionNotification(ddb, recipientID, senderDisplayName, messagePreview, favorRequestID);
+                } catch (e) {
+                    // Silently ignore push failures
+                }
+            }
+        }
+    } catch (e) {
+        console.warn('[_detectAndNotifyInlineMentions] Error:', e);
+    }
+}
+
+/**
+ * Get a user's display name from their connections or Cognito.
+ */
+async function _getUserDisplayName(userID: string): Promise<string> {
+    try {
+        // Try to get from Cognito
+        if (USER_POOL_ID) {
+            const cognito = new CognitoIdentityProviderClient({ region: REGION });
+            const result = await cognito.send(new AdminGetUserCommand({
+                UserPoolId: USER_POOL_ID,
+                Username: userID,
+            }));
+            const givenName = result.UserAttributes?.find(a => a.Name === 'given_name')?.Value || '';
+            const familyName = result.UserAttributes?.find(a => a.Name === 'family_name')?.Value || '';
+            if (givenName || familyName) return `${givenName} ${familyName}`.trim();
+        }
+    } catch (e) {
+        // Fall through
+    }
+    return userID.substring(0, 12);
+}
 
 // ========================================
 // HELPER FUNCTIONS 
@@ -2765,9 +3153,15 @@ async function getConnectionRecordsByUserID(userID: string): Promise<ConnectionR
 
 /** Helper function to fetch user's first name and email from Cognito. */
 async function getUserDetails(userID: string): Promise<{ email?: string; fullName: string; }> {
+    // Fallback: if userID looks like an email, use it directly as the email
+    const isEmail = userID.includes('@');
+
     if (!USER_POOL_ID) {
-        console.error("USER_POOL_ID is missing for user detail lookup.");
-        return { fullName: userID };
+        console.warn("USER_POOL_ID is missing for user detail lookup. Using userID fallback.");
+        return {
+            email: isEmail ? userID : undefined,
+            fullName: isEmail ? userID.split('@')[0] : userID,
+        };
     }
 
     try {
@@ -2783,12 +3177,15 @@ async function getUserDetails(userID: string): Promise<{ email?: string; fullNam
         const familyNameAttr = response.UserAttributes?.find(attr => attr.Name === 'family_name')?.Value;
 
         return {
-            email: emailAttr,
+            email: emailAttr || (isEmail ? userID : undefined),
             fullName: `${givenNameAttr || ''} ${familyNameAttr || ''}`.trim() || userID,
         };
     } catch (e) {
         console.error(`Error fetching Cognito user details for ${userID}:`, e);
-        return { fullName: userID };
+        return {
+            email: isEmail ? userID : undefined,
+            fullName: isEmail ? userID.split('@')[0] : userID,
+        };
     }
 }
 
@@ -3057,9 +3454,16 @@ Please log in to the application to view and respond to this task.
         ? `📋 New ${requestType} in ${teamName}: ${taskTitle}`
         : `📋 New ${requestType} from ${sender.fullName}: ${taskTitle}`;
 
-    const emailPromises = recipientDetails
-        .filter(r => r.email)
-        .map(recipient =>
+    const validRecipients = recipientDetails.filter(r => r.email);
+    console.log(`📧 sendTaskAssignmentEmail: sender=${sender.fullName} (${sender.email}), recipients=${validRecipients.map(r => r.email).join(', ')}, from=${SES_SOURCE_EMAIL}, subject=${emailSubject}`);
+
+    if (validRecipients.length === 0) {
+        console.warn('⚠️ No valid recipient emails found. Skipping email send.');
+        return;
+    }
+
+    const results = await Promise.allSettled(
+        validRecipients.map(recipient =>
             ses.send(new SendEmailCommand({
                 Destination: { ToAddresses: [recipient.email as string] },
                 Content: {
@@ -3073,10 +3477,27 @@ Please log in to the application to view and respond to this task.
                 },
                 FromEmailAddress: SES_SOURCE_EMAIL,
             }))
-        );
+        )
+    );
 
-    await Promise.all(emailPromises);
-    console.log(`Task assignment email sent to ${emailPromises.length} recipient(s) for "${taskTitle}" from ${sender.fullName}.`);
+    // Log results
+    results.forEach((result, idx) => {
+        const email = validRecipients[idx]?.email;
+        if (result.status === 'fulfilled') {
+            console.log(`✅ Email sent to ${email} (MessageId: ${result.value?.MessageId})`);
+        } else {
+            const err = result.reason;
+            console.error(`❌ Email FAILED to ${email}:`, {
+                error: err?.message || err,
+                name: err?.name,
+                code: err?.$metadata?.httpStatusCode,
+                requestId: err?.$metadata?.requestId,
+            });
+        }
+    });
+
+    const successCount = results.filter(r => r.status === 'fulfilled').length;
+    console.log(`📧 Task email: ${successCount}/${validRecipients.length} sent for "${taskTitle}" from ${sender.fullName}.`);
 }
 
 async function fetchHistory(
@@ -3724,6 +4145,40 @@ async function forwardTask(
 
     await sendToAll(apiGwManagement, notifyList, notificationPayload, { notifyOffline: true, senderID });
 
+    // 6. Save a task message in the chat so it appears as a task card in the message feed
+    const forwardTaskMessage: MessageData = {
+        messageID: forwardID,
+        favorRequestID,
+        senderID,
+        content: `Task forwarded: ${favor.title || 'Untitled Task'}`,
+        timestamp: Date.now(),
+        type: 'task',
+        taskTitle: favor.title || 'Forwarded Task',
+        taskDescription: message || favor.initialMessage || favor.description || '',
+        taskPriority: favor.priority || 'medium',
+        taskDeadline: deadline || favor.deadline,
+    };
+
+    await ddb.send(new PutCommand({ TableName: MESSAGES_TABLE, Item: forwardTaskMessage }));
+
+    // Update conversation metadata to show the forwarded task as the latest message
+    await ddb.send(new UpdateCommand({
+        TableName: FAVORS_TABLE,
+        Key: { favorRequestID },
+        UpdateExpression: 'SET lastMessage = :lm, lastMessageAt = :lma, lastMessageSenderID = :lms',
+        ExpressionAttributeValues: {
+            ':lm': `Task forwarded: ${favor.title || 'Untitled Task'}`,
+            ':lma': nowIso,
+            ':lms': senderID,
+        },
+    }));
+
+    // Broadcast the task message to all participants so it appears in the chat feed
+    await sendToAll(apiGwManagement, notifyList, {
+        type: 'newMessage',
+        message: forwardTaskMessage,
+    }, { notifyOffline: false });
+
     // Send task-specific push notification to the forwardee
     const senderDetails = await getUserDetails(senderID);
     await sendTaskPushNotification(
@@ -4254,6 +4709,32 @@ async function handleAssignTask(
         }, { notifyOffline: false });
 
         console.log(`Task ${taskID} assigned to ${assignedTo} by ${senderID} in ${favorRequestID}`);
+
+        // 7. Send email notification to the assigned user
+        try {
+            console.log(`📧 Attempting to send task assignment email to ${assignedTo} for task "${taskTitle}"...`);
+            await sendTaskAssignmentEmail({
+                senderID,
+                recipientIDs: Array.isArray(assignedTo) ? assignedTo : [assignedTo],
+                initialMessage: taskDescription || taskTitle,
+                requestType: 'Assign Task',
+                deadline: dueDate,
+                title: taskTitle,
+                priority: priority || 'medium',
+                isGroup: false,
+            });
+            console.log(`✅ Task assignment email sent successfully to ${assignedTo} for task "${taskTitle}"`);
+        } catch (emailError: any) {
+            console.error('❌ Failed to send task assignment email:', {
+                error: emailError?.message || emailError,
+                name: emailError?.name,
+                code: emailError?.$metadata?.httpStatusCode,
+                requestId: emailError?.$metadata?.requestId,
+                recipientID: assignedTo,
+                taskTitle,
+                senderID,
+            });
+        }
     } catch (e) {
         console.error('Error assigning task:', e);
         await sendToClient(apiGwManagement, connectionId, { type: 'error', message: 'Failed to assign task.' });
@@ -4534,56 +5015,34 @@ async function deleteConversation(
 
         console.log(`Task ${favorRequestID} soft-deleted from view by ${senderID}`);
     } else {
-        // === CHAT (non-task): HARD DELETE — remove FavorRequest + all messages permanently ===
-        console.log(`🗑️ Hard-deleting non-task chat ${favorRequestID} by ${senderID}`);
+        // === CHAT (non-task): SOFT DELETE — add to deletedBy (same as tasks) ===
+        // Previously this was a hard delete which permanently removed the conversation
+        // for ALL users. Now we use soft-delete so it only hides for the deleting user.
+        console.log(`🗑️ Soft-deleting non-task chat ${favorRequestID} for user ${senderID}`);
 
-        // Step 1: Delete all messages for this conversation
-        try {
-            const messagesResult = await ddb.send(new QueryCommand({
-                TableName: MESSAGES_TABLE,
-                KeyConditionExpression: 'favorRequestID = :fid',
-                ExpressionAttributeValues: { ':fid': favorRequestID },
-                ProjectionExpression: 'favorRequestID, #ts',
-                ExpressionAttributeNames: { '#ts': 'timestamp' },
+        const currentDeletedBy = favor.deletedBy || [];
+        if (!currentDeletedBy.includes(senderID)) {
+            const updatedDeletedBy = [...currentDeletedBy, senderID];
+            await ddb.send(new UpdateCommand({
+                TableName: FAVORS_TABLE,
+                Key: { favorRequestID },
+                UpdateExpression: 'SET deletedBy = :db, updatedAt = :ua',
+                ExpressionAttributeValues: {
+                    ':db': updatedDeletedBy,
+                    ':ua': nowIso,
+                },
             }));
-            const messages = messagesResult.Items || [];
-            console.log(`🗑️ Found ${messages.length} messages to delete for ${favorRequestID}`);
-
-            // Batch delete messages (DynamoDB allows max 25 items per batch)
-            for (let i = 0; i < messages.length; i += 25) {
-                const batch = messages.slice(i, i + 25);
-                await ddb.send(new BatchWriteCommand({
-                    RequestItems: {
-                        [MESSAGES_TABLE]: batch.map((msg: any) => ({
-                            DeleteRequest: {
-                                Key: {
-                                    favorRequestID: msg.favorRequestID,
-                                    timestamp: msg.timestamp,
-                                },
-                            },
-                        })),
-                    },
-                }));
-            }
-        } catch (msgErr) {
-            console.error(`Failed to delete messages for ${favorRequestID}:`, msgErr);
         }
 
-        // Step 2: Delete the FavorRequest record itself
-        await ddb.send(new DeleteCommand({
-            TableName: FAVORS_TABLE,
-            Key: { favorRequestID },
-        }));
-
-        // Notify the deleting user
+        // Notify only the deleting user
         await sendToClient(apiGwManagement, connectionId, {
             type: 'conversationDeleted',
             favorRequestID,
             deletedBy: senderID,
-            deleteType: 'hardDelete',
+            deleteType: 'forMe',
         });
 
-        console.log(`🗑️ Chat ${favorRequestID} hard-deleted (FavorRequest + messages) by ${senderID}`);
+        console.log(`🗑️ Chat ${favorRequestID} soft-deleted from view by ${senderID}`);
     }
 }
 

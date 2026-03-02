@@ -241,6 +241,8 @@ interface Team {
     description?: string;
     members: string[];
     admins?: string[];  // Users with admin privileges
+    adminOnlyMessages?: boolean;  // Only admins can send messages
+    groupImageUrl?: string;       // Shared group profile image (S3 URL)
     category?: SystemModule;
     createdAt: string;
     updatedAt: string;
@@ -511,6 +513,11 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
             log.info('Routing to updateTaskDeadline', { ...logCtx, taskID });
             routeMatched = true;
             result = await updateTaskDeadline(authedUserID, taskID, parsedBody, logCtx);
+        } else if (path.match(/^\/api\/tasks\/[^/]+$/) && httpMethod === 'PUT') {
+            const taskID = pathParameters?.taskID || path.split('/')[3];
+            log.info('Routing to updateTask', { ...logCtx, taskID });
+            routeMatched = true;
+            result = await updateTask(authedUserID, taskID, parsedBody, logCtx);
         } else if (path.match(/^\/api\/tasks$/) && httpMethod === 'POST') {
             log.info('Routing to createTask', logCtx);
             routeMatched = true;
@@ -578,7 +585,8 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
 
         // User Preferences endpoints
         else if (path.match(/^\/api\/preferences\/[^/]+$/) && httpMethod === 'GET') {
-            const targetUserID = pathParameters?.userID || path.split('/')[3];
+            const rawUserID = pathParameters?.userID || path.split('/')[3];
+            const targetUserID = decodeURIComponent(rawUserID);
             log.info('Routing to getPublicUserPreferences', { ...logCtx, targetUserID });
             routeMatched = true;
             result = await restGetUserPreferences(authedUserID, targetUserID, logCtx);
@@ -590,6 +598,58 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
             log.info('Routing to saveUserPreference', logCtx);
             routeMatched = true;
             result = await restSaveUserPreference(authedUserID, parsedBody, logCtx);
+        }
+
+        // Audit Logs endpoints
+        else if (path.match(/^\/api\/audit-logs\/user$/) && httpMethod === 'GET') {
+            log.info('Routing to getUserAuditLogs', logCtx);
+            routeMatched = true;
+            const limit = parseInt(queryStringParameters?.limit || '50', 10);
+            try {
+                const logs = await AuditService.getUserAuditLogs(authedUserID, limit);
+                result = response(200, { success: true, auditLogs: logs });
+            } catch (err) {
+                log.error('Failed to fetch user audit logs', logCtx, err as Error);
+                result = response(500, { success: false, message: 'Failed to fetch audit logs' });
+            }
+        }
+        else if (path.match(/^\/api\/audit-logs\/resource\/[^/]+$/) && httpMethod === 'GET') {
+            const resourceID = path.split('/')[4];
+            log.info('Routing to getResourceAuditLogs', { ...logCtx, resourceID });
+            routeMatched = true;
+            const limit = parseInt(queryStringParameters?.limit || '50', 10);
+            try {
+                const logs = await AuditService.getResourceAuditLogs(resourceID, limit);
+                result = response(200, { success: true, auditLogs: logs });
+            } catch (err) {
+                log.error('Failed to fetch resource audit logs', logCtx, err as Error);
+                result = response(500, { success: false, message: 'Failed to fetch audit logs' });
+            }
+        }
+        else if (path.match(/^\/api\/audit-logs\/action\/[^/]+$/) && httpMethod === 'GET') {
+            const action = path.split('/')[4];
+            log.info('Routing to getActionAuditLogs', { ...logCtx, action });
+            routeMatched = true;
+            const limit = parseInt(queryStringParameters?.limit || '50', 10);
+            try {
+                const logs = await AuditService.getActionAuditLogs(action as any, limit);
+                result = response(200, { success: true, auditLogs: logs });
+            } catch (err) {
+                log.error('Failed to fetch action audit logs', logCtx, err as Error);
+                result = response(500, { success: false, message: 'Failed to fetch audit logs' });
+            }
+        }
+        else if (path.match(/^\/api\/audit-logs$/) && httpMethod === 'GET') {
+            log.info('Routing to getAuditLogs', logCtx);
+            routeMatched = true;
+            const limit = parseInt(queryStringParameters?.limit || '50', 10);
+            try {
+                const logs = await AuditService.getUserAuditLogs(authedUserID, limit);
+                result = response(200, { success: true, auditLogs: logs });
+            } catch (err) {
+                log.error('Failed to fetch audit logs', logCtx, err as Error);
+                result = response(500, { success: false, message: 'Failed to fetch audit logs' });
+            }
         }
 
         if (!routeMatched) {
@@ -1018,58 +1078,35 @@ async function deleteConversation(userID: string, favorRequestID: string, params
             deleted: { conversationID: favorRequestID, deleteType: 'forMe' },
         });
     } else {
-        // === CHAT (non-task): HARD DELETE — remove FavorRequest + all messages permanently ===
-        // This ensures creating a new chat with the same person creates a fresh conversation.
-        log.info('Hard-deleting non-task chat conversation', { ...fnCtx, deletedByUser: userID });
+        // === CHAT (non-task): SOFT DELETE — add to deletedBy (same as tasks) ===
+        // Previously this was a hard delete which permanently removed the conversation
+        // for ALL users. Now we use soft-delete so it only hides for the deleting user.
+        log.info('Soft-deleting non-task chat conversation', { ...fnCtx, deletedByUser: userID });
 
-        // Step 1: Delete all messages for this conversation
-        try {
-            const messagesResult = await ddb.send(new QueryCommand({
-                TableName: MESSAGES_TABLE,
-                KeyConditionExpression: 'favorRequestID = :fid',
-                ExpressionAttributeValues: { ':fid': favorRequestID },
-                ProjectionExpression: 'favorRequestID, #ts',
-                ExpressionAttributeNames: { '#ts': 'timestamp' },
-            }));
-            const messages = messagesResult.Items || [];
-            log.info('Found messages to delete', { ...fnCtx, messageCount: messages.length });
+        const currentDeletedBy = favor.deletedBy || [];
+        const updatedDeletedBy = currentDeletedBy.includes(userID)
+            ? currentDeletedBy
+            : [...currentDeletedBy, userID];
 
-            // Batch delete messages (DynamoDB allows max 25 items per batch)
-            for (let i = 0; i < messages.length; i += 25) {
-                const batch = messages.slice(i, i + 25);
-                await ddb.send(new BatchWriteCommand({
-                    RequestItems: {
-                        [MESSAGES_TABLE]: batch.map((msg: any) => ({
-                            DeleteRequest: {
-                                Key: {
-                                    favorRequestID: msg.favorRequestID,
-                                    timestamp: msg.timestamp,
-                                },
-                            },
-                        })),
-                    },
-                }));
-            }
-            log.info('Deleted all messages', { ...fnCtx, deletedMessages: messages.length });
-        } catch (msgErr) {
-            log.error('Failed to delete messages (continuing with FavorRequest deletion)', fnCtx, msgErr as Error);
-        }
-
-        // Step 2: Delete the FavorRequest record itself
-        const deleteStart = Date.now();
-        log.dbOperation('DeleteItem', FAVORS_TABLE, { favorRequestID, action: 'hard-delete-chat' }, fnCtx);
-        await ddb.send(new DeleteCommand({
+        const updateStart = Date.now();
+        log.dbOperation('UpdateItem', FAVORS_TABLE, { favorRequestID, action: 'soft-delete-chat', deletedByUser: userID }, fnCtx);
+        await ddb.send(new UpdateCommand({
             TableName: FAVORS_TABLE,
             Key: { favorRequestID },
+            UpdateExpression: 'SET deletedBy = :db, updatedAt = :ua',
+            ExpressionAttributeValues: {
+                ':db': updatedDeletedBy,
+                ':ua': nowIso,
+            },
         }));
-        log.dbResult('DeleteItem', FAVORS_TABLE, 1, Date.now() - deleteStart, fnCtx);
+        log.dbResult('UpdateItem', FAVORS_TABLE, 1, Date.now() - updateStart, fnCtx);
 
-        log.info('deleteConversation completed (hard-delete chat)', { ...fnCtx, deletedByUser: userID, durationMs: Date.now() - fnStart });
+        log.info('deleteConversation completed (soft-delete chat)', { ...fnCtx, deletedByUser: userID, totalDeletedBy: updatedDeletedBy.length, durationMs: Date.now() - fnStart });
 
         return response(200, {
             success: true,
-            message: 'Chat conversation permanently deleted',
-            deleted: { conversationID: favorRequestID, deleteType: 'hardDelete' },
+            message: 'Chat deleted from your view',
+            deleted: { conversationID: favorRequestID, deleteType: 'forMe' },
         });
     }
 }
@@ -1849,6 +1886,103 @@ async function updateTaskDeadline(userID: string, taskID: string, body: any, log
     });
 }
 
+/**
+ * PUT /api/tasks/{taskID}
+ * General task update — edits title, description, priority, category, deadline, requestType.
+ */
+async function updateTask(userID: string, taskID: string, body: any, logCtx?: LogContext): Promise<APIGatewayProxyResult> {
+    const fnStart = Date.now();
+    const fnCtx = { ...logCtx, function: 'updateTask', taskID };
+    const { title, description, priority, category, deadline, requestType } = body;
+    const nowIso = new Date().toISOString();
+
+    log.debug('Update task', { ...fnCtx, title, priority, category, deadline, requestType });
+
+    // Verify the task exists and user is a participant
+    const dbGetStart = Date.now();
+    log.dbOperation('GetItem', FAVORS_TABLE, { favorRequestID: taskID }, fnCtx);
+    const getResult = await ddb.send(new GetCommand({
+        TableName: FAVORS_TABLE,
+        Key: { favorRequestID: taskID },
+    }));
+    log.dbResult('GetItem', FAVORS_TABLE, getResult.Item ? 1 : 0, Date.now() - dbGetStart, fnCtx);
+
+    if (!getResult.Item) {
+        log.warn('Task not found', fnCtx);
+        return response(404, { success: false, message: 'Task not found' });
+    }
+
+    const favor = getResult.Item as FavorRequest;
+
+    // Check if user is a participant (sender, receiver, current assignee, or team member)
+    let isParticipant = isUserDirectConversationParticipant(favor, userID);
+    if (!isParticipant && favor.teamID) {
+        const team = await getTeamById(favor.teamID, fnCtx);
+        if (team && team.members.includes(userID)) {
+            isParticipant = true;
+        }
+    }
+
+    if (!isParticipant) {
+        log.warn('User not authorized to update task', { ...fnCtx, userID, senderID: favor.senderID, receiverID: favor.receiverID });
+        return response(403, { success: false, message: 'You are not authorized to update this task' });
+    }
+
+    // Build update expression dynamically based on provided fields
+    const expressionParts: string[] = ['updatedAt = :ua'];
+    const expressionAttrValues: Record<string, any> = { ':ua': nowIso };
+    const expressionAttrNames: Record<string, string> = {};
+
+    if (title !== undefined) {
+        expressionParts.push('title = :title');
+        expressionAttrValues[':title'] = title;
+    }
+    if (description !== undefined) {
+        expressionParts.push('description = :desc');
+        expressionAttrValues[':desc'] = description;
+    }
+    if (priority !== undefined) {
+        expressionParts.push('priority = :pri');
+        expressionAttrValues[':pri'] = priority;
+    }
+    if (category !== undefined) {
+        expressionParts.push('category = :cat');
+        expressionAttrValues[':cat'] = category;
+    }
+    if (deadline !== undefined) {
+        if (deadline) {
+            expressionParts.push('deadline = :dl');
+            expressionAttrValues[':dl'] = deadline;
+        }
+        // If deadline is empty/null, we still keep it (don't remove) for simplicity
+    }
+    if (requestType !== undefined) {
+        expressionParts.push('requestType = :rt');
+        expressionAttrValues[':rt'] = requestType;
+    }
+
+    const updateExpression = 'SET ' + expressionParts.join(', ');
+
+    const dbUpdateStart = Date.now();
+    log.dbOperation('UpdateItem', FAVORS_TABLE, { favorRequestID: taskID, fields: Object.keys(body) }, fnCtx);
+    await ddb.send(new UpdateCommand({
+        TableName: FAVORS_TABLE,
+        Key: { favorRequestID: taskID },
+        UpdateExpression: updateExpression,
+        ...(Object.keys(expressionAttrNames).length > 0 && { ExpressionAttributeNames: expressionAttrNames }),
+        ExpressionAttributeValues: expressionAttrValues,
+    }));
+    log.dbResult('UpdateItem', FAVORS_TABLE, 1, Date.now() - dbUpdateStart, fnCtx);
+
+    log.info('updateTask completed', { ...fnCtx, updatedFields: Object.keys(body).filter(k => body[k] !== undefined), durationMs: Date.now() - fnStart });
+
+    return response(200, {
+        success: true,
+        message: 'Task updated successfully',
+        task: { taskID, ...body, updatedAt: nowIso },
+    });
+}
+
 async function createTask(userID: string, body: any, logCtx?: LogContext): Promise<APIGatewayProxyResult> {
     const fnStart = Date.now();
     const fnCtx = { ...logCtx, function: 'createTask' };
@@ -1964,9 +2098,9 @@ async function createGroupTask(userID: string, body: any, logCtx?: LogContext): 
 async function createMeeting(userID: string, body: any, logCtx?: LogContext): Promise<APIGatewayProxyResult> {
     const fnStart = Date.now();
     const fnCtx = { ...logCtx, function: 'createMeeting' };
-    const { conversationID, title, description, startTime, endTime, location, participants } = body;
+    const { conversationID, title, description, startTime, endTime, location, participants, roomType, features } = body;
 
-    log.debug('Create meeting params', { ...fnCtx, conversationID, hasStartTime: !!startTime, participantCount: participants?.length || 0 });
+    log.debug('Create meeting params', { ...fnCtx, conversationID, hasStartTime: !!startTime, participantCount: participants?.length || 0, roomType });
 
     if (!MEETINGS_TABLE || !FAVORS_TABLE) {
         log.error('Meetings/Favors table not configured', { ...fnCtx, hasMeetingsTable: !!MEETINGS_TABLE, hasFavorsTable: !!FAVORS_TABLE });
@@ -1978,51 +2112,64 @@ async function createMeeting(userID: string, body: any, logCtx?: LogContext): Pr
         return response(400, { success: false, message: 'conversationID and description are required' });
     }
 
-    // 1) Verify the conversation exists and caller is a participant
-    const favorDbStart = Date.now();
-    log.dbOperation('GetItem', FAVORS_TABLE, { favorRequestID: conversationID }, fnCtx);
-    const favorResult = await ddb.send(new GetCommand({
-        TableName: FAVORS_TABLE,
-        Key: { favorRequestID: conversationID },
-    }));
-    log.dbResult('GetItem', FAVORS_TABLE, favorResult.Item ? 1 : 0, Date.now() - favorDbStart, fnCtx);
-    const favor = favorResult.Item as FavorRequest;
+    // ─── Standalone Meeting Room ───
+    // If the conversationID starts with 'meeting-room-', treat it as a standalone
+    // meeting room (like Zoom) that is NOT tied to any conversation.
+    const isStandaloneRoom = typeof conversationID === 'string' && conversationID.startsWith('meeting-room-');
+    let meetingParticipants: string[];
 
-    if (!favor) {
-        log.warn('Conversation not found for meeting creation', fnCtx);
-        return response(404, { success: false, message: 'Conversation not found' });
-    }
+    if (isStandaloneRoom) {
+        // Standalone room: participants come from request body, no conversation check needed
+        log.info('Creating standalone meeting room', { ...fnCtx, conversationID, roomType });
+        meetingParticipants = Array.isArray(participants) && participants.length > 0
+            ? uniqStrings([...(participants as any[]).map(String), userID])
+            : [userID];
+    } else {
+        // 1) Verify the conversation exists and caller is a participant
+        const favorDbStart = Date.now();
+        log.dbOperation('GetItem', FAVORS_TABLE, { favorRequestID: conversationID }, fnCtx);
+        const favorResult = await ddb.send(new GetCommand({
+            TableName: FAVORS_TABLE,
+            Key: { favorRequestID: conversationID },
+        }));
+        log.dbResult('GetItem', FAVORS_TABLE, favorResult.Item ? 1 : 0, Date.now() - favorDbStart, fnCtx);
+        const favor = favorResult.Item as FavorRequest;
 
-    let team: Team | null = null;
-    const directParticipant = isUserDirectConversationParticipant(favor, userID);
-    if (!directParticipant) {
-        log.debug('User not direct participant, checking team membership', { ...fnCtx, teamID: favor.teamID });
-        if (favor.teamID) {
-            team = await getTeamById(favor.teamID, fnCtx);
-            if (!team?.members?.includes(userID)) {
-                log.warn('Unauthorized meeting creation attempt (not in team)', { ...fnCtx, teamID: favor.teamID });
+        if (!favor) {
+            log.warn('Conversation not found for meeting creation', fnCtx);
+            return response(404, { success: false, message: 'Conversation not found' });
+        }
+
+        let team: Team | null = null;
+        const directParticipant = isUserDirectConversationParticipant(favor, userID);
+        if (!directParticipant) {
+            log.debug('User not direct participant, checking team membership', { ...fnCtx, teamID: favor.teamID });
+            if (favor.teamID) {
+                team = await getTeamById(favor.teamID, fnCtx);
+                if (!team?.members?.includes(userID)) {
+                    log.warn('Unauthorized meeting creation attempt (not in team)', { ...fnCtx, teamID: favor.teamID });
+                    return response(403, { success: false, message: 'Unauthorized' });
+                }
+            } else {
+                log.warn('Unauthorized meeting creation attempt', fnCtx);
                 return response(403, { success: false, message: 'Unauthorized' });
             }
-        } else {
-            log.warn('Unauthorized meeting creation attempt', fnCtx);
-            return response(403, { success: false, message: 'Unauthorized' });
+        } else if (favor.teamID) {
+            team = await getTeamById(favor.teamID, fnCtx);
         }
-    } else if (favor.teamID) {
-        // Load team for participant list (optional)
-        team = await getTeamById(favor.teamID, fnCtx);
+
+        const conversationParticipants = uniqStrings([
+            favor.senderID,
+            favor.receiverID,
+            favor.currentAssigneeID,
+            ...(team?.members || []),
+        ]);
+
+        meetingParticipants =
+            Array.isArray(participants) && participants.length > 0
+                ? uniqStrings([...(participants as any[]).map(String), userID])
+                : uniqStrings([...conversationParticipants, userID]);
     }
-
-    const conversationParticipants = uniqStrings([
-        favor.senderID,
-        favor.receiverID,
-        favor.currentAssigneeID,
-        ...(team?.members || []),
-    ]);
-
-    const meetingParticipants =
-        Array.isArray(participants) && participants.length > 0
-            ? uniqStrings([...(participants as any[]).map(String), userID])
-            : uniqStrings([...conversationParticipants, userID]);
 
     const meetingID = uuidv4();
     const nowIso = new Date().toISOString();
@@ -2049,6 +2196,9 @@ async function createMeeting(userID: string, body: any, logCtx?: LogContext): Pr
         updatedAt: nowIso,
         guestJoinTokenHash,
         guestJoinExpiresAt,
+        // Room type & features
+        ...(roomType && { roomType }),
+        ...(features && typeof features === 'object' && { features }),
     };
 
     const dbStart = Date.now();
@@ -2073,7 +2223,10 @@ async function createMeeting(userID: string, body: any, logCtx?: LogContext): Pr
         status: meetingRecord.status,
         createdAt: meetingRecord.createdAt,
         updatedAt: meetingRecord.updatedAt,
-    };
+        // Room type & features
+        ...(roomType && { roomType }),
+        ...(features && typeof features === 'object' && { features }),
+    } as Meeting;
 
     log.info('createMeeting completed', { ...fnCtx, meetingID, conversationID, participantCount: meeting.participants.length, durationMs: Date.now() - fnStart });
 
@@ -2100,7 +2253,10 @@ function sanitizeMeeting(meetingRecord: MeetingRecord): Meeting {
         status: meetingRecord.status,
         createdAt: meetingRecord.createdAt,
         updatedAt: meetingRecord.updatedAt,
-    };
+        // Room type & features (if present)
+        ...((meetingRecord as any).roomType && { roomType: (meetingRecord as any).roomType }),
+        ...((meetingRecord as any).features && { features: (meetingRecord as any).features }),
+    } as Meeting;
 }
 
 async function joinMeeting(userID: string, meetingID: string, body: any, logCtx?: LogContext): Promise<APIGatewayProxyResult> {
@@ -2142,8 +2298,13 @@ async function joinMeeting(userID: string, meetingID: string, body: any, logCtx?
         (Array.isArray(meetingRecord.participants) && meetingRecord.participants.includes(userID));
 
     if (!inMeetingParticipants) {
-        log.debug('User not in meeting participants, checking conversation membership', fnCtx);
-        if (meetingRecord.conversationID && FAVORS_TABLE) {
+        // For standalone meeting rooms, skip conversation lookup
+        const isStandaloneRoom = typeof meetingRecord.conversationID === 'string' && meetingRecord.conversationID.startsWith('meeting-room-');
+        if (isStandaloneRoom) {
+            // Standalone rooms: any authenticated user can join (they'll be added to participants)
+            log.info('Standalone meeting room join, allowing authenticated user', fnCtx);
+        } else if (meetingRecord.conversationID && FAVORS_TABLE) {
+            log.debug('User not in meeting participants, checking conversation membership', fnCtx);
             const favorDbStart = Date.now();
             log.dbOperation('GetItem', FAVORS_TABLE, { favorRequestID: meetingRecord.conversationID }, fnCtx);
             const favorResult = await ddb.send(new GetCommand({
@@ -3140,7 +3301,9 @@ async function addGroupMember(userID: string, teamID: string, body: any, logCtx?
         return response(404, { success: false, message: 'Group not found' });
     }
 
-    if (team.ownerID !== userID) {
+    const isOwner = team.ownerID === userID;
+    const isAdmin = (team.admins || []).includes(userID);
+    if (!isOwner && !isAdmin) {
         log.warn('Unauthorized add member attempt', { ...fnCtx, ownerID: team.ownerID });
         AuditService.logAction({
             userID,
@@ -3151,10 +3314,10 @@ async function addGroupMember(userID: string, teamID: string, body: any, logCtx?
             endpoint: `/api/groups/${teamID}/members`,
             status: 'failure',
             statusCode: 403,
-            errorMessage: 'Only the group owner can add members',
+            errorMessage: 'Only the group owner or admins can add members',
             durationMs: Date.now() - startTime,
         });
-        return response(403, { success: false, message: 'Only the group owner can add members' });
+        return response(403, { success: false, message: 'Only the group owner or admins can add members' });
     }
 
     // ========================================
@@ -3289,7 +3452,10 @@ async function removeGroupMember(userID: string, teamID: string, memberUserID: s
         return response(404, { success: false, message: 'Group not found' });
     }
 
-    if (team.ownerID !== userID && userID !== memberUserID) {
+    const isOwner = team.ownerID === userID;
+    const isAdmin = (team.admins || []).includes(userID);
+    const isSelfLeave = userID === memberUserID;
+    if (!isSelfLeave && !isOwner && !isAdmin) {
         log.warn('Unauthorized remove member attempt', { ...fnCtx, ownerID: team.ownerID });
         AuditService.logAction({
             userID,
@@ -3300,10 +3466,18 @@ async function removeGroupMember(userID: string, teamID: string, memberUserID: s
             endpoint: `/api/groups/${teamID}/members/${memberUserID}`,
             status: 'failure',
             statusCode: 403,
-            errorMessage: 'Only the group owner can remove other members',
+            errorMessage: 'Only the group owner or admins can remove other members',
             durationMs: Date.now() - startTime,
         });
-        return response(403, { success: false, message: 'Only the group owner can remove other members' });
+        return response(403, { success: false, message: 'Only the group owner or admins can remove other members' });
+    }
+
+    // Admins cannot remove other admins or the owner
+    if (!isOwner && !isSelfLeave) {
+        const targetIsAdmin = (team.admins || []).includes(memberUserID);
+        if (targetIsAdmin || memberUserID === team.ownerID) {
+            return response(403, { success: false, message: 'Only the owner can remove admins.' });
+        }
     }
 
     // ========================================

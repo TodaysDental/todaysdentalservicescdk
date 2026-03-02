@@ -1097,7 +1097,6 @@ export const handler = async (event: any): Promise<any> => {
                             const aiForwardCallerId = fromPhoneNumber !== 'Unknown' ? fromPhoneNumber : toPhoneNumber;
 
                             return buildActions([
-                                buildSpeakAction('Please hold while we connect you to our AI assistant.'),
                                 buildCallAndBridgeAction(
                                     aiForwardCallerId,
                                     aiPhoneNumber,
@@ -1159,17 +1158,14 @@ export const handler = async (event: any): Promise<any> => {
 
                                 // Forward call to the AI phone number via PSTN CallAndBridge
                                 return buildActions([
-                                    buildSpeakAction('Please hold while we connect you to our after-hours assistant.'),
                                     buildCallAndBridgeAction(
                                         aiForwardCallerId,
-                                        aiPhoneNumber, // Forward to the AI phone number
+                                        aiPhoneNumber,
                                         {
                                             'X-Clinic-Id': clinicId,
                                             'X-Forward-Reason': 'after-hours',
                                             'X-Original-Caller': fromPhoneNumber,
-                                            // Preserve the forwarding DID so we can retry with a safe caller ID if needed.
                                             'X-Forwarded-From': toPhoneNumber,
-                                            // Used to prevent infinite retry loops on ACTION_FAILED.
                                             'X-Forward-Attempt': '0',
                                         }
                                     ),

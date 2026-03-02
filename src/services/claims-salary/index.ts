@@ -78,8 +78,8 @@ function normalizeKey(value: any): string {
   return String(value || '').trim().toLowerCase();
 }
 
-function isPaymentPostingRole(role: unknown): boolean {
-  return String(role || '').trim().toLowerCase() === 'payment posting';
+function isClaimsRole(role: unknown): boolean {
+  return String(role || '').trim().toLowerCase() === 'claims';
 }
 
 function hasFinanceReadForClinic(userPerms: any, clinicId: string): boolean {
@@ -96,7 +96,7 @@ function hasFinanceReadForClinic(userPerms: any, clinicId: string): boolean {
 function canAccessClinicSalary(userPerms: any, clinicId: string): boolean {
   if (isAdminUser(userPerms.clinicRoles, userPerms.isSuperAdmin, userPerms.isGlobalSuperAdmin)) return true;
   if (hasFinanceReadForClinic(userPerms, clinicId)) return true;
-  return userPerms.clinicRoles?.some((cr: any) => cr?.clinicId === clinicId && isPaymentPostingRole(cr?.role)) || false;
+  return userPerms.clinicRoles?.some((cr: any) => cr?.clinicId === clinicId && isClaimsRole(cr?.role)) || false;
 }
 
 function pickOpenDentalUsernameFromClinicRole(role: any): string | null {
@@ -114,11 +114,15 @@ function pickOpenDentalUsernameFromClinicRole(role: any): string | null {
   return null;
 }
 
-function pickRatesFromClinicRole(role: any): { perClaimFeeOpenDental: number; perClaimFeePortal: number; perPreAuthFee: number } {
+function pickRatesFromClinicRole(role: any): {
+  perClaimsPostedAmount: number;
+  perEobsAttachedAmount: number;
+  statusDeniedAmount: number;
+} {
   return {
-    perClaimFeeOpenDental: toNumber(role?.perClaimFeeOpenDental ?? role?.perClaimFeeOD ?? role?.perClaimOD),
-    perClaimFeePortal: toNumber(role?.perClaimFeePortal ?? role?.perClaimFeePortalRs ?? role?.perClaimPortal),
-    perPreAuthFee: toNumber(role?.perPreAuthFee ?? role?.perPreauthFee ?? role?.perPAFee),
+    perClaimsPostedAmount: toNumber(role?.perClaimsPostedAmount ?? role?.perClaimEntered ?? role?.perClaimEnteredAmount),
+    perEobsAttachedAmount: toNumber(role?.perEobsAttachedAmount ?? role?.perEobAttachedAmount ?? role?.perEobAmount),
+    statusDeniedAmount: toNumber(role?.statusDeniedAmount ?? role?.perDeniedAmount ?? role?.deniedAmount),
   };
 }
 
@@ -127,9 +131,9 @@ type AssigneeClinicRates = {
   assigneeName: string;
   clinicId: string;
   openDentalUsername: string;
-  perClaimFeeOpenDental: number;
-  perClaimFeePortal: number;
-  perPreAuthFee: number;
+  perClaimsPostedAmount: number;
+  perEobsAttachedAmount: number;
+  statusDeniedAmount: number;
 };
 
 type SalaryRow = {
@@ -138,106 +142,64 @@ type SalaryRow = {
   assigneeEmail: string;
   assignee: string;
   openDentalUsername: string;
-  totalClaims: number;
-  openDental: number;
-  perClaimFeeOpenDental: number;
-  openDentalEarnings: number;
-  portal: number;
-  perClaimFeePortal: number;
-  portalEarnings: number;
-  preAuth: number;
-  perPreAuthFee: number;
-  preAuthEarnings: number;
+  claimsPosted: number;
+  perClaimsPostedAmount: number;
+  claimsPostedEarnings: number;
+  eobsAttached: number;
+  perEobsAttachedAmount: number;
+  eobsAttachedEarnings: number;
+  deniedClaims: number;
+  statusDeniedAmount: number;
+  deniedEarnings: number;
   totalEarnings: number;
 };
 
-function buildSalaryCountsSql(dateStart: string, dateEnd: string): string {
-  // This query is derived from the user-provided SELECT and tailored to return ONLY counts
-  // needed for salary calculation (OpenDental vs Portal vs PreAuth) grouped by SubmittedBy.
+function buildClaimsSalaryCountsSql(dateStart: string, dateEnd: string): string {
   return `
 SET @DateStart = '${dateStart}';
 SET @DateEnd   = '${dateEnd}';
 
 SELECT
-  t.SubmittedBy,
-  SUM(t.OpenDentalCount) AS OpenDental,
-  SUM(t.PortalCount)     AS Portal,
-  SUM(t.PreAuthCount)    AS PreAuth
+  t.EnteredBy,
+  SUM(t.ClaimsPosted) AS ClaimsPosted,
+  SUM(t.EobsAttached) AS EobsAttached,
+  SUM(t.DeniedClaims) AS DeniedClaims
 FROM (
-  /* Claims received in range (count as OpenDental vs Portal based on submitter tracking entry) */
   SELECT
-    COALESCE(u_etrans.UserName, u_track.UserName, 'Not Logged') AS SubmittedBy,
-    CASE WHEN def_submit.ItemName = 'Submitted through Portal' THEN 1 ELSE 0 END AS PortalCount,
-    CASE WHEN def_submit.ItemName = 'Submitted through Portal' THEN 0 ELSE 1 END AS OpenDentalCount,
-    0 AS PreAuthCount
-  FROM claim c
-  LEFT JOIN (
-    SELECT ct_s.ClaimNum, ct_s.UserNum, ct_s.TrackingDefNum
-    FROM claimtracking ct_s
-    INNER JOIN (
-      SELECT ClaimNum, MIN(ClaimTrackingNum) AS FirstEntry
-      FROM claimtracking
-      WHERE TrackingDefNum IN (
-        SELECT DefNum FROM definition
-        WHERE ItemName IN ('Resubmitted','Submitted through Portal','Claim Sent','Submitted PA')
-      )
-      GROUP BY ClaimNum
-    ) ct_min ON ct_s.ClaimNum = ct_min.ClaimNum AND ct_s.ClaimTrackingNum = ct_min.FirstEntry
-  ) ct_submitter ON ct_submitter.ClaimNum = c.ClaimNum
-  LEFT JOIN definition def_submit ON def_submit.DefNum = ct_submitter.TrackingDefNum
-  LEFT JOIN userod u_track ON u_track.UserNum = ct_submitter.UserNum
-  LEFT JOIN (
-    SELECT e.ClaimNum, e.UserNum
-    FROM etrans e
-    INNER JOIN (
-      SELECT ClaimNum, MIN(EtransNum) AS FirstEtrans
-      FROM etrans
-      GROUP BY ClaimNum
-    ) e_min ON e.ClaimNum = e_min.ClaimNum AND e.EtransNum = e_min.FirstEtrans
-  ) etrans_sub ON etrans_sub.ClaimNum = c.ClaimNum
-  LEFT JOIN userod u_etrans ON u_etrans.UserNum = etrans_sub.UserNum
-  WHERE c.DateReceived BETWEEN @DateStart AND @DateEnd
-    AND c.ClaimType <> 'PreAuth'
+    u.UserName AS EnteredBy,
+    COUNT(*) AS ClaimsPosted,
+    COUNT(DISTINCT sub.ClaimPaymentNum) AS EobsAttached,
+    0 AS DeniedClaims
+  FROM (
+    SELECT DISTINCT c.ClaimNum, cp.ClaimPaymentNum, cp.SecUserNumEntry
+    FROM claim c
+    INNER JOIN claimproc cp2 ON cp2.ClaimNum = c.ClaimNum
+    INNER JOIN claimpayment cp ON cp.ClaimPaymentNum = cp2.ClaimPaymentNum
+    INNER JOIN eobattach ea ON ea.ClaimPaymentNum = cp.ClaimPaymentNum
+    WHERE c.DateReceived BETWEEN @DateStart AND @DateEnd
+      AND ea.FileName IS NOT NULL AND ea.FileName <> ''
+  ) sub
+  INNER JOIN userod u ON u.UserNum = sub.SecUserNumEntry
+  GROUP BY u.UserName
 
   UNION ALL
 
-  /* PreAuth claims sent in range */
   SELECT
-    COALESCE(u_etrans.UserName, u_track.UserName, 'Not Logged') AS SubmittedBy,
-    0 AS PortalCount,
-    0 AS OpenDentalCount,
-    1 AS PreAuthCount
-  FROM claim cl
-  LEFT JOIN (
-    SELECT ct_s.ClaimNum, ct_s.UserNum
-    FROM claimtracking ct_s
-    INNER JOIN (
-      SELECT ClaimNum, MIN(ClaimTrackingNum) AS FirstEntry
-      FROM claimtracking
-      WHERE TrackingDefNum IN (
-        SELECT DefNum FROM definition
-        WHERE ItemName IN ('Resubmitted','Submitted through Portal','Claim Sent','Submitted PA')
-      )
-      GROUP BY ClaimNum
-    ) ct_min ON ct_s.ClaimNum = ct_min.ClaimNum AND ct_s.ClaimTrackingNum = ct_min.FirstEntry
-  ) ct_submitter ON ct_submitter.ClaimNum = cl.ClaimNum
-  LEFT JOIN userod u_track ON u_track.UserNum = ct_submitter.UserNum
-  LEFT JOIN (
-    SELECT e.ClaimNum, e.UserNum
-    FROM etrans e
-    INNER JOIN (
-      SELECT ClaimNum, MIN(EtransNum) AS FirstEtrans
-      FROM etrans
-      GROUP BY ClaimNum
-    ) e_min ON e.ClaimNum = e_min.ClaimNum AND e.EtransNum = e_min.FirstEtrans
-  ) etrans_sub ON etrans_sub.ClaimNum = cl.ClaimNum
-  LEFT JOIN userod u_etrans ON u_etrans.UserNum = etrans_sub.UserNum
-  WHERE cl.ClaimType = 'PreAuth'
-    AND cl.DateSent BETWEEN @DateStart AND @DateEnd
+    u.UserName AS EnteredBy,
+    0 AS ClaimsPosted,
+    0 AS EobsAttached,
+    COUNT(DISTINCT ct.ClaimNum) AS DeniedClaims
+  FROM claimtracking ct
+  INNER JOIN definition d ON d.DefNum = ct.TrackingDefNum
+  INNER JOIN userod u ON u.UserNum = ct.UserNum
+  WHERE LOWER(d.ItemName) LIKE '%denied%'
+    AND ct.DateTimeEntry >= CONCAT(@DateStart, ' 00:00:00')
+    AND ct.DateTimeEntry < DATE_ADD(CONCAT(@DateEnd, ' 00:00:00'), INTERVAL 1 DAY)
+  GROUP BY u.UserName
 ) t
-WHERE t.SubmittedBy <> 'Not Logged'
-GROUP BY t.SubmittedBy
-ORDER BY t.SubmittedBy;
+WHERE t.EnteredBy IS NOT NULL AND t.EnteredBy <> ''
+GROUP BY t.EnteredBy
+ORDER BY t.EnteredBy;
   `.trim();
 }
 
@@ -466,7 +428,7 @@ async function runOpenDentalSqlQuery(clinicId: string, sql: string, requestId: s
   const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
   const safeClinic = clinicId.replace(/[^a-zA-Z0-9_-]/g, '-');
   const safeRid = requestId.replace(/[^a-zA-Z0-9_-]/g, '-').slice(0, 32);
-  const fileName = `salary_${safeClinic}_${timestamp}_${safeRid}.csv`;
+  const fileName = `claims_salary_${safeClinic}_${timestamp}_${safeRid}.csv`;
   const sftpAddress = `${host}/${fileName}`;
 
   const apiPath = `/api/v1/queries`;
@@ -545,13 +507,16 @@ function buildAssigneeName(user: { givenName?: string; familyName?: string; emai
   return name || user.givenName || user.email || fallback;
 }
 
-function buildRatesIndex(users: Array<Pick<StaffUser, 'email' | 'givenName' | 'familyName' | 'clinicRoles'>>): Map<string, AssigneeClinicRates> {
+function buildRatesIndex(
+  users: Array<Pick<StaffUser, 'email' | 'givenName' | 'familyName' | 'clinicRoles'>>
+): Map<string, AssigneeClinicRates> {
   const idx = new Map<string, AssigneeClinicRates>();
   for (const u of users) {
     const email = String(u.email || '').trim().toLowerCase();
     const assigneeName = buildAssigneeName(u as any, email || 'Unknown');
     const roles = Array.isArray((u as any).clinicRoles) ? ((u as any).clinicRoles as ClinicRoleAssignment[]) : [];
     for (const cr of roles) {
+      if (!isClaimsRole((cr as any).role)) continue;
       const clinicId = String((cr as any).clinicId || '').trim();
       if (!clinicId) continue;
       const openDentalUsername = pickOpenDentalUsernameFromClinicRole(cr);
@@ -588,8 +553,8 @@ export async function handler(event: APIGatewayProxyEvent): Promise<APIGatewayPr
   const method = event.httpMethod || (event.requestContext as any)?.http?.method;
   let path = event.path || (event as any).rawPath || '';
 
-  // Support both custom-domain paths (/payment-posting/...) and raw resource paths (/salary/...)
-  path = path.replace(/^\/payment-posting/, '');
+  // Support both custom-domain paths (/claims-salary/...) and raw resource paths (/salary/...)
+  path = path.replace(/^\/claims-salary/, '');
   if (!path.startsWith('/')) path = `/${path}`;
 
   if (method === 'OPTIONS') {
@@ -618,7 +583,7 @@ export async function handler(event: APIGatewayProxyEvent): Promise<APIGatewayPr
         userPerms.isSuperAdmin,
         userPerms.isGlobalSuperAdmin,
         cid
-      ) || isPaymentPostingRole(cr?.role);
+      ) || isClaimsRole(cr?.role);
     });
     if (!hasFinanceSomewhere) {
       return httpErr(event, 403, `You do not have ${requiredPermission} permission for the ${MODULE_NAME} module`);
@@ -659,7 +624,7 @@ export async function handler(event: APIGatewayProxyEvent): Promise<APIGatewayPr
     const all = await scanAllStaffUsers('email, givenName, familyName, isActive, clinicRoles');
     const users = (all as any[])
       .filter((u) => u?.isActive !== false)
-      .filter((u) => Array.isArray(u?.clinicRoles) && u.clinicRoles.some((cr: any) => isPaymentPostingRole(cr?.role)))
+      .filter((u) => Array.isArray(u?.clinicRoles) && u.clinicRoles.some((cr: any) => isClaimsRole(cr?.role)))
       .map((u) => ({ email: String(u.email || '').toLowerCase(), name: buildAssigneeName(u, String(u.email || '')) }))
       .filter((u) => u.email)
       .sort((a, b) => a.name.localeCompare(b.name));
@@ -690,20 +655,21 @@ export async function handler(event: APIGatewayProxyEvent): Promise<APIGatewayPr
     }
 
     // Enforce access and module permissions per clinic (non-admin)
-    const authorizedClinicIds = clinicIds.filter((cid) => {
-      if (allowedClinics.has('*')) return true;
-      return hasClinicAccess(allowedClinics, cid);
-    }).filter((cid) => {
-      if (isAdmin) return true;
-      return canAccessClinicSalary(userPerms, cid);
-    });
+    const authorizedClinicIds = clinicIds
+      .filter((cid) => {
+        if (allowedClinics.has('*')) return true;
+        return hasClinicAccess(allowedClinics, cid);
+      })
+      .filter((cid) => {
+        if (isAdmin) return true;
+        return canAccessClinicSalary(userPerms, cid);
+      });
 
     if (authorizedClinicIds.length === 0) {
       return httpErr(event, 403, 'Forbidden: no accessible clinics for this report');
     }
 
     // Safety limit to avoid API Gateway timeouts
-    // NOTE: Keep this aligned with the typical clinic count in production.
     const MAX_CLINICS_PER_REQUEST = 30;
     if (authorizedClinicIds.length > MAX_CLINICS_PER_REQUEST) {
       return httpErr(
@@ -716,7 +682,7 @@ export async function handler(event: APIGatewayProxyEvent): Promise<APIGatewayPr
     const userEmailParam = String(query.userEmail || '').trim().toLowerCase();
     const effectiveUserEmail = isAdmin ? (userEmailParam || '') : userPerms.email.toLowerCase();
 
-    // Fetch staff users/rates to map OpenDental SubmittedBy -> app user + rates
+    // Fetch staff users/rates to map OpenDental EnteredBy -> app user + rates
     let staffUsersForRates: Array<Pick<StaffUser, 'email' | 'givenName' | 'familyName' | 'clinicRoles'>> = [];
     if (isAdmin) {
       if (effectiveUserEmail) {
@@ -726,8 +692,12 @@ export async function handler(event: APIGatewayProxyEvent): Promise<APIGatewayPr
         const all = await scanAllStaffUsers('email, givenName, familyName, isActive, clinicRoles');
         staffUsersForRates = (all as any[])
           .filter((u) => u?.isActive !== false)
-          .filter((u) => Array.isArray(u?.clinicRoles) && u.clinicRoles.some((cr: any) => authorizedClinicIds.includes(String(cr?.clinicId || ''))))
-          .filter((u) => Array.isArray(u?.clinicRoles) && u.clinicRoles.some((cr: any) => isPaymentPostingRole(cr?.role)))
+          .filter(
+            (u) =>
+              Array.isArray(u?.clinicRoles) &&
+              u.clinicRoles.some((cr: any) => authorizedClinicIds.includes(String(cr?.clinicId || '')))
+          )
+          .filter((u) => Array.isArray(u?.clinicRoles) && u.clinicRoles.some((cr: any) => isClaimsRole(cr?.role)))
           .map((u) => ({
             email: String(u.email || '').toLowerCase(),
             givenName: u.givenName,
@@ -750,7 +720,7 @@ export async function handler(event: APIGatewayProxyEvent): Promise<APIGatewayPr
     const ratesIndex = buildRatesIndex(staffUsersForRates);
 
     const requestId = (event.requestContext as any)?.requestId || randomUUID();
-    const sql = buildSalaryCountsSql(dateStart, dateEnd);
+    const sql = buildClaimsSalaryCountsSql(dateStart, dateEnd);
 
     const clinicConfigs = await mapWithConcurrency(authorizedClinicIds, 5, async (clinicId) => {
       const cfg = await getClinicConfig(clinicId);
@@ -784,15 +754,14 @@ export async function handler(event: APIGatewayProxyEvent): Promise<APIGatewayPr
       const practice = clinicNameMap.get(clinicId) || clinicId;
       const rawRows = Array.isArray(res.rows) ? (res.rows as any[]) : [];
       for (const r of rawRows) {
-        const submittedBy = String(r.SubmittedBy || r.submittedBy || '').trim();
-        if (!submittedBy) continue;
+        const enteredBy = String(r.EnteredBy || r.enteredBy || r.UserName || r.username || '').trim();
+        if (!enteredBy) continue;
 
-        const openDental = toNumber(r.OpenDental ?? r.opendental ?? r.OD ?? r.OpenDentalCount);
-        const portal = toNumber(r.Portal ?? r.portal ?? r.PortalCount);
-        const preAuth = toNumber(r.PreAuth ?? r.preAuth ?? r.PreAuthCount);
-        const totalClaims = openDental + portal;
+        const claimsPosted = toNumber(r.ClaimsPosted ?? r.claimsPosted ?? r.Claims ?? r.ClaimsCount);
+        const eobsAttached = toNumber(r.EobsAttached ?? r.eobsAttached ?? r.EOBsAttached ?? r.Eobs ?? r.EobCount);
+        const deniedClaims = toNumber(r.DeniedClaims ?? r.deniedClaims ?? r.Denied ?? r.DeniedCount);
 
-        const rateKey = `${clinicId}#${normalizeKey(submittedBy)}`;
+        const rateKey = `${clinicId}#${normalizeKey(enteredBy)}`;
         const rate = ratesIndex.get(rateKey);
 
         // Enforce user visibility
@@ -806,52 +775,48 @@ export async function handler(event: APIGatewayProxyEvent): Promise<APIGatewayPr
           }
         }
 
-        const perClaimFeeOpenDental = rate?.perClaimFeeOpenDental ?? 0;
-        const perClaimFeePortal = rate?.perClaimFeePortal ?? 0;
-        const perPreAuthFee = rate?.perPreAuthFee ?? 0;
+        const perClaimsPostedAmount = rate?.perClaimsPostedAmount ?? 0;
+        const perEobsAttachedAmount = rate?.perEobsAttachedAmount ?? 0;
+        const statusDeniedAmount = rate?.statusDeniedAmount ?? 0;
 
-        const openDentalEarnings = openDental * perClaimFeeOpenDental;
-        const portalEarnings = portal * perClaimFeePortal;
-        const preAuthEarnings = preAuth * perPreAuthFee;
-        const totalEarnings = openDentalEarnings + portalEarnings + preAuthEarnings;
+        const claimsPostedEarnings = claimsPosted * perClaimsPostedAmount;
+        const eobsAttachedEarnings = eobsAttached * perEobsAttachedAmount;
+        const deniedEarnings = deniedClaims * statusDeniedAmount;
+        const totalEarnings = claimsPostedEarnings + eobsAttachedEarnings + deniedEarnings;
 
         reportRows.push({
           clinicId,
           practice,
           assigneeEmail: rate?.email || '',
-          assignee: rate?.assigneeName || submittedBy,
-          openDentalUsername: submittedBy,
-          totalClaims,
-          openDental,
-          perClaimFeeOpenDental,
-          openDentalEarnings,
-          portal,
-          perClaimFeePortal,
-          portalEarnings,
-          preAuth,
-          perPreAuthFee,
-          preAuthEarnings,
+          assignee: rate?.assigneeName || enteredBy,
+          openDentalUsername: enteredBy,
+          claimsPosted,
+          perClaimsPostedAmount,
+          claimsPostedEarnings,
+          eobsAttached,
+          perEobsAttachedAmount,
+          eobsAttachedEarnings,
+          deniedClaims,
+          statusDeniedAmount,
+          deniedEarnings,
           totalEarnings,
         });
       }
     }
 
-    // If we didn't find a matching rate record but admin requested a specific user,
-    // return empty result (not an error).
     const totals = reportRows.reduce(
       (acc, r) => {
-        acc.totalClaims += r.totalClaims;
-        acc.openDental += r.openDental;
-        acc.portal += r.portal;
-        acc.preAuth += r.preAuth;
+        acc.claimsPosted += r.claimsPosted;
+        acc.eobsAttached += r.eobsAttached;
+        acc.deniedClaims += r.deniedClaims;
         acc.totalEarnings += r.totalEarnings;
         return acc;
       },
-      { totalClaims: 0, openDental: 0, portal: 0, preAuth: 0, totalEarnings: 0 }
+      { claimsPosted: 0, eobsAttached: 0, deniedClaims: 0, totalEarnings: 0 }
     );
 
     // Sort like the sheet: Practice then Assignee
-    reportRows.sort((a, b) => (a.practice.localeCompare(b.practice) || a.assignee.localeCompare(b.assignee)));
+    reportRows.sort((a, b) => a.practice.localeCompare(b.practice) || a.assignee.localeCompare(b.assignee));
 
     return httpOk(event, {
       dateStart,

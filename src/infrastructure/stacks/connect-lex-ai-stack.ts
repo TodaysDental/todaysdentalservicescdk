@@ -274,7 +274,7 @@ export class ConnectLexAiStack extends Stack {
         CLINIC_CONFIG_TABLE: props.clinicConfigTableName || 'TodaysDentalInsights-ClinicConfig',
         GLOBAL_SECRETS_TABLE: props.globalSecretsTableName || 'TodaysDentalInsights-GlobalSecrets',
         // Caller lookup budget (ms) for personalized welcome greeting
-        WELCOME_PATIENT_LOOKUP_BUDGET_MS: '4000',
+        WELCOME_PATIENT_LOOKUP_BUDGET_MS: '2000',
         // Keep Bedrock comfortably under Connect's ~8s InvokeLambdaFunction hard limit
         CONNECT_BEDROCK_TIMEOUT_MS: '6500',
         // Thinking audio configuration - plays keyboard sounds during AI processing
@@ -1141,7 +1141,7 @@ export class ConnectLexAiStack extends Stack {
         DisconnectFlowArn: disconnectFlow.attrContactFlowArn,
         // Force update ONLY when dependencies actually change
         // Bump version when contact flow logic changes (forces custom resource update)
-        UpdateTrigger: `${lexBotAliasArn}|${this.lexBedrockHookFn.functionArn}|${keyboardPromptId}|${disconnectFlow.attrContactFlowArn}|v18`,
+        UpdateTrigger: `${lexBotAliasArn}|${this.lexBedrockHookFn.functionArn}|${keyboardPromptId}|${disconnectFlow.attrContactFlowArn}|v19`,
       },
     });
     inboundFlow.node.addDependency(disconnectFlow);

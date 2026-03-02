@@ -446,9 +446,9 @@ export class CommStack extends Stack {
     this.fileBucket.grantReadWrite(defaultFn);
     this.notificationsTopic.grantPublish(defaultFn);
 
-    // CRITICAL NEW FEATURE: Grant SES SendEmail permissions
+    // CRITICAL: Grant SES SendEmail permissions (v1 + v2 API actions)
     defaultFn.addToRolePolicy(new iam.PolicyStatement({
-      actions: ['ses:SendEmail', 'ses:SendRawEmail'],
+      actions: ['ses:SendEmail', 'ses:SendRawEmail', 'ses:SendBulkEmail', 'ses:SendTemplatedEmail'],
       resources: ['*'],
     }));
 
@@ -600,11 +600,11 @@ export class CommStack extends Stack {
     createLambdaDurationAlarm(deadlineReminderFn, 'deadline-reminder',
       Math.floor(Duration.seconds(120).toMilliseconds() * 0.8));
 
-    // EventBridge cron rule: Runs every day at 1:00 PM UTC (8:00 AM EST / 9:00 AM EDT)
+    // EventBridge cron rule: Runs EVERY HOUR for granular deadline reminders (1h, 12h, 18h, 24h)
     new events.Rule(this, 'DeadlineReminderSchedule', {
-      ruleName: `${this.stackName}-DeadlineReminderDaily`,
-      description: 'Triggers the Deadline Reminder Lambda daily at 8 AM EST to check for upcoming/overdue tasks',
-      schedule: events.Schedule.cron({ minute: '0', hour: '13', day: '*', month: '*' }),
+      ruleName: `${this.stackName}-DeadlineReminderHourly`,
+      description: 'Triggers the Deadline Reminder Lambda hourly to check for upcoming/overdue tasks (1h, 12h, 18h, 24h intervals)',
+      schedule: events.Schedule.rate(Duration.hours(1)),
       targets: [new targets.LambdaFunction(deadlineReminderFn, {
         retryAttempts: 2,
       })],
@@ -697,6 +697,7 @@ export class CommStack extends Stack {
     const tasksGroup = tasks.addResource('group');
     tasksGroup.addMethod('POST', restIntegration, { authorizer });
     const taskById = tasks.addResource('{taskID}');
+    taskById.addMethod('PUT', restIntegration, { authorizer });  // General task update (title, desc, priority, etc.)
     const taskForward = taskById.addResource('forward');
     taskForward.addMethod('POST', restIntegration, { authorizer });
     const taskDeadline = taskById.addResource('deadline');
@@ -740,6 +741,18 @@ export class CommStack extends Stack {
     preferences.addMethod('PUT', restIntegration, { authorizer });   // Save a preference
     const preferencesByUser = preferences.addResource('{userID}');
     preferencesByUser.addMethod('GET', restIntegration, { authorizer }); // Get another user's public prefs
+
+    // /api/audit-logs endpoints (Audit Trail)
+    const auditLogs = api.addResource('audit-logs');
+    auditLogs.addMethod('GET', restIntegration, { authorizer });  // Get current user's audit logs
+    const auditLogsByUser = auditLogs.addResource('user');
+    auditLogsByUser.addMethod('GET', restIntegration, { authorizer }); // Get current user's audit logs (explicit)
+    const auditLogsByResource = auditLogs.addResource('resource');
+    const auditLogsByResourceId = auditLogsByResource.addResource('{resourceID}');
+    auditLogsByResourceId.addMethod('GET', restIntegration, { authorizer }); // Get audit logs for a specific resource
+    const auditLogsByAction = auditLogs.addResource('action');
+    const auditLogsByActionName = auditLogsByAction.addResource('{action}');
+    auditLogsByActionName.addMethod('GET', restIntegration, { authorizer }); // Get audit logs by action type
 
     // CloudWatch alarms for REST API handler
     createLambdaErrorAlarm(restApiHandler, 'rest-api-handler');

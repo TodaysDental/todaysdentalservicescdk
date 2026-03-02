@@ -414,10 +414,50 @@ export const handler = async (event: any): Promise<any> => {
         return { statusCode: 200, headers: corsHeaders, body: JSON.stringify({ total: allResults.length, success: allResults.filter(r => r.status === 'success').length, failed: allResults.filter(r => r.status === 'failed').length, results: allResults }) };
       }
 
+      // ---- SYNC vs ASYNC decision ----
+      // Post synchronously only when the batch is small AND there is no media.
+      // Media posts (especially Instagram) routinely take 15-27+ s on Ayrshare,
+      // which risks hitting API Gateway's ~29 s integration timeout.  The async
+      // worker has a generous 55 s HTTP budget and a 120 s Lambda timeout.
+      const hasMedia = !!(postData?.mediaUrls?.length);
+      if (orderedConfigs.length <= MAX_SYNC_CLINICS && !hasMedia) {
+        console.log(`[publisher] Synchronous publish for ${orderedConfigs.length} clinic(s) (≤ ${MAX_SYNC_CLINICS}, no media)`);
+        const apiKey = await getApiKey();
+        const allResults: Array<{ clinicId: string; status: 'success' | 'failed'; id?: string; refId?: string; error?: string; platformResults?: any[]; platformErrors?: any[] }> = [
+          ...missingClinicIds.map(clinicId => ({ clinicId, status: 'failed' as const, error: 'No marketing profile found for clinic' })),
+        ];
+        const batches = chunkArray(orderedConfigs, BATCH_SIZE);
+        for (const batch of batches) {
+          const batchResults = await Promise.all(
+            batch.map(config => {
+              const clinicData = clinicConfigMap[String(config?.clinicId)] || config;
+              const resolved = resolvePlaceholders ? resolvePostPlaceholders(postData, clinicData) : postData;
+              return postToClinicWithRetry(apiKey, config, resolved, saveHistory);
+            })
+          );
+          allResults.push(...batchResults);
+          if (batches.indexOf(batch) < batches.length - 1) {
+            await delay(DELAY_BETWEEN_BATCHES_MS);
+          }
+        }
+        return {
+          statusCode: 200,
+          headers: corsHeaders,
+          body: JSON.stringify({
+            total: allResults.length,
+            success: allResults.filter(r => r.status === 'success').length,
+            failed: allResults.filter(r => r.status === 'failed').length,
+            results: allResults,
+            publishJobId,
+          }),
+        };
+      }
+
       // ---- ASYNC FIRE-AND-FORGET ----
       // Invoke self asynchronously for each clinic. The async worker has a
       // generous 55 s timeout per platform, well beyond API Gateway's ~29 s cap.
-      console.log(`[publisher] Dispatching async publish for ${orderedConfigs.length} clinics (jobId=${publishJobId})`);
+      // Triggered for large batches OR when media is present (slow Ayrshare uploads).
+      console.log(`[publisher] Dispatching async publish for ${orderedConfigs.length} clinic(s) (jobId=${publishJobId})${hasMedia ? ' [media]' : ''}`);
 
       const invokePromises = orderedConfigs.map(config => {
         const clinicData = clinicConfigMap[String(config?.clinicId)] || config;
@@ -427,7 +467,7 @@ export const handler = async (event: any): Promise<any> => {
 
         return lambda.send(new InvokeCommand({
           FunctionName: selfFunctionName,
-          InvocationType: 'Event', // Fire-and-forget
+          InvocationType: 'Event',
           Payload: JSON.stringify({
             __asyncPublishWorker: true,
             profileKey: config.ayrshareProfileKey,
@@ -439,10 +479,8 @@ export const handler = async (event: any): Promise<any> => {
         }));
       });
 
-      // Wait for all invoke calls to be accepted (this is fast — just the SDK call, not the actual posting).
       await Promise.all(invokePromises);
 
-      // Return immediately — the actual Ayrshare posting happens in the background.
       const allResults = [
         ...orderedConfigs.map(config => ({
           clinicId: config.clinicId,
@@ -652,38 +690,46 @@ export const handler = async (event: any): Promise<any> => {
         }
       }
 
-      // ---- ASYNC FIRE-AND-FORGET (same pattern as /post) ----
       const publishJobId = `bulk_${Date.now()}_${Math.random().toString(36).slice(2, 9)}`;
       const selfFunctionName = process.env.AWS_LAMBDA_FUNCTION_NAME;
 
-      if (!selfFunctionName) {
-        // Fallback to synchronous (shouldn't happen in production)
-        console.warn('[publisher] AWS_LAMBDA_FUNCTION_NAME not set; falling back to synchronous bulk publish');
+      // ---- SYNC vs ASYNC decision (same as /post) ----
+      const hasMedia = !!(postData?.mediaUrls?.length) || Object.keys(generatedImages).length > 0;
+      if (!selfFunctionName || (orderedConfigs.length <= MAX_SYNC_CLINICS && !hasMedia)) {
+        if (!selfFunctionName) {
+          console.warn('[publisher] AWS_LAMBDA_FUNCTION_NAME not set; falling back to synchronous bulk publish');
+        } else {
+          console.log(`[publisher] Synchronous bulk publish for ${orderedConfigs.length} clinic(s) (≤ ${MAX_SYNC_CLINICS}, no media)`);
+        }
         const apiKey = await getApiKey();
         const allResults: Array<any> = [...missingClinicIds.map(clinicId => ({ clinicId, status: 'failed' as const, error: 'No marketing profile found for clinic' }))];
-        for (const config of orderedConfigs) {
-          try {
-            const clinicData = clinicConfigMap[String(config?.clinicId)] || config;
-            const resolved = resolvePostPlaceholders(postData, clinicData);
-            if (generatedImages[config.clinicId]) {
-              resolved.mediaUrls = [generatedImages[config.clinicId], ...(resolved.mediaUrls || [])];
-            }
-            const res = await ayrsharePost(apiKey, config.ayrshareProfileKey, resolved);
-            allResults.push({ clinicId: config.clinicId, status: 'success', id: res.id });
-          } catch (e: any) {
-            allResults.push({ clinicId: config.clinicId, status: 'failed', error: e.message });
+        const batches = chunkArray(orderedConfigs, BATCH_SIZE);
+        for (const batch of batches) {
+          const batchResults = await Promise.all(
+            batch.map(config => {
+              const clinicData = clinicConfigMap[String(config?.clinicId)] || config;
+              const resolved = resolvePostPlaceholders(postData, clinicData);
+              if (generatedImages[config.clinicId]) {
+                resolved.mediaUrls = [generatedImages[config.clinicId], ...(resolved.mediaUrls || [])];
+              }
+              return postToClinicWithRetry(apiKey, config, resolved, saveHistory);
+            })
+          );
+          allResults.push(...batchResults);
+          if (batches.indexOf(batch) < batches.length - 1) {
+            await delay(DELAY_BETWEEN_BATCHES_MS);
           }
         }
-        return { statusCode: 200, headers: corsHeaders, body: JSON.stringify({ total: allResults.length, success: allResults.filter(r => r.status === 'success').length, failed: allResults.filter(r => r.status === 'failed').length, results: allResults }) };
+        return { statusCode: 200, headers: corsHeaders, body: JSON.stringify({ total: allResults.length, success: allResults.filter(r => r.status === 'success').length, failed: allResults.filter(r => r.status === 'failed').length, results: allResults, publishJobId }) };
       }
 
-      console.log(`[publisher] Dispatching async bulk publish for ${orderedConfigs.length} clinics (jobId=${publishJobId})`);
+      // ---- ASYNC FIRE-AND-FORGET ----
+      console.log(`[publisher] Dispatching async bulk publish for ${orderedConfigs.length} clinic(s) (jobId=${publishJobId})${hasMedia ? ' [media]' : ''}`);
 
       const invokePromises = orderedConfigs.map(config => {
         const clinicData = clinicConfigMap[String(config?.clinicId)] || config;
         const resolvedPostData = resolvePostPlaceholders(postData, clinicData);
 
-        // Attach generated image if available
         if (generatedImages[config.clinicId]) {
           resolvedPostData.mediaUrls = [generatedImages[config.clinicId], ...(resolvedPostData.mediaUrls || [])];
         }
