@@ -1,250 +1,75 @@
 import { APIGatewayEvent, APIGatewayProxyResult } from 'aws-lambda';
-import { DynamoDBClient } from '@aws-sdk/client-dynamodb';
-import { DynamoDBDocumentClient, BatchGetCommand, BatchWriteCommand, DeleteCommand, GetCommand, PutCommand, UpdateCommand, QueryCommand, ScanCommand } from '@aws-sdk/lib-dynamodb';
-import { ApiGatewayManagementApiClient, PostToConnectionCommand } from '@aws-sdk/client-apigatewaymanagementapi';
-import { S3Client, PutObjectCommand, GetObjectCommand, DeleteObjectCommand } from '@aws-sdk/client-s3';
+import { BatchGetCommand, BatchWriteCommand, DeleteCommand, GetCommand, PutCommand, UpdateCommand, QueryCommand, ScanCommand } from '@aws-sdk/lib-dynamodb';
+import { ApiGatewayManagementApiClient } from '@aws-sdk/client-apigatewaymanagementapi';
+import { PutObjectCommand, GetObjectCommand, DeleteObjectCommand } from '@aws-sdk/client-s3';
 import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
-import { SNSClient, PublishCommand } from '@aws-sdk/client-sns';
+import { PublishCommand } from '@aws-sdk/client-sns';
 import { sendMentionNotification } from './push-notifications';
-import { LambdaClient, InvokeCommand } from '@aws-sdk/client-lambda';
+import { InvokeCommand } from '@aws-sdk/client-lambda';
 import { v4 as uuidv4 } from 'uuid';
-import { SESv2Client, SendEmailCommand } from '@aws-sdk/client-sesv2';
-import { CognitoIdentityProviderClient, AdminGetUserCommand } from '@aws-sdk/client-cognito-identity-provider';
+import { SendEmailCommand } from '@aws-sdk/client-sesv2';
+import { AdminGetUserCommand } from '@aws-sdk/client-cognito-identity-provider';
 import {
-    handleAddReaction, handleRemoveReaction,
-    handleReplyToThread, handleGetThreadReplies,
-    handleEditMessage, handleDeleteMessage,
-    handleTypingStart, handleTypingStop,
-    handleSetPresence, handleGetPresence,
-    handlePinMessage, handleUnpinMessage, handleGetPinnedMessages,
-    handleAddBookmark, handleRemoveBookmark, handleGetBookmarks,
-    handleSearch,
-    handleScheduleMessage, handleCancelScheduledMessage, handleGetScheduledMessages,
-    handleCreateChannel, handleJoinChannel, handleLeaveChannel, handleListChannels, handleArchiveChannel,
-} from './messaging-features-handlers';
-import {
-    handleMarkDelivered, handleMarkMessagesRead,
-    handleGetVoiceUploadUrl, handleSendVoiceMessage,
-    handleUpdateConversationSettings, handleMuteConversation, handleUnmuteConversation,
-    handleArchiveConversation, handlePinConversation, handleUnpinConversation,
-    handleGetConversationAnalytics,
-    handleSearchGifs, handleGetTrendingGifs, handleSendGif,
-    handleGetStickerPacks, handleGetStickers, handleSendSticker,
-    handleInitiateCall, handleJoinCall, handleLeaveCall, handleEndCall, handleDeclineCall, handleAcceptCall, handleCallTimeout, handleGetCallHistory, handleMuteCall, handleToggleVideo,
-    handleFetchLinkPreview, handleGetConversationFiles,
-    handleForwardMessage, handleStarMessage, handleUnstarMessage, handleGetStarredMessages, handleGetMessageInfo,
-} from './enhanced-messaging-handlers';
+    ddb, env, REGION, getS3, getSNS, getSES, getCognito, getLambda,
+    sendToClient as _sharedSendToClient,
+    getSenderInfo as _getSenderInfo,
+    getConnectionsByUserID, getOneConnectionForUser,
+    batchGetConnectionsByUserIDs,
+    getConnectionRecordsByUserID as _getConnectionRecordsByUserID,
+    getTeamByID, batchGetTeams, normalizeMembers, getUserTeamIDsFast, syncUserTeamsMembership,
+    createLogger,
+} from './shared';
+import type {
+    SenderInfo, ConnectionRecord, Team, ForwardRecord, FavorRequest,
+    FileDetails, MessageData, Meeting, TaskStatus, TaskPriority, SystemModule,
+} from './shared';
+import { PostToConnectionCommand } from '@aws-sdk/client-apigatewaymanagementapi';
 
-// Environment Variables
-const REGION = process.env.AWS_REGION || 'us-east-1';
-const CONNECTIONS_TABLE = process.env.CONNECTIONS_TABLE || '';
-const MESSAGES_TABLE = process.env.MESSAGES_TABLE || '';
-const FAVORS_TABLE = process.env.FAVORS_TABLE || '';
-const TEAMS_TABLE = process.env.TEAMS_TABLE || '';
-const MEETINGS_TABLE = process.env.MEETINGS_TABLE || '';
-const USER_PREFERENCES_TABLE = process.env.USER_PREFERENCES_TABLE || '';
-const FILE_BUCKET_NAME = process.env.FILE_BUCKET_NAME || '';
-const NOTIFICATIONS_TOPIC_ARN = process.env.NOTICES_TOPIC_ARN || '';
-const SES_SOURCE_EMAIL = process.env.SES_SOURCE_EMAIL || 'no-reply@todaysdentalinsights.com';
-const USER_POOL_ID = process.env.USER_POOL_ID || '';
+// All messaging/enhanced-messaging handlers are lazy-loaded to minimize cold-start bundle size.
+// Each module is cached after first import() so subsequent calls in the same invocation are instant.
+const lazyMessagingFeatures = () => import('./messaging-features-handlers');
+const lazyEnhancedMessaging = () => import('./enhanced-messaging-handlers');
 
-// Push Notifications Integration
-const DEVICE_TOKENS_TABLE = process.env.DEVICE_TOKENS_TABLE || '';
-const SEND_PUSH_FUNCTION_ARN = process.env.SEND_PUSH_FUNCTION_ARN || '';
-const PUSH_NOTIFICATIONS_ENABLED = !!(DEVICE_TOKENS_TABLE && SEND_PUSH_FUNCTION_ARN);
+const log = createLogger('ws-default');
 
-// System Modules (from shared/types/user.ts)
-const SYSTEM_MODULES = ['HR', 'Accounting', 'Operations', 'Finance', 'Marketing', 'Legal', 'IT'] as const;
-type SystemModule = typeof SYSTEM_MODULES[number];
+// Convenience aliases for env vars used frequently in this file
+const CONNECTIONS_TABLE = env.CONNECTIONS_TABLE;
+const MESSAGES_TABLE = env.MESSAGES_TABLE;
+const FAVORS_TABLE = env.FAVORS_TABLE;
+const TEAMS_TABLE = env.TEAMS_TABLE;
+const MEETINGS_TABLE = env.MEETINGS_TABLE;
+const USER_PREFERENCES_TABLE = env.USER_PREFERENCES_TABLE;
+const FILE_BUCKET_NAME = env.FILE_BUCKET_NAME;
+const FILES_CDN_DOMAIN = env.FILES_CDN_DOMAIN;
+const NOTIFICATIONS_TOPIC_ARN = env.NOTIFICATIONS_TOPIC_ARN;
+const SES_SOURCE_EMAIL = env.SES_SOURCE_EMAIL;
+const USER_POOL_ID = env.USER_POOL_ID;
+const DEVICE_TOKENS_TABLE = env.DEVICE_TOKENS_TABLE;
+const SEND_PUSH_FUNCTION_ARN = env.SEND_PUSH_FUNCTION_ARN;
+const PUSH_NOTIFICATIONS_ENABLED = env.PUSH_NOTIFICATIONS_ENABLED;
 
-// SDK Clients
-const ddb = DynamoDBDocumentClient.from(new DynamoDBClient({ region: REGION }));
-const sns = new SNSClient({ region: REGION });
-const s3 = new S3Client({ region: REGION });
-const ses = new SESv2Client({ region: REGION });
-const cognito = new CognitoIdentityProviderClient({ region: REGION });
-const lambdaClient = new LambdaClient({ region: REGION });
+// Lazy-initialized SDK clients (only created when first used)
+const s3 = getS3();
+const sns = getSNS();
+const ses = getSES();
+const cognito = getCognito();
+const lambdaClient = getLambda();
 
-// ========================================
-// TYPES
-// ========================================
+// Module-level ApiGatewayManagementApiClient cache (endpoint is stable per stage)
+let _cachedApiGw: ApiGatewayManagementApiClient | undefined;
+let _cachedApiGwEndpoint: string | undefined;
 
-interface SenderInfo {
-    connectionId: string;
-    userID: string; // Cognito 'sub'
+function getApiGwManagement(domainName: string, stage: string): ApiGatewayManagementApiClient {
+    const endpoint = `https://${domainName}/${stage}`;
+    if (_cachedApiGw && _cachedApiGwEndpoint === endpoint) return _cachedApiGw;
+    _cachedApiGw = new ApiGatewayManagementApiClient({ region: REGION, endpoint });
+    _cachedApiGwEndpoint = endpoint;
+    return _cachedApiGw;
 }
 
-// NEW: Interface for Team/Group Metadata
-interface Team {
-    teamID: string;
-    ownerID: string;
-    name: string;
-    description?: string;
-    members: string[]; // Set of userID strings
-    admins: string[];  // Users with admin privileges (owner is always admin)
-    adminOnlyMessages?: boolean;  // Only admins can send messages
-    groupImageUrl?: string;       // Shared group profile image (S3 URL)
-    createdAt: string;
-    updatedAt: string;
-}
-
-// Task status values
-type TaskStatus = 'pending' | 'active' | 'in_progress' | 'completed' | 'rejected' | 'forwarded' | 'deleted';
-type TaskPriority = 'Low' | 'Medium' | 'High' | 'Urgent';
-
-/**
- * Safely fetches a team by teamID using QueryCommand instead of GetCommand.
- * This handles both cases:
- *   1. Table has only PK (teamID) — Query works like Get
- *   2. Table has composite key (teamID + ownerID) — Query still works (only needs PK)
- * GetCommand would fail with "The provided key element does not match the schema"
- * if the table has a sort key and we don't provide it.
- */
-async function getTeamByID(teamID: string): Promise<Team | undefined> {
-    if (!TEAMS_TABLE) return undefined;
-    const result = await ddb.send(new QueryCommand({
-        TableName: TEAMS_TABLE,
-        KeyConditionExpression: 'teamID = :tid',
-        ExpressionAttributeValues: { ':tid': teamID },
-        Limit: 1,
-    }));
-    return (result.Items?.[0] as Team) || undefined;
-}
-
-interface ForwardRecord {
-    forwardID: string;
-    fromUserID: string;
-    toUserID: string;
-    forwardedAt: string;
-    message?: string;
-    deadline?: string;
-    requireAcceptance: boolean;
-    status: 'pending' | 'accepted' | 'rejected';
-    acceptedAt?: string;
-    rejectedAt?: string;
-    rejectionReason?: string;
-}
-
-interface FavorRequest {
-    favorRequestID: string;
-    senderID: string;
-    receiverID?: string;
-    teamID?: string;
-
-    // Enhanced task fields
-    title?: string;
-    description?: string;
-    status: TaskStatus;
-    priority: TaskPriority;
-    category?: SystemModule;
-    tags?: string[];
-
-    // Forwarding chain
-    forwardingChain?: ForwardRecord[];
-    currentAssigneeID?: string;
-    requiresAcceptance?: boolean;
-
-    // Completion/Rejection
-    completedAt?: string;
-    completionNotes?: string;
-    rejectionReason?: string;
-    rejectedAt?: string;
-
-    // Existing fields
-    createdAt: string;
-    updatedAt: string;
-    userID: string;
-    requestType: 'General' | 'Assign Task' | 'IT Ticket' | 'Ask a Favor' | 'Other';
-    unreadCount: number;
-    initialMessage: string;
-    deadline?: string;
-    isMainGroupChat?: boolean; // WhatsApp-style main group chat flag
-
-    // WhatsApp sidebar preview fields
-    lastMessage?: string;
-    lastMessageAt?: string;
-    lastMessageSenderID?: string;
-
-    // Per-user deletion: list of userIDs who have deleted this conversation from their view
-    deletedBy?: string[];
-
-    // Per-user clear chat: timestamp per user — messages before this time are hidden for that user
-    clearedAt?: Record<string, number>;
-
-    // Task badge: true when this conversation was created via task assignment
-    isTask?: boolean;
-
-    // Forwarded badge: true when the task has been forwarded
-    isForwarded?: boolean;
-    // Deterministic participant key for dedup: sorted userIDs joined with '#'
-    // e.g. for 1-on-1: "userA#userB" (alphabetically sorted)
-    participantKey?: string;
-}
-
-interface Meeting {
-    meetingID: string;
-    conversationID: string;
-    title?: string;
-    description: string;
-    startTime: string;
-    endTime?: string;
-    location?: string;
-    meetingLink?: string;
-    organizerID: string;
-    participants: string[];
-    status: 'scheduled' | 'completed' | 'cancelled';
-    reminder?: {
-        enabled: boolean;
-        minutesBefore: number;
-    };
-    createdAt: string;
-    updatedAt: string;
-}
-
-interface FileDetails {
-    fileName: string;
-    fileType: string;
-    fileSize: number; // in bytes
-}
-
-interface MessageData {
-    messageID?: string;
-    favorRequestID: string;
-    senderID: string;
-    content: string;
-    timestamp: number;
-    type: 'text' | 'file' | 'system' | 'task' | 'poll';
-    fileKey?: string;
-    fileDetails?: FileDetails;
-    // Task metadata (present when type === 'task')
-    taskTitle?: string;
-    taskDescription?: string;
-    taskPriority?: string;
-    taskDeadline?: string;
-    taskCategory?: string;
-    taskRequestType?: string;
-    // Poll metadata (present when type === 'poll')
-    pollData?: {
-        pollID: string;
-        question: string;
-        options: { optionID: string; text: string }[];
-        isMultipleChoice: boolean;
-        votes: { userID: string; optionID: string; votedAt: number }[];
-        createdBy: string;
-        createdAt: number;
-        isClosed?: boolean;
-    };
-    // Thread support
-    parentMessageID?: string;
-    // Mention metadata
-    mentions?: Array<{
-        type: 'user' | 'channel' | 'everyone' | 'here';
-        id?: string;
-        displayName: string;
-        startIndex: number;
-        endIndex: number;
-    }>;
-}
+// In-memory Cognito user details cache (5 min TTL, avoids repeated AdminGetUser calls)
+const _userDetailsCache = new Map<string, { data: { email?: string; fullName: string }; expiry: number }>();
+const USER_DETAILS_CACHE_TTL = 5 * 60 * 1000; // 5 minutes
 
 // ========================================
 // MAIN HANDLER
@@ -259,10 +84,7 @@ export const handler = async (event: APIGatewayEvent): Promise<APIGatewayProxyRe
     const domainName = event.requestContext.domainName as string;
     const stage = event.requestContext.stage as string;
 
-    const apiGwManagement = new ApiGatewayManagementApiClient({
-        region: REGION,
-        endpoint: `https://${domainName}/${stage}`,
-    });
+    const apiGwManagement = getApiGwManagement(domainName, stage);
 
     try {
         const payload = JSON.parse(event.body || '{}');
@@ -303,6 +125,9 @@ export const handler = async (event: APIGatewayEvent): Promise<APIGatewayProxyRe
                 break;
             case 'getPresignedDownloadUrl':
                 await getPresignedDownloadUrl(senderID, payload, connectionId, apiGwManagement);
+                break;
+            case 'batchGetPresignedDownloadUrls':
+                await batchGetPresignedDownloadUrls(senderID, payload, connectionId, apiGwManagement);
                 break;
             case 'fetchHistory':
                 await fetchHistory(senderID, payload, connectionId, apiGwManagement);
@@ -370,99 +195,149 @@ export const handler = async (event: APIGatewayEvent): Promise<APIGatewayProxyRe
 
             // ======= SLACK-LIKE FEATURES =======
             // Reactions
-            case 'addReaction':
-                await handleAddReaction(senderID, payload, connectionId, apiGwManagement);
+            case 'addReaction': {
+                const m = await lazyMessagingFeatures();
+                await m.handleAddReaction(senderID, payload, connectionId, apiGwManagement);
                 break;
-            case 'removeReaction':
-                await handleRemoveReaction(senderID, payload, connectionId, apiGwManagement);
+            }
+            case 'removeReaction': {
+                const m = await lazyMessagingFeatures();
+                await m.handleRemoveReaction(senderID, payload, connectionId, apiGwManagement);
                 break;
+            }
 
             // Threads
-            case 'replyToThread':
-                await handleReplyToThread(senderID, payload, connectionId, apiGwManagement);
+            case 'replyToThread': {
+                const m = await lazyMessagingFeatures();
+                await m.handleReplyToThread(senderID, payload, connectionId, apiGwManagement);
                 break;
-            case 'getThreadReplies':
-                await handleGetThreadReplies(senderID, payload, connectionId, apiGwManagement);
+            }
+            case 'getThreadReplies': {
+                const m = await lazyMessagingFeatures();
+                await m.handleGetThreadReplies(senderID, payload, connectionId, apiGwManagement);
                 break;
+            }
 
             // Edit/Delete
-            case 'editMessage':
-                await handleEditMessage(senderID, payload, connectionId, apiGwManagement);
+            case 'editMessage': {
+                const m = await lazyMessagingFeatures();
+                await m.handleEditMessage(senderID, payload, connectionId, apiGwManagement);
                 break;
-            case 'deleteMessage':
-                await handleDeleteMessage(senderID, payload, connectionId, apiGwManagement);
+            }
+            case 'deleteMessage': {
+                const m = await lazyMessagingFeatures();
+                await m.handleDeleteMessage(senderID, payload, connectionId, apiGwManagement);
                 break;
+            }
 
             // Typing Indicators
-            case 'typingStart':
-                await handleTypingStart(senderID, payload, connectionId, apiGwManagement);
+            case 'typingStart': {
+                const m = await lazyMessagingFeatures();
+                await m.handleTypingStart(senderID, payload, connectionId, apiGwManagement);
                 break;
-            case 'typingStop':
-                await handleTypingStop(senderID, payload, connectionId, apiGwManagement);
+            }
+            case 'typingStop': {
+                const m = await lazyMessagingFeatures();
+                await m.handleTypingStop(senderID, payload, connectionId, apiGwManagement);
                 break;
+            }
 
             // Presence
-            case 'setPresence':
-                await handleSetPresence(senderID, payload, connectionId, apiGwManagement);
+            case 'setPresence': {
+                const m = await lazyMessagingFeatures();
+                await m.handleSetPresence(senderID, payload, connectionId, apiGwManagement);
                 break;
-            case 'getPresence':
-                await handleGetPresence(senderID, payload, connectionId, apiGwManagement);
+            }
+            case 'getPresence': {
+                const m = await lazyMessagingFeatures();
+                await m.handleGetPresence(senderID, payload, connectionId, apiGwManagement);
                 break;
+            }
 
             // Pinned Messages
-            case 'pinMessage':
-                await handlePinMessage(senderID, payload, connectionId, apiGwManagement);
+            case 'pinMessage': {
+                const m = await lazyMessagingFeatures();
+                await m.handlePinMessage(senderID, payload, connectionId, apiGwManagement);
                 break;
-            case 'unpinMessage':
-                await handleUnpinMessage(senderID, payload, connectionId, apiGwManagement);
+            }
+            case 'unpinMessage': {
+                const m = await lazyMessagingFeatures();
+                await m.handleUnpinMessage(senderID, payload, connectionId, apiGwManagement);
                 break;
-            case 'getPinnedMessages':
-                await handleGetPinnedMessages(senderID, payload, connectionId, apiGwManagement);
+            }
+            case 'getPinnedMessages': {
+                const m = await lazyMessagingFeatures();
+                await m.handleGetPinnedMessages(senderID, payload, connectionId, apiGwManagement);
                 break;
+            }
 
             // Bookmarks
-            case 'addBookmark':
-                await handleAddBookmark(senderID, payload, connectionId, apiGwManagement);
+            case 'addBookmark': {
+                const m = await lazyMessagingFeatures();
+                await m.handleAddBookmark(senderID, payload, connectionId, apiGwManagement);
                 break;
-            case 'removeBookmark':
-                await handleRemoveBookmark(senderID, payload, connectionId, apiGwManagement);
+            }
+            case 'removeBookmark': {
+                const m = await lazyMessagingFeatures();
+                await m.handleRemoveBookmark(senderID, payload, connectionId, apiGwManagement);
                 break;
-            case 'getBookmarks':
-                await handleGetBookmarks(senderID, payload, connectionId, apiGwManagement);
+            }
+            case 'getBookmarks': {
+                const m = await lazyMessagingFeatures();
+                await m.handleGetBookmarks(senderID, payload, connectionId, apiGwManagement);
                 break;
+            }
 
             // Search
-            case 'search':
-                await handleSearch(senderID, payload, connectionId, apiGwManagement);
+            case 'search': {
+                const m = await lazyMessagingFeatures();
+                await m.handleSearch(senderID, payload, connectionId, apiGwManagement);
                 break;
+            }
 
-            // Scheduled Messages
-            case 'scheduleMessage':
-                await handleScheduleMessage(senderID, payload, connectionId, apiGwManagement);
+            // Scheduled Messages (lazy-loaded)
+            case 'scheduleMessage': {
+                const m = await lazyMessagingFeatures();
+                await m.handleScheduleMessage(senderID, payload, connectionId, apiGwManagement);
                 break;
-            case 'cancelScheduledMessage':
-                await handleCancelScheduledMessage(senderID, payload, connectionId, apiGwManagement);
+            }
+            case 'cancelScheduledMessage': {
+                const m = await lazyMessagingFeatures();
+                await m.handleCancelScheduledMessage(senderID, payload, connectionId, apiGwManagement);
                 break;
-            case 'getScheduledMessages':
-                await handleGetScheduledMessages(senderID, payload, connectionId, apiGwManagement);
+            }
+            case 'getScheduledMessages': {
+                const m = await lazyMessagingFeatures();
+                await m.handleGetScheduledMessages(senderID, payload, connectionId, apiGwManagement);
                 break;
+            }
 
-            // Channels
-            case 'createChannel':
-                await handleCreateChannel(senderID, payload, connectionId, apiGwManagement);
+            // Channels (lazy-loaded)
+            case 'createChannel': {
+                const m = await lazyMessagingFeatures();
+                await m.handleCreateChannel(senderID, payload, connectionId, apiGwManagement);
                 break;
-            case 'joinChannel':
-                await handleJoinChannel(senderID, payload, connectionId, apiGwManagement);
+            }
+            case 'joinChannel': {
+                const m = await lazyMessagingFeatures();
+                await m.handleJoinChannel(senderID, payload, connectionId, apiGwManagement);
                 break;
-            case 'leaveChannel':
-                await handleLeaveChannel(senderID, payload, connectionId, apiGwManagement);
+            }
+            case 'leaveChannel': {
+                const m = await lazyMessagingFeatures();
+                await m.handleLeaveChannel(senderID, payload, connectionId, apiGwManagement);
                 break;
-            case 'archiveChannel':
-                await handleArchiveChannel(senderID, payload, connectionId, apiGwManagement);
+            }
+            case 'archiveChannel': {
+                const m = await lazyMessagingFeatures();
+                await m.handleArchiveChannel(senderID, payload, connectionId, apiGwManagement);
                 break;
-            case 'listChannels':
-                await handleListChannels(senderID, payload, connectionId, apiGwManagement);
+            }
+            case 'listChannels': {
+                const m = await lazyMessagingFeatures();
+                await m.handleListChannels(senderID, payload, connectionId, apiGwManagement);
                 break;
+            }
 
             // Group Chat
             case 'openGroupChat':
@@ -471,114 +346,172 @@ export const handler = async (event: APIGatewayEvent): Promise<APIGatewayProxyRe
 
             // ======= ENHANCED MESSAGING FEATURES =======
             // Message Delivery Status
-            case 'markDelivered':
-                await handleMarkDelivered(senderID, payload, connectionId, apiGwManagement);
+            case 'markDelivered': {
+                const m = await lazyEnhancedMessaging();
+                await m.handleMarkDelivered(senderID, payload, connectionId, apiGwManagement);
                 break;
-            case 'markMessagesRead':
-                await handleMarkMessagesRead(senderID, payload, connectionId, apiGwManagement);
+            }
+            case 'markMessagesRead': {
+                const m = await lazyEnhancedMessaging();
+                await m.handleMarkMessagesRead(senderID, payload, connectionId, apiGwManagement);
                 break;
+            }
 
-            // Voice Messages
-            case 'getVoiceUploadUrl':
-                await handleGetVoiceUploadUrl(senderID, payload, connectionId, apiGwManagement);
+            // Voice Messages (lazy-loaded)
+            case 'getVoiceUploadUrl': {
+                const m = await lazyEnhancedMessaging();
+                await m.handleGetVoiceUploadUrl(senderID, payload, connectionId, apiGwManagement);
                 break;
-            case 'sendVoiceMessage':
-                await handleSendVoiceMessage(senderID, payload, connectionId, apiGwManagement);
+            }
+            case 'sendVoiceMessage': {
+                const m = await lazyEnhancedMessaging();
+                await m.handleSendVoiceMessage(senderID, payload, connectionId, apiGwManagement);
                 break;
+            }
 
             // Conversation Settings (Mute, Archive, Pin, Notifications)
-            case 'updateConversationSettings':
-                await handleUpdateConversationSettings(senderID, payload, connectionId, apiGwManagement);
+            case 'updateConversationSettings': {
+                const m = await lazyEnhancedMessaging();
+                await m.handleUpdateConversationSettings(senderID, payload, connectionId, apiGwManagement);
                 break;
-            case 'muteConversation':
-                await handleMuteConversation(senderID, payload, connectionId, apiGwManagement);
+            }
+            case 'muteConversation': {
+                const m = await lazyEnhancedMessaging();
+                await m.handleMuteConversation(senderID, payload, connectionId, apiGwManagement);
                 break;
-            case 'unmuteConversation':
-                await handleUnmuteConversation(senderID, payload, connectionId, apiGwManagement);
+            }
+            case 'unmuteConversation': {
+                const m = await lazyEnhancedMessaging();
+                await m.handleUnmuteConversation(senderID, payload, connectionId, apiGwManagement);
                 break;
-            case 'archiveConversation':
-                await handleArchiveConversation(senderID, payload, connectionId, apiGwManagement);
+            }
+            case 'archiveConversation': {
+                const m = await lazyEnhancedMessaging();
+                await m.handleArchiveConversation(senderID, payload, connectionId, apiGwManagement);
                 break;
-            case 'pinConversation':
-                await handlePinConversation(senderID, payload, connectionId, apiGwManagement);
+            }
+            case 'pinConversation': {
+                const m = await lazyEnhancedMessaging();
+                await m.handlePinConversation(senderID, payload, connectionId, apiGwManagement);
                 break;
-            case 'unpinConversation':
-                await handleUnpinConversation(senderID, payload, connectionId, apiGwManagement);
+            }
+            case 'unpinConversation': {
+                const m = await lazyEnhancedMessaging();
+                await m.handleUnpinConversation(senderID, payload, connectionId, apiGwManagement);
                 break;
+            }
 
             // Disappearing Messages
             case 'setDisappearingMessages':
                 await handleSetDisappearingMessages(senderID, payload, connectionId, apiGwManagement);
                 break;
 
-            // Analytics & Insights
-            case 'getConversationAnalytics':
-                await handleGetConversationAnalytics(senderID, payload, connectionId, apiGwManagement);
+            // Analytics & Insights (lazy-loaded)
+            case 'getConversationAnalytics': {
+                const m = await lazyEnhancedMessaging();
+                await m.handleGetConversationAnalytics(senderID, payload, connectionId, apiGwManagement);
                 break;
+            }
 
-            // GIF Support
-            case 'searchGifs':
-                await handleSearchGifs(senderID, payload, connectionId, apiGwManagement);
+            // GIF Support (lazy-loaded)
+            case 'searchGifs': {
+                const m = await lazyEnhancedMessaging();
+                await m.handleSearchGifs(senderID, payload, connectionId, apiGwManagement);
                 break;
-            case 'getTrendingGifs':
-                await handleGetTrendingGifs(senderID, payload, connectionId, apiGwManagement);
+            }
+            case 'getTrendingGifs': {
+                const m = await lazyEnhancedMessaging();
+                await m.handleGetTrendingGifs(senderID, payload, connectionId, apiGwManagement);
                 break;
-            case 'sendGif':
-                await handleSendGif(senderID, payload, connectionId, apiGwManagement);
+            }
+            case 'sendGif': {
+                const m = await lazyEnhancedMessaging();
+                await m.handleSendGif(senderID, payload, connectionId, apiGwManagement);
                 break;
+            }
 
-            // Stickers
-            case 'getStickerPacks':
-                await handleGetStickerPacks(senderID, payload, connectionId, apiGwManagement);
+            // Stickers (lazy-loaded)
+            case 'getStickerPacks': {
+                const m = await lazyEnhancedMessaging();
+                await m.handleGetStickerPacks(senderID, payload, connectionId, apiGwManagement);
                 break;
-            case 'getStickers':
-                await handleGetStickers(senderID, payload, connectionId, apiGwManagement);
+            }
+            case 'getStickers': {
+                const m = await lazyEnhancedMessaging();
+                await m.handleGetStickers(senderID, payload, connectionId, apiGwManagement);
                 break;
-            case 'sendSticker':
-                await handleSendSticker(senderID, payload, connectionId, apiGwManagement);
+            }
+            case 'sendSticker': {
+                const m = await lazyEnhancedMessaging();
+                await m.handleSendSticker(senderID, payload, connectionId, apiGwManagement);
                 break;
+            }
 
-            // Voice/Video Calling
-            case 'initiateCall':
-                await handleInitiateCall(senderID, payload, connectionId, apiGwManagement);
+            // Voice/Video Calling (lazy-loaded)
+            case 'initiateCall': {
+                const m = await lazyEnhancedMessaging();
+                await m.handleInitiateCall(senderID, payload, connectionId, apiGwManagement);
                 break;
-            case 'joinCall':
-                await handleJoinCall(senderID, payload, connectionId, apiGwManagement);
+            }
+            case 'joinCall': {
+                const m = await lazyEnhancedMessaging();
+                await m.handleJoinCall(senderID, payload, connectionId, apiGwManagement);
                 break;
-            case 'leaveCall':
-                await handleLeaveCall(senderID, payload, connectionId, apiGwManagement);
+            }
+            case 'leaveCall': {
+                const m = await lazyEnhancedMessaging();
+                await m.handleLeaveCall(senderID, payload, connectionId, apiGwManagement);
                 break;
-            case 'endCall':
-                await handleEndCall(senderID, payload, connectionId, apiGwManagement);
+            }
+            case 'endCall': {
+                const m = await lazyEnhancedMessaging();
+                await m.handleEndCall(senderID, payload, connectionId, apiGwManagement);
                 break;
-            case 'declineCall':
-                await handleDeclineCall(senderID, payload, connectionId, apiGwManagement);
+            }
+            case 'declineCall': {
+                const m = await lazyEnhancedMessaging();
+                await m.handleDeclineCall(senderID, payload, connectionId, apiGwManagement);
                 break;
-            case 'acceptCall':
-                await handleAcceptCall(senderID, payload, connectionId, apiGwManagement);
+            }
+            case 'acceptCall': {
+                const m = await lazyEnhancedMessaging();
+                await m.handleAcceptCall(senderID, payload, connectionId, apiGwManagement);
                 break;
-            case 'callTimeout':
-                await handleCallTimeout(senderID, payload, connectionId, apiGwManagement);
+            }
+            case 'callTimeout': {
+                const m = await lazyEnhancedMessaging();
+                await m.handleCallTimeout(senderID, payload, connectionId, apiGwManagement);
                 break;
-            case 'getCallHistory':
-                await handleGetCallHistory(senderID, payload, connectionId, apiGwManagement);
+            }
+            case 'getCallHistory': {
+                const m = await lazyEnhancedMessaging();
+                await m.handleGetCallHistory(senderID, payload, connectionId, apiGwManagement);
                 break;
-            case 'muteCall':
-                await handleMuteCall(senderID, payload, connectionId, apiGwManagement);
+            }
+            case 'muteCall': {
+                const m = await lazyEnhancedMessaging();
+                await m.handleMuteCall(senderID, payload, connectionId, apiGwManagement);
                 break;
-            case 'toggleVideo':
-                await handleToggleVideo(senderID, payload, connectionId, apiGwManagement);
+            }
+            case 'toggleVideo': {
+                const m = await lazyEnhancedMessaging();
+                await m.handleToggleVideo(senderID, payload, connectionId, apiGwManagement);
                 break;
+            }
 
-            // Link Previews
-            case 'fetchLinkPreview':
-                await handleFetchLinkPreview(senderID, payload, connectionId, apiGwManagement);
+            // Link Previews (lazy-loaded)
+            case 'fetchLinkPreview': {
+                const m = await lazyEnhancedMessaging();
+                await m.handleFetchLinkPreview(senderID, payload, connectionId, apiGwManagement);
                 break;
+            }
 
             // Files
-            case 'getConversationFiles':
-                await handleGetConversationFiles(senderID, payload, connectionId, apiGwManagement);
+            case 'getConversationFiles': {
+                const m = await lazyEnhancedMessaging();
+                await m.handleGetConversationFiles(senderID, payload, connectionId, apiGwManagement);
                 break;
+            }
 
             // Heartbeat / keep-alive (sent by Android client every 30s)
             case 'heartbeat':
@@ -606,21 +539,31 @@ export const handler = async (event: APIGatewayEvent): Promise<APIGatewayProxyRe
                 break;
 
             // ======= MESSAGE FORWARDING & STARRING =======
-            case 'forwardMessage':
-                await handleForwardMessage(senderID, payload, connectionId, apiGwManagement);
+            case 'forwardMessage': {
+                const m = await lazyEnhancedMessaging();
+                await m.handleForwardMessage(senderID, payload, connectionId, apiGwManagement);
                 break;
-            case 'starMessage':
-                await handleStarMessage(senderID, payload, connectionId, apiGwManagement);
+            }
+            case 'starMessage': {
+                const m = await lazyEnhancedMessaging();
+                await m.handleStarMessage(senderID, payload, connectionId, apiGwManagement);
                 break;
-            case 'unstarMessage':
-                await handleUnstarMessage(senderID, payload, connectionId, apiGwManagement);
+            }
+            case 'unstarMessage': {
+                const m = await lazyEnhancedMessaging();
+                await m.handleUnstarMessage(senderID, payload, connectionId, apiGwManagement);
                 break;
-            case 'getStarredMessages':
-                await handleGetStarredMessages(senderID, payload, connectionId, apiGwManagement);
+            }
+            case 'getStarredMessages': {
+                const m = await lazyEnhancedMessaging();
+                await m.handleGetStarredMessages(senderID, payload, connectionId, apiGwManagement);
                 break;
-            case 'getMessageInfo':
-                await handleGetMessageInfo(senderID, payload, connectionId, apiGwManagement);
+            }
+            case 'getMessageInfo': {
+                const m = await lazyEnhancedMessaging();
+                await m.handleGetMessageInfo(senderID, payload, connectionId, apiGwManagement);
                 break;
+            }
 
             // ======= USER PREFERENCES =======
             case 'saveUserPreference':
@@ -841,17 +784,15 @@ async function listTeams(
     }
 
     try {
-        // Scan the table and filter for teams where the caller is a member
-        // Note: For production with large datasets, use a GSI or inverted index pattern
-        const result = await ddb.send(new ScanCommand({
-            TableName: TEAMS_TABLE,
-            FilterExpression: 'contains(members, :callerID)',
-            ExpressionAttributeValues: {
-                ':callerID': callerID,
-            },
-        }));
-
-        const teams = (result.Items || []) as Team[];
+        // Fast lookup via denormalized UserTeams table, then batch-fetch full team records
+        const teamIDs = await getUserTeamIDsFast(callerID);
+        let teams: Team[] = [];
+        if (teamIDs.length > 0) {
+            const teamResults = await Promise.all(
+                teamIDs.map(tid => getTeamByID(tid))
+            );
+            teams = teamResults.filter((t): t is Team => !!t);
+        }
 
         // Sort by updatedAt descending (most recently updated first)
         teams.sort((a, b) => {
@@ -1218,7 +1159,7 @@ async function handleUpdateGroupSettings(
             // Find the main group chat favorRequestID for this team
             const favorResult = await ddb.send(new QueryCommand({
                 TableName: FAVORS_TABLE,
-                IndexName: 'teamID-index',
+                IndexName: 'TeamIndex',
                 KeyConditionExpression: 'teamID = :tid',
                 ExpressionAttributeValues: { ':tid': teamID },
                 FilterExpression: 'isMainGroupChat = :mgc',
@@ -1291,6 +1232,9 @@ async function handleDeleteGroup(
             TableName: TEAMS_TABLE,
             Key: { teamID, ownerID: team.ownerID },
         }));
+
+        // Sync UserTeams: remove all members from the denormalized table
+        await syncUserTeamsMembership(teamID, [], team.members).catch(() => {});
 
         console.log(`Group ${teamID} deleted by ${callerID}`);
 
@@ -1367,11 +1311,14 @@ async function handleLeaveGroup(
             },
         }));
 
+        // Sync UserTeams: remove the leaving member
+        await syncUserTeamsMembership(teamID, updatedMembers, team.members).catch(() => {});
+
         console.log(`User ${callerID} left group ${teamID}`);
 
         // 5. Send system message to the group
         const systemMessage = {
-            favorRequestID: team.teamID, // group conversations use teamID as favorRequestID context
+            favorRequestID: team.teamID,
             senderID: 'system',
             content: 'A member left the group',
             timestamp: Date.now(),
@@ -1491,43 +1438,83 @@ async function handleUpdateAvatarUrl(
     }
 
     // Construct the public/CDN URL for the avatar
-    const avatarUrl = `https://${FILE_BUCKET_NAME}.s3.${REGION}.amazonaws.com/${fileKey}`;
+    const avatarUrl = FILES_CDN_DOMAIN
+        ? `https://${FILES_CDN_DOMAIN}/${fileKey}`
+        : `https://${FILE_BUCKET_NAME}.s3.${REGION}.amazonaws.com/${fileKey}`;
     const nowIso = new Date().toISOString();
 
     try {
-        // Update the user's connection record with the avatar URL
-        // (The connections table tracks user metadata including presence)
-        await ddb.send(new UpdateCommand({
-            TableName: CONNECTIONS_TABLE,
-            Key: { connectionId },
-            UpdateExpression: 'SET avatarUrl = :avatarUrl, avatarUpdatedAt = :updatedAt',
-            ExpressionAttributeValues: {
-                ':avatarUrl': avatarUrl,
-                ':updatedAt': nowIso,
-            },
-        }));
+        // Write avatar to both Connections (for backward compat) and UserPreferences (canonical source)
+        await Promise.all([
+            ddb.send(new UpdateCommand({
+                TableName: CONNECTIONS_TABLE,
+                Key: { connectionId },
+                UpdateExpression: 'SET avatarUrl = :avatarUrl, avatarUpdatedAt = :updatedAt',
+                ExpressionAttributeValues: { ':avatarUrl': avatarUrl, ':updatedAt': nowIso },
+            })),
+            USER_PREFERENCES_TABLE ? ddb.send(new UpdateCommand({
+                TableName: USER_PREFERENCES_TABLE,
+                Key: { userID: senderID },
+                UpdateExpression: 'SET profileImage = :img, updatedAt = :ua',
+                ExpressionAttributeValues: { ':img': avatarUrl, ':ua': nowIso },
+            })) : Promise.resolve(),
+        ]);
 
-        // Broadcast to all connected users so they see the updated avatar
-        // (Get all connections and notify)
-        const allConnections = await ddb.send(new ScanCommand({
-            TableName: CONNECTIONS_TABLE,
-            ProjectionExpression: 'connectionId',
-        }));
+        // Broadcast avatar update to users in the sender's conversations (not entire connections table)
+        const broadcastPayload = {
+            type: 'avatarUpdated',
+            userID: senderID,
+            avatarUrl,
+            updatedAt: nowIso,
+        };
 
-        if (allConnections.Items) {
-            const broadcastPayload = {
-                type: 'avatarUpdated',
-                userID: senderID,
-                avatarUrl,
-                updatedAt: nowIso,
-            };
+        // Find all conversations the user is part of and broadcast to participants
+        const [sentResult, recvResult] = await Promise.all([
+            ddb.send(new QueryCommand({
+                TableName: FAVORS_TABLE,
+                IndexName: 'SenderIndex',
+                KeyConditionExpression: 'senderID = :uid',
+                ExpressionAttributeValues: { ':uid': senderID },
+                ProjectionExpression: 'receiverID, teamID',
+            })),
+            ddb.send(new QueryCommand({
+                TableName: FAVORS_TABLE,
+                IndexName: 'ReceiverIndex',
+                KeyConditionExpression: 'receiverID = :uid',
+                ExpressionAttributeValues: { ':uid': senderID },
+                ProjectionExpression: 'senderID, teamID',
+            })),
+        ]);
 
-            for (const conn of allConnections.Items) {
-                if (conn.connectionId && conn.connectionId !== connectionId) {
-                    await sendToClient(apiGwManagement, conn.connectionId as string, broadcastPayload).catch(() => { });
+        const allItems = [...(sentResult.Items || []), ...(recvResult.Items || [])];
+        const targetUsers = new Set<string>();
+        const uniqueTeamIDs = new Set<string>();
+
+        for (const item of allItems) {
+            if (item.senderID && item.senderID !== senderID) targetUsers.add(item.senderID as string);
+            if (item.receiverID && item.receiverID !== senderID) targetUsers.add(item.receiverID as string);
+            if (item.teamID) uniqueTeamIDs.add(item.teamID as string);
+        }
+
+        // Batch-fetch all teams in parallel
+        if (uniqueTeamIDs.size > 0) {
+            const teamResults = await batchGetTeams([...uniqueTeamIDs]);
+            for (const team of teamResults.values()) {
+                if (team?.members) {
+                    for (const m of normalizeMembers(team.members)) {
+                        if (m !== senderID) targetUsers.add(m);
+                    }
                 }
             }
         }
+
+        // Batch-fetch all connections in parallel and broadcast
+        const userIDs = [...targetUsers];
+        const connMap = await batchGetConnectionsByUserIDs(userIDs);
+        const sendPromises = [...connMap.values()].flat().map(c =>
+            sendToClient(apiGwManagement, c.connectionId, broadcastPayload).catch(() => { })
+        );
+        await Promise.all(sendPromises);
 
         // Confirm to the sender
         await sendToClient(apiGwManagement, connectionId, {
@@ -2326,16 +2313,19 @@ async function getRecipientIDs(favor: FavorRequest, senderID: string): Promise<s
         // Recipients are all team members except the sender
         return members.filter(memberId => memberId !== senderID);
 
-    } else if (favor.receiverID) {
-        // 1-to-1 chat: Recipient is the person who is not the sender
-        const recipientID = favor.senderID === senderID ? favor.receiverID : favor.senderID;
-        // Check if the sender is actually a participant before returning the other one
-        if (favor.senderID === senderID || favor.receiverID === senderID) {
-            return [recipientID];
-        }
-    }
+    } else {
+        // 1-to-1 / task chat can have an active assignee distinct from the original receiver.
+        // Treat sender, receiver, and currentAssignee as participants and return everyone except senderID.
+        const participants = [favor.senderID, favor.receiverID, favor.currentAssigneeID]
+            .filter((id): id is string => typeof id === 'string' && id.length > 0);
+        const unique = Array.from(new Set(participants));
 
-    return []; // Request not found, inactive, or unauthorized
+        // Authorization: sender must be part of this conversation
+        if (!unique.includes(senderID)) {
+            return [];
+        }
+        return unique.filter(id => id !== senderID);
+    }
 }
 
 /**
@@ -2346,7 +2336,7 @@ async function getRecipientIDs(favor: FavorRequest, senderID: string): Promise<s
 async function isUserParticipant(favor: FavorRequest, userID: string): Promise<boolean> {
     // For 1-to-1 requests
     if (!favor.teamID) {
-        return favor.senderID === userID || favor.receiverID === userID;
+        return favor.senderID === userID || favor.receiverID === userID || favor.currentAssigneeID === userID;
     }
 
     // For group requests, check team membership
@@ -2368,11 +2358,9 @@ async function getAllParticipants(favor: FavorRequest): Promise<string[]> {
     }
 
     // For 1-to-1 requests
-    const participants = [favor.senderID];
-    if (favor.receiverID) {
-        participants.push(favor.receiverID);
-    }
-    return participants;
+    const participants = [favor.senderID, favor.receiverID, favor.currentAssigneeID]
+        .filter((id): id is string => typeof id === 'string' && id.length > 0);
+    return Array.from(new Set(participants));
 }
 
 
@@ -2592,20 +2580,8 @@ async function fetchRequests(
         );
     };
 
-    // Helper to get all team IDs the user is a member of
     const getUserTeamIDs = async (): Promise<string[]> => {
-        if (!TEAMS_TABLE) return [];
-
-        const result = await ddb.send(new ScanCommand({
-            TableName: TEAMS_TABLE,
-            FilterExpression: 'contains(members, :callerID)',
-            ExpressionAttributeValues: {
-                ':callerID': callerID,
-            },
-            ProjectionExpression: 'teamID',
-        }));
-
-        return (result.Items || []).map((item: any) => item.teamID);
+        return getUserTeamIDsFast(callerID);
     };
 
     // Helper to fetch group requests for given team IDs
@@ -3035,21 +3011,12 @@ async function _detectAndNotifyInlineMentions(
 }
 
 /**
- * Get a user's display name from their connections or Cognito.
+ * Get a user's display name from Cognito (uses getUserDetails cache).
  */
 async function _getUserDisplayName(userID: string): Promise<string> {
     try {
-        // Try to get from Cognito
-        if (USER_POOL_ID) {
-            const cognito = new CognitoIdentityProviderClient({ region: REGION });
-            const result = await cognito.send(new AdminGetUserCommand({
-                UserPoolId: USER_POOL_ID,
-                Username: userID,
-            }));
-            const givenName = result.UserAttributes?.find(a => a.Name === 'given_name')?.Value || '';
-            const familyName = result.UserAttributes?.find(a => a.Name === 'family_name')?.Value || '';
-            if (givenName || familyName) return `${givenName} ${familyName}`.trim();
-        }
+        const details = await getUserDetails(userID);
+        if (details.fullName && details.fullName !== userID) return details.fullName;
     } catch (e) {
         // Fall through
     }
@@ -3060,132 +3027,59 @@ async function _getUserDisplayName(userID: string): Promise<string> {
 // HELPER FUNCTIONS 
 // ========================================
 
-/** Retrieves sender (user and connection ID) information from the Connections table. */
-async function getSenderInfo(connectionId: string): Promise<SenderInfo | undefined> {
-    const result = await ddb.send(new GetCommand({
-        TableName: CONNECTIONS_TABLE,
-        Key: { connectionId },
-    }));
-    const item = result.Item as (SenderInfo & { ttl: number }) | undefined;
+// Delegate to shared connection-service (backwards-compatible wrappers)
+const getSenderInfo = _getSenderInfo;
+const getConnectionRecordsByUserID = _getConnectionRecordsByUserID;
 
-    if (!item) return undefined;
-    return { connectionId: item.connectionId, userID: item.userID };
-}
-
-/** Retrieves all active connections for a User ID. */
 async function getSenderInfosByUserID(userID: string): Promise<SenderInfo[]> {
-    // NOTE: This assumes a Global Secondary Index (GSI) named 'UserIDIndex' exists
-    // on the CONNECTIONS_TABLE with 'userID' as the Partition Key.
-    const result = await ddb.send(new QueryCommand({
-        TableName: CONNECTIONS_TABLE,
-        IndexName: 'UserIDIndex',
-        KeyConditionExpression: 'userID = :uid',
-        ExpressionAttributeValues: { ':uid': userID },
-    }));
-
-    return (result.Items || [])
-        .map((item: any) => ({
-            connectionId: item?.connectionId,
-            userID: item?.userID,
-        }))
-        .filter((x: any): x is SenderInfo => typeof x.connectionId === 'string' && typeof x.userID === 'string');
+    return getConnectionsByUserID(userID);
 }
 
-/** Retrieves one active connection for a User ID (legacy helper). */
 async function getSenderInfoByUserID(userID: string): Promise<SenderInfo | undefined> {
-    const all = await getSenderInfosByUserID(userID);
-    return all[0];
+    return getOneConnectionForUser(userID);
 }
 
-type ConnectionRecord = SenderInfo & { deviceId?: string; client?: string };
-
-/** Retrieves full connection records (incl. deviceId/client) for a User ID. */
-async function getConnectionRecordsByUserID(userID: string): Promise<ConnectionRecord[]> {
-    const senders = await getSenderInfosByUserID(userID);
-    if (senders.length === 0) return [];
-
-    // Fast path for the common case (single connection)
-    if (senders.length === 1) {
-        const one = senders[0];
-        try {
-            const result = await ddb.send(new GetCommand({
-                TableName: CONNECTIONS_TABLE,
-                Key: { connectionId: one.connectionId },
-            }));
-            const item = result.Item as any;
-            if (!item?.connectionId || !item?.userID) return [one];
-            return [{
-                connectionId: item.connectionId,
-                userID: item.userID,
-                deviceId: typeof item.deviceId === 'string' ? item.deviceId : undefined,
-                client: typeof item.client === 'string' ? item.client : undefined,
-            }];
-        } catch {
-            return [one];
-        }
-    }
-
-    // Batch-get the connection rows to include deviceId/client (GSI is KEYS_ONLY)
-    try {
-        const keys = senders.map(s => ({ connectionId: s.connectionId }));
-        const batch = await ddb.send(new BatchGetCommand({
-            RequestItems: {
-                [CONNECTIONS_TABLE]: {
-                    Keys: keys,
-                },
-            },
-        }));
-
-        const items = (batch.Responses?.[CONNECTIONS_TABLE] as any[]) || [];
-        return items
-            .map((item: any) => ({
-                connectionId: item?.connectionId,
-                userID: item?.userID,
-                deviceId: typeof item?.deviceId === 'string' ? item.deviceId : undefined,
-                client: typeof item?.client === 'string' ? item.client : undefined,
-            }))
-            .filter((x: any): x is ConnectionRecord => typeof x.connectionId === 'string' && typeof x.userID === 'string');
-    } catch (e) {
-        console.warn('[Connections] BatchGet failed, falling back to SenderInfo only:', e);
-        return senders;
-    }
-}
-
-/** Helper function to fetch user's first name and email from Cognito. */
+/** Helper function to fetch user's first name and email from Cognito (cached 5 min). */
 async function getUserDetails(userID: string): Promise<{ email?: string; fullName: string; }> {
-    // Fallback: if userID looks like an email, use it directly as the email
+    const cached = _userDetailsCache.get(userID);
+    if (cached && Date.now() < cached.expiry) return cached.data;
+
     const isEmail = userID.includes('@');
 
     if (!USER_POOL_ID) {
         console.warn("USER_POOL_ID is missing for user detail lookup. Using userID fallback.");
-        return {
+        const fallback = {
             email: isEmail ? userID : undefined,
             fullName: isEmail ? userID.split('@')[0] : userID,
         };
+        _userDetailsCache.set(userID, { data: fallback, expiry: Date.now() + USER_DETAILS_CACHE_TTL });
+        return fallback;
     }
 
     try {
-        const command = new AdminGetUserCommand({
+        const response = await cognito.send(new AdminGetUserCommand({
             UserPoolId: USER_POOL_ID,
             Username: userID,
-        });
-
-        const response = await cognito.send(command);
+        }));
 
         const emailAttr = response.UserAttributes?.find(attr => attr.Name === 'email')?.Value;
         const givenNameAttr = response.UserAttributes?.find(attr => attr.Name === 'given_name')?.Value;
         const familyNameAttr = response.UserAttributes?.find(attr => attr.Name === 'family_name')?.Value;
 
-        return {
+        const data = {
             email: emailAttr || (isEmail ? userID : undefined),
             fullName: `${givenNameAttr || ''} ${familyNameAttr || ''}`.trim() || userID,
         };
+        _userDetailsCache.set(userID, { data, expiry: Date.now() + USER_DETAILS_CACHE_TTL });
+        return data;
     } catch (e) {
         console.error(`Error fetching Cognito user details for ${userID}:`, e);
-        return {
+        const fallback = {
             email: isEmail ? userID : undefined,
             fullName: isEmail ? userID.split('@')[0] : userID,
         };
+        _userDetailsCache.set(userID, { data: fallback, expiry: Date.now() + 60_000 });
+        return fallback;
     }
 }
 
@@ -3615,25 +3509,22 @@ async function sendToAll(
         ? userIDs.filter(uid => uid && uid !== options.senderID)
         : [];
 
+    // Send to all connected devices in parallel (not sequentially)
+    const sendPromises: Promise<void>[] = [];
     for (let i = 0; i < userIDs.length; i++) {
         const userID = userIDs[i];
         const conns = connectionsByUser[i];
 
-        console.log(`📡 [sendToAll] User "${userID}": ${conns?.length || 0} active connections`);
-
         if (conns && conns.length > 0) {
-            // User is online (at least one active WS connection), send via WebSocket to ALL devices/tabs
             for (const conn of conns) {
-                console.log(`📡 [sendToAll] Sending to connection ${conn.connectionId} for user "${userID}"`);
-                await sendToClient(apiGwManagement, conn.connectionId, data);
+                sendPromises.push(sendToClient(apiGwManagement, conn.connectionId, data));
                 if (pushRecipients.includes(userID) && conn.deviceId) {
                     excludeDeviceIds.add(conn.deviceId);
                 }
             }
-        } else {
-            console.log(`⚠️ [sendToAll] User "${userID}" has NO active connections — message will not be delivered via WS`);
         }
     }
+    await Promise.all(sendPromises);
 
     // Send push notifications to recipient users' OFFLINE devices (exclude WS-connected deviceIds)
     if (pushRecipients.length > 0 && options.notifyOffline) {
@@ -4043,18 +3934,73 @@ async function getPresignedDownloadUrl(
 }
 
 /**
- * Normalizes a DynamoDB "members" attribute to a string[].
- * Some tables may store members as a List (array) or a String Set (JS Set via DocumentClient).
+ * Batch-generates presigned S3 GET URLs for multiple files in a single WebSocket call.
+ * Validates that all files belong to the same conversation and the requester is a participant.
+ * Max 20 files per batch to bound Lambda execution time.
  */
-function normalizeMembers(members: unknown): string[] {
-    if (Array.isArray(members)) {
-        return members.filter((m): m is string => typeof m === 'string');
+async function batchGetPresignedDownloadUrls(
+    requesterID: string,
+    payload: any,
+    connectionId: string,
+    apiGwManagement: ApiGatewayManagementApiClient
+): Promise<void> {
+    const { files } = payload || {};
+
+    if (!Array.isArray(files) || files.length === 0) {
+        await sendToClient(apiGwManagement, connectionId, { type: 'error', message: 'files array is required.' });
+        return;
     }
-    if (members instanceof Set) {
-        return Array.from(members).filter((m): m is string => typeof m === 'string');
+
+    if (!FILE_BUCKET_NAME) {
+        await sendToClient(apiGwManagement, connectionId, { type: 'error', message: 'Server error: File bucket not configured.' });
+        return;
     }
-    return [];
+
+    const filesToProcess = files.slice(0, 20);
+
+    // Group by favorRequestID to minimize auth lookups
+    const byConversation = new Map<string, { fileKey: string }[]>();
+    for (const f of filesToProcess) {
+        if (!f.favorRequestID || !f.fileKey) continue;
+        const list = byConversation.get(f.favorRequestID) || [];
+        list.push({ fileKey: f.fileKey });
+        byConversation.set(f.favorRequestID, list);
+    }
+
+    const results: { favorRequestID: string; fileKey: string; url: string }[] = [];
+
+    await Promise.all([...byConversation.entries()].map(async ([favorRequestID, fileEntries]) => {
+        const favorResult = await ddb.send(new GetCommand({
+            TableName: FAVORS_TABLE,
+            Key: { favorRequestID },
+        }));
+        const favor = favorResult.Item as FavorRequest;
+        if (!favor) return;
+
+        const participant = await isUserParticipant(favor, requesterID);
+        if (!participant) return;
+
+        const expectedPrefix = `favors/${favorRequestID}/`;
+        await Promise.all(fileEntries.map(async ({ fileKey }) => {
+            const cleanKey = sanitizeFileKey(String(fileKey));
+            if (!cleanKey.startsWith(expectedPrefix)) return;
+            try {
+                const command = new GetObjectCommand({ Bucket: FILE_BUCKET_NAME, Key: cleanKey });
+                const url = await getSignedUrl(s3, command, { expiresIn: 900 });
+                results.push({ favorRequestID, fileKey: cleanKey, url });
+            } catch (e) {
+                log.warn('Failed to generate presigned URL for batch item', { fileKey: cleanKey });
+            }
+        }));
+    }));
+
+    await sendToClient(apiGwManagement, connectionId, {
+        type: 'batchPresignedDownloadUrls',
+        urls: results,
+    });
 }
+
+// normalizeMembers is imported from shared/team-service
 
 // ========================================
 // TASK MANAGEMENT FUNCTIONS
@@ -4765,11 +4711,12 @@ async function handleUpdateTaskStatus(
     }
 
     try {
-        // Find the task message by querying with messageID index or scanning
-        // Task messages have messageID = taskID
-        const scanResult = await ddb.send(new ScanCommand({
+        // Query by messageID GSI instead of scanning the entire table
+        const queryResult = await ddb.send(new QueryCommand({
             TableName: MESSAGES_TABLE,
-            FilterExpression: 'messageID = :mid AND #t = :task',
+            IndexName: 'MessageIDIndex',
+            KeyConditionExpression: 'messageID = :mid',
+            FilterExpression: '#t = :task',
             ExpressionAttributeNames: { '#t': 'type' },
             ExpressionAttributeValues: {
                 ':mid': taskID,
@@ -4778,7 +4725,7 @@ async function handleUpdateTaskStatus(
             Limit: 1,
         }));
 
-        const taskMessage = scanResult.Items?.[0];
+        const taskMessage = queryResult.Items?.[0];
         if (!taskMessage) {
             await sendToClient(apiGwManagement, connectionId, { type: 'error', message: 'Task not found.' });
             return;

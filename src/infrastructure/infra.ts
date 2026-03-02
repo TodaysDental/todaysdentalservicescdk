@@ -482,6 +482,8 @@ const chimeStack = new ChimeStack(app, CHIME_STACK_NAME, {
   deviceTokensTableName: pushNotificationsStack.deviceTokensTable.tableName,
   deviceTokensTableArn: pushNotificationsStack.deviceTokensTable.tableArn,
   sendPushFunctionArn: pushNotificationsStack.sendPushFn.functionArn,
+  // StaffUser table for enriching GetOnlineAgents responses with names/emails
+  staffUserTableName: coreStack.staffUserTable.tableName,
 });
 // ChimeStack depends on PushNotificationsStack for call notifications
 chimeStack.addDependency(pushNotificationsStack);
@@ -566,6 +568,8 @@ const adminStack = new AdminStack(app, 'TodaysDentalInsightsAdminN1', {
   joinQueuedCallFnArn: cdk.Fn.importValue(`${chimeStack.stackName}-JoinQueuedCallArn`),
   joinActiveCallFnArn: cdk.Fn.importValue(`${chimeStack.stackName}-JoinActiveCallArn`),
   getJoinableCallsFnArn: cdk.Fn.importValue(`${chimeStack.stackName}-GetJoinableCallsArn`),
+  // Online Agents (for transfer list in iOS app and web)
+  getOnlineAgentsFnArn: cdk.Fn.importValue(`${chimeStack.stackName}-GetOnlineAgentsArn`),
   // Call Recording
   getRecordingFnArn: cdk.Fn.importValue(`${chimeStack.stackName}-GetRecordingFnArn`),
 });

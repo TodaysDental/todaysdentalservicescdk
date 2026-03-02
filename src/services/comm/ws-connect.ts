@@ -1,12 +1,10 @@
 import { APIGatewayEvent, APIGatewayProxyResult } from 'aws-lambda';
-import { DynamoDBClient } from '@aws-sdk/client-dynamodb';
-import { DynamoDBDocumentClient, PutCommand } from '@aws-sdk/lib-dynamodb';
+import { PutCommand } from '@aws-sdk/lib-dynamodb';
 import { verifyToken } from '../../shared/utils/jwt';
+import { ddb, env, createLogger } from './shared';
 
-const REGION = process.env.AWS_REGION || 'us-east-1';
-const CONNECTIONS_TABLE = process.env.CONNECTIONS_TABLE || '';
-
-const ddb = DynamoDBDocumentClient.from(new DynamoDBClient({ region: REGION }));
+const log = createLogger('ws-connect');
+const CONNECTIONS_TABLE = env.CONNECTIONS_TABLE;
 
 /**
  * Handles the $connect event. It authenticates the user using the access token 
@@ -22,8 +20,7 @@ export const handler = async (event: APIGatewayEvent): Promise<APIGatewayProxyRe
     const client = typeof clientRaw === 'string' ? clientRaw.trim().slice(0, 32) : '';
 
     if (!token) {
-        console.error('Missing access token in query string.');
-        // Unauthenticated connections are rejected
+        log.warn('Missing access token in query string');
         return { statusCode: 401, body: 'Unauthorized' };
     }
 
@@ -31,9 +28,8 @@ export const handler = async (event: APIGatewayEvent): Promise<APIGatewayProxyRe
         // 1. Verify the access token using custom JWT
         const payload = await verifyToken(token);
         
-        // Ensure it's an access token (not refresh token)
         if (payload.type !== 'access') {
-            console.error('Invalid token type. Access token required.');
+            log.warn('Invalid token type, access token required');
             return { statusCode: 401, body: 'Access token required' };
         }
         
@@ -59,11 +55,11 @@ export const handler = async (event: APIGatewayEvent): Promise<APIGatewayProxyRe
             },
         }));
 
-        console.log(`Connection registered for user ${userID} with ID ${connectionId}`);
+        log.info('Connection registered', { userID: userID as string, connectionId: connectionId as string });
         return { statusCode: 200, body: 'Connected' };
 
     } catch (error) {
-        console.error('Authentication or connection failed:', error);
+        log.error('Authentication or connection failed', {}, error as Error);
         return { statusCode: 401, body: 'Unauthorized or Internal Error' };
     }
 };

@@ -168,9 +168,20 @@ async function getClinicCreds(clinicId: string): Promise<ClinicCreds | null> {
 
 async function fetchTemplateByName(templateName: string): Promise<any | null> {
   if (!templateName) return null;
-  const res = await doc.send(new ScanCommand({ TableName: TEMPLATES_TABLE }));
-  const items = (res.Items || []) as any[];
-  return items.find((t) => String(t.template_name).toLowerCase() === String(templateName).toLowerCase()) || null;
+  const nameLower = String(templateName).toLowerCase();
+  let lastKey: any = undefined;
+  do {
+    const res = await doc.send(new ScanCommand({
+      TableName: TEMPLATES_TABLE,
+      ...(lastKey ? { ExclusiveStartKey: lastKey } : {}),
+    }));
+    const match = (res.Items || []).find(
+      (t: any) => String(t.template_name).toLowerCase() === nameLower
+    );
+    if (match) return match;
+    lastKey = res.LastEvaluatedKey;
+  } while (lastKey);
+  return null;
 }
 
 function parseConsentFormIdFromTemplateMessage(templateMessage: string): string | null {
@@ -1115,9 +1126,9 @@ async function processScheduleTask(task: ScheduleTask): Promise<void> {
   }
 
   // Validate voice template content if CALL notifications are enabled
-  const voiceTemplateText: string | undefined = template?.voice_message || template?.text_message;
+  const voiceTemplateText: string | undefined = template?.voice_message;
   if (hasCallType && !voiceTemplateText) {
-    console.warn(`Missing voice_message/text_message for CALL schedule ${scheduleId}: templateMessage=${templateMessage}`);
+    console.warn(`Missing voice_message for CALL schedule ${scheduleId}: templateMessage=${templateMessage}`);
     // If CALL is the only notification type, abort the schedule; otherwise keep processing other channels
     if (!hasEmailType && !hasSmsType && !hasRcsType && !hasAiCallType) {
       return;
@@ -1254,6 +1265,8 @@ async function processScheduleTask(task: ScheduleTask): Promise<void> {
 
   console.log(`Notification types check: SMS=${hasSmsType}, RCS=${hasRcsType}, types=${JSON.stringify(notificationTypes)}`);
 
+  const calledPhones = new Set<string>();
+
   for (const row of rows) {
     const { phone } = extractEmailAndPhone(row);
     if (!phone) continue;
@@ -1321,8 +1334,8 @@ async function processScheduleTask(task: ScheduleTask): Promise<void> {
       }
     }
 
-    // Voice marketing calls (CALL/VOICE)
-    if (hasCallType && voiceTemplateText && fromPhoneNumber) {
+    // Voice marketing calls (CALL/VOICE) -- dedup by phone to avoid repeat calls
+    if (hasCallType && voiceTemplateText && fromPhoneNumber && !calledPhones.has(phone)) {
       try {
         const templateContext = await buildTemplateContext(clinicId, row);
         const patNum =
@@ -1355,6 +1368,7 @@ async function processScheduleTask(task: ScheduleTask): Promise<void> {
             patNum,
             patientName,
           });
+          calledPhones.add(phone);
           callsStarted++;
         }
       } catch (error) {

@@ -61,6 +61,8 @@ export interface AdminStackProps extends StackProps {
   joinQueuedCallFnArn?: string;
   joinActiveCallFnArn?: string;
   getJoinableCallsFnArn?: string;
+  // ** NEW: Online Agents **
+  getOnlineAgentsFnArn?: string;
   // ** NEW: Call Recording **
   getRecordingFnArn?: string;
 }
@@ -1261,6 +1263,32 @@ export class AdminStack extends Stack {
           authorizationType: apigw.AuthorizationType.CUSTOM,
         });
       }
+    }
+
+    // ========================================
+    // ONLINE AGENTS API ROUTE
+    // ========================================
+
+    if (props.getOnlineAgentsFnArn) {
+      const importedGetOnlineAgents = lambda.Function.fromFunctionArn(
+        this,
+        'ImportedGetOnlineAgentsFn',
+        props.getOnlineAgentsFnArn
+      );
+
+      importedGetOnlineAgents.addPermission('ApiGatewayInvokeGetOnlineAgents', {
+        principal: new iam.ServicePrincipal('apigateway.amazonaws.com'),
+        sourceArn: this.api.arnForExecuteApi('*', '/agents/online', '*'),
+      });
+
+      // GET /agents/online?clinicId=xxx
+      const agentsRes = this.api.root.getResource('agents') ?? this.api.root.addResource('agents');
+      const onlineRes = agentsRes.addResource('online');
+      onlineRes.addMethod('GET', new apigw.LambdaIntegration(importedGetOnlineAgents, { proxy: true }), {
+        authorizer: this.authorizer,
+        authorizationType: apigw.AuthorizationType.CUSTOM,
+        methodResponses: [{ statusCode: '200' }],
+      });
     }
 
     // ========================================

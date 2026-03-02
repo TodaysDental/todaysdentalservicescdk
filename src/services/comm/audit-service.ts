@@ -6,14 +6,11 @@
  * to avoid impacting API response times.
  */
 
-import { DynamoDBDocumentClient, PutCommand, QueryCommand } from '@aws-sdk/lib-dynamodb';
-import { DynamoDBClient } from '@aws-sdk/client-dynamodb';
+import { PutCommand, QueryCommand } from '@aws-sdk/lib-dynamodb';
 import { v4 as uuidv4 } from 'uuid';
+import { ddb, env } from './shared';
 
-const AUDIT_LOGS_TABLE = process.env.AUDIT_LOGS_TABLE || '';
-const REGION = process.env.AWS_REGION || 'us-east-1';
-
-const ddb = DynamoDBDocumentClient.from(new DynamoDBClient({ region: REGION }));
+const AUDIT_LOGS_TABLE = env.AUDIT_LOGS_TABLE;
 
 // 90 days in seconds for TTL
 const TTL_DAYS = 90;

@@ -277,7 +277,7 @@ const BLOCKED_PREFIXES = [
 // Valid country codes for basic sanity check (common ones)
 const VALID_COUNTRY_CODE_PREFIXES = ['1', '44', '61', '52', '33', '49', '39', '34', '81', '86', '91'];
 
-function validatePhoneNumber(phoneNumber: string): PhoneValidationResult {
+export function validatePhoneNumber(phoneNumber: string): PhoneValidationResult {
   if (!phoneNumber || typeof phoneNumber !== 'string') {
     return { valid: false, error: 'Phone number is required' };
   }
@@ -413,6 +413,8 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
 async function listScheduledCalls(event: APIGatewayProxyEvent, userPerms: any): Promise<APIGatewayProxyResult> {
   const clinicId = event.queryStringParameters?.clinicId;
   const status = event.queryStringParameters?.status;
+  const limitParam = event.queryStringParameters?.limit;
+  const nextTokenParam = event.queryStringParameters?.nextToken;
 
   if (!clinicId) {
     return { statusCode: 400, headers: getCorsHeaders(event), body: JSON.stringify({ error: 'clinicId is required' }) };
@@ -424,6 +426,17 @@ async function listScheduledCalls(event: APIGatewayProxyEvent, userPerms: any): 
 
   if (!isAdmin && !userClinicIds.includes(clinicId)) {
     return { statusCode: 403, headers: getCorsHeaders(event), body: JSON.stringify({ error: 'Access denied' }) };
+  }
+
+  const limit = Math.min(Math.max(parseInt(limitParam || '100', 10) || 100, 1), 500);
+
+  let exclusiveStartKey: Record<string, any> | undefined;
+  if (nextTokenParam) {
+    try {
+      exclusiveStartKey = JSON.parse(Buffer.from(nextTokenParam, 'base64').toString('utf-8'));
+    } catch {
+      return { statusCode: 400, headers: getCorsHeaders(event), body: JSON.stringify({ error: 'Invalid nextToken' }) };
+    }
   }
 
   let filterExpression = undefined;
@@ -441,8 +454,14 @@ async function listScheduledCalls(event: APIGatewayProxyEvent, userPerms: any): 
     FilterExpression: filterExpression,
     ExpressionAttributeValues: expressionAttributeValues,
     ExpressionAttributeNames: status ? { '#status': 'status' } : undefined,
-    ScanIndexForward: false, // Newest first
+    ScanIndexForward: false,
+    Limit: limit,
+    ...(exclusiveStartKey ? { ExclusiveStartKey: exclusiveStartKey } : {}),
   }));
+
+  const nextToken = response.LastEvaluatedKey
+    ? Buffer.from(JSON.stringify(response.LastEvaluatedKey)).toString('base64')
+    : undefined;
 
   return {
     statusCode: 200,
@@ -450,6 +469,7 @@ async function listScheduledCalls(event: APIGatewayProxyEvent, userPerms: any): 
     body: JSON.stringify({
       calls: response.Items || [],
       count: response.Items?.length || 0,
+      nextToken,
     }),
   };
 }
@@ -582,7 +602,7 @@ async function createScheduledCall(event: APIGatewayProxyEvent, userPerms: any):
     callId,
     clinicId: body.clinicId,
     agentId: body.agentId,
-    phoneNumber: body.phoneNumber,
+    phoneNumber: normalizedPhone,
     patientName: body.patientName,
     patientId: body.patientId,
     scheduledTime: body.scheduledTime,
@@ -683,7 +703,7 @@ async function createScheduledCall(event: APIGatewayProxyEvent, userPerms: any):
           callId,
           clinicId: body.clinicId,
           agentId: body.agentId,
-          phoneNumber: body.phoneNumber,
+          phoneNumber: normalizedPhone,
           patientName: body.patientName,
           purpose: body.purpose,
           customMessage: body.customMessage,
@@ -900,7 +920,44 @@ async function sendNow(event: APIGatewayProxyEvent, userPerms: any): Promise<API
     return { statusCode: 403, headers: getCorsHeaders(event), body: JSON.stringify({ error: 'Permission denied' }) };
   }
 
-  // Create a call record for tracking
+  const outboundEnabled = await isAiOutboundEnabled(clinicId);
+  if (!outboundEnabled) {
+    return {
+      statusCode: 400,
+      headers: getCorsHeaders(event),
+      body: JSON.stringify({
+        error: 'AI outbound calling is not enabled for this clinic',
+        message: 'Enable AI outbound calling in Voice Config before making calls.',
+      }),
+    };
+  }
+
+  const agentCheck = await docClient.send(new GetCommand({
+    TableName: AGENTS_TABLE,
+    Key: { agentId },
+  }));
+  const agentItem = agentCheck.Item;
+
+  if (!agentItem) {
+    return { statusCode: 400, headers: getCorsHeaders(event), body: JSON.stringify({ error: 'Agent not found' }) };
+  }
+  if (!agentItem.isActive) {
+    return { statusCode: 400, headers: getCorsHeaders(event), body: JSON.stringify({ error: 'Agent is not active' }) };
+  }
+  if (agentItem.bedrockAgentStatus !== 'PREPARED') {
+    return {
+      statusCode: 400,
+      headers: getCorsHeaders(event),
+      body: JSON.stringify({
+        error: 'Agent is not ready',
+        message: `Agent status is "${agentItem.bedrockAgentStatus}". Please prepare the agent first.`,
+      }),
+    };
+  }
+  if (agentItem.clinicId !== clinicId && !agentItem.isPublic) {
+    return { statusCode: 400, headers: getCorsHeaders(event), body: JSON.stringify({ error: 'Agent does not belong to this clinic' }) };
+  }
+
   const callId = `call-now-${uuidv4().slice(0, 8)}`;
   const now = new Date().toISOString();
   const userName = getUserDisplayName(userPerms);
@@ -1036,17 +1093,17 @@ async function createSingleScheduledCall(
     }
   }
 
-  // Validate phone number format
-  const normalizedPhone = request.phoneNumber.replace(/\D/g, '');
-  if (normalizedPhone.length < 10 || normalizedPhone.length > 15) {
-    return { success: false, error: 'Invalid phone number. Must be 10-15 digits.' };
+  const phoneValidation = validatePhoneNumber(request.phoneNumber);
+  if (!phoneValidation.valid) {
+    return { success: false, error: phoneValidation.error };
   }
+  const validatedPhone = phoneValidation.normalized!;
 
   const scheduledCall: ScheduledCall = {
     callId,
     clinicId: request.clinicId,
     agentId: request.agentId,
-    phoneNumber: request.phoneNumber,
+    phoneNumber: validatedPhone,
     patientName: request.patientName,
     patientId: request.patientId,
     scheduledTime: request.scheduledTime,
@@ -1064,13 +1121,22 @@ async function createSingleScheduledCall(
     ttl: Math.floor(scheduledDate.getTime() / 1000) + (7 * 24 * 60 * 60),
   };
 
-  // Create EventBridge schedule
+  // Write DynamoDB FIRST to prevent orphaned EventBridge schedules
+  try {
+    await docClient.send(new PutCommand({
+      TableName: SCHEDULED_CALLS_TABLE,
+      Item: scheduledCall,
+    }));
+  } catch (error: any) {
+    console.error('Failed to save scheduled call to DynamoDB:', error);
+    return { success: false, error: error.message };
+  }
+
   try {
     const scheduleResponse = await schedulerClient.send(new CreateScheduleCommand({
       Name: schedulerName,
       ScheduleExpression: `at(${scheduledDate.toISOString().replace(/\.\d{3}Z$/, '')})`,
       FlexibleTimeWindow: { Mode: 'OFF' },
-      // Auto-delete schedule after execution - prevents orphaned schedules
       ActionAfterCompletion: 'DELETE',
       Target: {
         Arn: OUTBOUND_CALL_LAMBDA_ARN,
@@ -1079,7 +1145,7 @@ async function createSingleScheduledCall(
           callId,
           clinicId: request.clinicId,
           agentId: request.agentId,
-          phoneNumber: request.phoneNumber,
+          phoneNumber: validatedPhone,
           patientName: request.patientName,
           purpose: request.purpose,
           customMessage: request.customMessage,
@@ -1087,17 +1153,33 @@ async function createSingleScheduledCall(
       },
     }));
 
-    scheduledCall.schedulerArn = scheduleResponse.ScheduleArn;
+    // Update DynamoDB record with scheduler ARN
+    await docClient.send(new UpdateCommand({
+      TableName: SCHEDULED_CALLS_TABLE,
+      Key: { callId },
+      UpdateExpression: 'SET schedulerArn = :arn',
+      ExpressionAttributeValues: { ':arn': scheduleResponse.ScheduleArn },
+    }));
   } catch (error: any) {
     console.error('Failed to create EventBridge schedule:', error);
+    // Rollback: mark the DynamoDB record as failed
+    try {
+      await docClient.send(new UpdateCommand({
+        TableName: SCHEDULED_CALLS_TABLE,
+        Key: { callId },
+        UpdateExpression: 'SET #status = :failed, failureReason = :reason, updatedAt = :now',
+        ExpressionAttributeNames: { '#status': 'status' },
+        ExpressionAttributeValues: {
+          ':failed': 'failed',
+          ':reason': `Failed to create EventBridge schedule: ${error.message}`,
+          ':now': new Date().toISOString(),
+        },
+      }));
+    } catch (rollbackError) {
+      console.error('Failed to rollback DynamoDB record:', rollbackError);
+    }
     return { success: false, error: error.message };
   }
-
-  // Save to DynamoDB
-  await docClient.send(new PutCommand({
-    TableName: SCHEDULED_CALLS_TABLE,
-    Item: scheduledCall,
-  }));
 
   return { success: true, callId };
 }

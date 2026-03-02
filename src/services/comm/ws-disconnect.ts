@@ -1,14 +1,17 @@
 import { APIGatewayEvent, APIGatewayProxyResult } from 'aws-lambda';
-import { DynamoDBClient } from '@aws-sdk/client-dynamodb';
-import { DynamoDBDocumentClient, DeleteCommand, GetCommand, QueryCommand, ScanCommand, UpdateCommand } from '@aws-sdk/lib-dynamodb';
+import { DeleteCommand, GetCommand, QueryCommand, ScanCommand, UpdateCommand } from '@aws-sdk/lib-dynamodb';
 import { ChimeSDKMeetingsClient, DeleteMeetingCommand } from '@aws-sdk/client-chime-sdk-meetings';
+import { ddb, env, REGION, createLogger } from './shared';
 
-const REGION = process.env.AWS_REGION || 'us-east-1';
-const CONNECTIONS_TABLE = process.env.CONNECTIONS_TABLE || '';
-const CALLS_TABLE = process.env.CALLS_TABLE || '';
+const log = createLogger('ws-disconnect');
+const CONNECTIONS_TABLE = env.CONNECTIONS_TABLE;
+const CALLS_TABLE = env.CALLS_TABLE;
 
-const ddb = DynamoDBDocumentClient.from(new DynamoDBClient({ region: REGION }));
-const chimeClient = new ChimeSDKMeetingsClient({ region: REGION });
+let _chimeClient: ChimeSDKMeetingsClient | undefined;
+function getChimeClient(): ChimeSDKMeetingsClient {
+    if (!_chimeClient) _chimeClient = new ChimeSDKMeetingsClient({ region: REGION });
+    return _chimeClient;
+}
 
 /**
  * Handles the $disconnect event by:
@@ -80,10 +83,10 @@ async function cleanupActiveCallsForUser(userID: string): Promise<void> {
     try {
         const remainingConnections = await ddb.send(new QueryCommand({
             TableName: CONNECTIONS_TABLE,
-            IndexName: 'UserIDIndex',
+            IndexName: 'UserIDIndexV2',
             KeyConditionExpression: 'userID = :uid',
             ExpressionAttributeValues: { ':uid': userID },
-            Limit: 1, // We only need to know if at least 1 remains
+            Limit: 1,
         }));
 
         const remaining = (remainingConnections.Items || []).length;
@@ -154,7 +157,7 @@ async function cleanupActiveCallsForUser(userID: string): Promise<void> {
             // End the Chime SDK meeting
             if (call.meetingId) {
                 try {
-                    await chimeClient.send(new DeleteMeetingCommand({
+                    await getChimeClient().send(new DeleteMeetingCommand({
                         MeetingId: call.meetingId,
                     }));
                     console.log(`[Disconnect] Ended Chime meeting ${call.meetingId} for call ${call.callID}`);

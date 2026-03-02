@@ -15,6 +15,7 @@ import { SQSEvent, SQSBatchResponse, SQSBatchItemFailure } from 'aws-lambda';
 import { DynamoDBClient } from '@aws-sdk/client-dynamodb';
 import {
   DynamoDBDocumentClient,
+  GetCommand,
   PutCommand,
   UpdateCommand,
 } from '@aws-sdk/lib-dynamodb';
@@ -23,6 +24,7 @@ import {
   CreateScheduleCommand,
 } from '@aws-sdk/client-scheduler';
 import { v4 as uuidv4 } from 'uuid';
+import { validatePhoneNumber } from './outbound-call-scheduler';
 
 // ========================================================================
 // CLIENTS
@@ -111,12 +113,10 @@ export const handler = async (event: SQSEvent): Promise<SQSBatchResponse> => {
 
       const results = await processBatch(message);
       
-      // Update job progress
       await updateJobProgress(message.jobId, {
         processedCalls: results.processed,
         successfulCalls: results.successful,
         failedCalls: results.failed,
-        isFinalBatch: message.batchIndex === message.totalBatches - 1,
       });
 
       console.log('[OutboundQueueProcessor] Batch processed', {
@@ -219,17 +219,17 @@ async function createScheduledCall(params: {
     return { success: false, error: 'scheduledTime must be in the future' };
   }
 
-  // Validate phone number format
-  const normalizedPhone = params.phoneNumber.replace(/\D/g, '');
-  if (normalizedPhone.length < 10 || normalizedPhone.length > 15) {
-    return { success: false, error: 'Invalid phone number' };
+  const phoneValidation = validatePhoneNumber(params.phoneNumber);
+  if (!phoneValidation.valid) {
+    return { success: false, error: phoneValidation.error };
   }
+  const validatedPhone = phoneValidation.normalized!;
 
   const scheduledCall: ScheduledCall = {
     callId,
     clinicId: params.clinicId,
     agentId: params.agentId,
-    phoneNumber: params.phoneNumber,
+    phoneNumber: validatedPhone,
     patientName: params.patientName,
     patientId: params.patientId,
     scheduledTime: params.scheduledTime,
@@ -245,16 +245,26 @@ async function createScheduledCall(params: {
     createdAt: timestamp,
     createdBy: params.createdBy,
     updatedAt: timestamp,
-    ttl: Math.floor(scheduledDate.getTime() / 1000) + (7 * 24 * 60 * 60), // 7 days after scheduled time
+    ttl: Math.floor(scheduledDate.getTime() / 1000) + (7 * 24 * 60 * 60),
   };
 
+  // Write DynamoDB FIRST to prevent orphaned EventBridge schedules
   try {
-    // Create EventBridge schedule
+    await docClient.send(new PutCommand({
+      TableName: SCHEDULED_CALLS_TABLE,
+      Item: scheduledCall,
+    }));
+  } catch (error: any) {
+    console.error('[OutboundQueueProcessor] Failed to save to DynamoDB', { callId, error: error.message });
+    return { success: false, error: error.message };
+  }
+
+  try {
     const scheduleResponse = await schedulerClient.send(new CreateScheduleCommand({
       Name: schedulerName,
       ScheduleExpression: `at(${scheduledDate.toISOString().replace(/\.\d{3}Z$/, '')})`,
       FlexibleTimeWindow: { Mode: 'OFF' },
-      ActionAfterCompletion: 'DELETE', // Auto-cleanup after execution
+      ActionAfterCompletion: 'DELETE',
       Target: {
         Arn: OUTBOUND_CALL_LAMBDA_ARN,
         RoleArn: SCHEDULER_ROLE_ARN,
@@ -262,7 +272,7 @@ async function createScheduledCall(params: {
           callId,
           clinicId: params.clinicId,
           agentId: params.agentId,
-          phoneNumber: params.phoneNumber,
+          phoneNumber: validatedPhone,
           patientName: params.patientName,
           purpose: params.purpose,
           customMessage: params.customMessage,
@@ -270,20 +280,31 @@ async function createScheduledCall(params: {
       },
     }));
 
-    scheduledCall.schedulerArn = scheduleResponse.ScheduleArn;
-
-    // Save to DynamoDB
-    await docClient.send(new PutCommand({
+    await docClient.send(new UpdateCommand({
       TableName: SCHEDULED_CALLS_TABLE,
-      Item: scheduledCall,
+      Key: { callId },
+      UpdateExpression: 'SET schedulerArn = :arn',
+      ExpressionAttributeValues: { ':arn': scheduleResponse.ScheduleArn },
     }));
 
     return { success: true, callId };
   } catch (error: any) {
-    console.error('[OutboundQueueProcessor] Failed to create schedule', {
-      callId,
-      error: error.message,
-    });
+    console.error('[OutboundQueueProcessor] Failed to create schedule', { callId, error: error.message });
+    try {
+      await docClient.send(new UpdateCommand({
+        TableName: SCHEDULED_CALLS_TABLE,
+        Key: { callId },
+        UpdateExpression: 'SET #status = :failed, failureReason = :reason, updatedAt = :now',
+        ExpressionAttributeNames: { '#status': 'status' },
+        ExpressionAttributeValues: {
+          ':failed': 'failed',
+          ':reason': `Failed to create EventBridge schedule: ${error.message}`,
+          ':now': new Date().toISOString(),
+        },
+      }));
+    } catch (rollbackError) {
+      console.error('[OutboundQueueProcessor] Failed to rollback DynamoDB record:', rollbackError);
+    }
     return { success: false, error: error.message };
   }
 }
@@ -296,27 +317,41 @@ async function updateJobProgress(jobId: string, progress: {
   processedCalls: number;
   successfulCalls: number;
   failedCalls: number;
-  isFinalBatch: boolean;
 }): Promise<void> {
   try {
-    const updateExpression = progress.isFinalBatch
-      ? 'SET processedCalls = processedCalls + :processed, successfulCalls = successfulCalls + :successful, failedCalls = failedCalls + :failed, #status = :completed, completedAt = :now, updatedAt = :now'
-      : 'SET processedCalls = processedCalls + :processed, successfulCalls = successfulCalls + :successful, failedCalls = failedCalls + :failed, #status = :processing, updatedAt = :now';
-
+    // Atomically increment counters
     await docClient.send(new UpdateCommand({
       TableName: BULK_OUTBOUND_JOBS_TABLE,
       Key: { jobId },
-      UpdateExpression: updateExpression,
-      ExpressionAttributeNames: { '#status': 'status' },
+      UpdateExpression: 'SET processedCalls = processedCalls + :processed, successfulCalls = successfulCalls + :successful, failedCalls = failedCalls + :failed, updatedAt = :now',
       ExpressionAttributeValues: {
         ':processed': progress.processedCalls,
         ':successful': progress.successfulCalls,
         ':failed': progress.failedCalls,
-        ':completed': 'completed',
-        ':processing': 'processing',
         ':now': new Date().toISOString(),
       },
     }));
+
+    // Read back to check if all calls have been processed
+    const jobResponse = await docClient.send(new GetCommand({
+      TableName: BULK_OUTBOUND_JOBS_TABLE,
+      Key: { jobId },
+    }));
+    const job = jobResponse.Item;
+
+    if (job && job.processedCalls >= job.totalCalls && job.status !== 'completed') {
+      await docClient.send(new UpdateCommand({
+        TableName: BULK_OUTBOUND_JOBS_TABLE,
+        Key: { jobId },
+        UpdateExpression: 'SET #status = :completed, completedAt = :now, updatedAt = :now',
+        ExpressionAttributeNames: { '#status': 'status' },
+        ExpressionAttributeValues: {
+          ':completed': 'completed',
+          ':now': new Date().toISOString(),
+        },
+        ConditionExpression: '#status <> :completed',
+      }));
+    }
   } catch (error) {
     console.error('[OutboundQueueProcessor] Failed to update job progress', {
       jobId,

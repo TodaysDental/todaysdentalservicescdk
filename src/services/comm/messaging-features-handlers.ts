@@ -1,223 +1,49 @@
 /**
  * Messaging Features WebSocket Handlers
  * ======================================
- * This file contains all WebSocket action handlers for messaging features:
- * - Message Reactions
- * - Threaded Replies  
- * - Message Edit/Delete
- * - Typing Indicators
- * - User Presence
- * - Pinned Messages
- * - Bookmarks
- * - Search
- * - Channels
- * - Scheduled Messages
+ * Reactions, Threads, Edit/Delete, Typing, Presence,
+ * Pins, Bookmarks, Search, Channels, Scheduled Messages
  */
 
-import { DynamoDBDocumentClient, GetCommand, PutCommand, UpdateCommand, QueryCommand, DeleteCommand } from '@aws-sdk/lib-dynamodb';
-import { DynamoDBClient, ScanCommand } from '@aws-sdk/client-dynamodb';
-import { ApiGatewayManagementApiClient, PostToConnectionCommand } from '@aws-sdk/client-apigatewaymanagementapi';
+import { GetCommand, PutCommand, UpdateCommand, QueryCommand, DeleteCommand, BatchGetCommand } from '@aws-sdk/lib-dynamodb';
+import { ApiGatewayManagementApiClient } from '@aws-sdk/client-apigatewaymanagementapi';
 import { v4 as uuidv4 } from 'uuid';
+import {
+    ddb, env,
+    sendToClient, broadcastToConversation, getConnectionIdForUser,
+    batchGetConnectionIdForUsers,
+    getSenderInfo as _getSenderInfo,
+    batchGetConnectionsByUserIDs,
+    createLogger,
+} from './shared';
+import type {
+    MessageData, Mention, Reaction, PinnedMessage, Bookmark,
+    UserPresence, ScheduledMessage, Channel,
+} from './shared';
 
-// ========================================
-// TYPES
-// ========================================
+const log = createLogger('messaging-features');
 
-interface Reaction {
-    emoji: string;
-    emojiCode: string;
-    userIDs: string[];
-    count: number;
-    createdAt: string;
+const MESSAGES_TABLE = env.MESSAGES_TABLE;
+
+/**
+ * Look up a message by messageID using the MessageIDIndex GSI (O(1))
+ * instead of scanning the entire conversation's messages.
+ */
+async function getMessageByID(messageID: string): Promise<MessageData | undefined> {
+    const result = await ddb.send(new QueryCommand({
+        TableName: MESSAGES_TABLE,
+        IndexName: 'MessageIDIndex',
+        KeyConditionExpression: 'messageID = :mid',
+        ExpressionAttributeValues: { ':mid': messageID },
+        Limit: 1,
+    }));
+    return result.Items?.[0] as MessageData | undefined;
 }
-
-interface Mention {
-    type: 'user' | 'channel' | 'everyone' | 'here';
-    id?: string;
-    displayName: string;
-    startIndex: number;
-    endIndex: number;
-}
-
-interface MessageData {
-    messageID: string;
-    favorRequestID: string;
-    senderID: string;
-    content: string;
-    timestamp: number;
-    type: 'text' | 'file';
-    fileKey?: string;
-    // Messaging feature fields
-    reactions?: Reaction[];
-    mentions?: Mention[];
-    parentMessageID?: string;
-    threadReplyCount?: number;
-    threadParticipants?: string[];
-    lastThreadReplyAt?: number;
-    isEdited?: boolean;
-    editedAt?: number;
-    isDeleted?: boolean;
-    deletedAt?: number;
-    isPinned?: boolean;
-    pinnedAt?: number;
-    pinnedBy?: string;
-}
-
-interface PinnedMessage {
-    pinID: string;
-    messageID: string;
-    favorRequestID: string;
-    pinnedBy: string;
-    pinnedAt: string;
-    expiresAt?: string;
-    messagePreview: string;
-    messageType?: 'text' | 'file' | 'voice' | 'gif' | 'sticker' | 'meeting';
-    senderID: string;
-}
-
-interface Bookmark {
-    bookmarkID: string;
-    userID: string;
-    type: 'message' | 'file' | 'task' | 'link';
-    referenceID: string;
-    favorRequestID?: string;
-    title: string;
-    preview?: string;
-    note?: string;
-    createdAt: string;
-    tags?: string[];
-}
-
-interface UserPresence {
-    userID: string;
-    status: 'online' | 'away' | 'dnd' | 'offline';
-    lastSeen: string;
-    customStatus?: {
-        emoji: string;
-        text: string;
-        expiresAt?: string;
-    };
-}
-
-interface ScheduledMessage {
-    scheduledMessageID: string;
-    favorRequestID: string;
-    senderID: string;
-    content: string;
-    scheduledFor: string;
-    type: 'text' | 'file';
-    fileKey?: string;
-    status: 'scheduled' | 'sent' | 'cancelled' | 'failed';
-    createdAt: string;
-    sentAt?: string;
-}
-
-interface Channel {
-    channelID: string;
-    name: string;
-    description?: string;
-    topic?: string;
-    type: 'public' | 'private';
-    createdBy: string;
-    createdAt: string;
-    updatedAt: string;
-    memberCount: number;
-    members: string[];
-    pinnedMessages?: string[];
-    isArchived: boolean;
-    archivedAt?: string;
-    archivedBy?: string;
-    lastActivityAt?: string;
-}
-
-// ========================================
-// ENVIRONMENT & SDK SETUP
-// ========================================
-
-const REGION = process.env.AWS_REGION || 'us-east-1';
-const MESSAGES_TABLE = process.env.MESSAGES_TABLE || '';
-const FAVORS_TABLE = process.env.FAVORS_TABLE || '';
-const CONNECTIONS_TABLE = process.env.CONNECTIONS_TABLE || '';
-
-// New tables for Slack features
-const REACTIONS_TABLE = process.env.REACTIONS_TABLE || `${MESSAGES_TABLE}-reactions`;
-const PINS_TABLE = process.env.PINS_TABLE || `${FAVORS_TABLE}-pins`;
+const FAVORS_TABLE = env.FAVORS_TABLE;
+const CONNECTIONS_TABLE = env.CONNECTIONS_TABLE;
 const BOOKMARKS_TABLE = process.env.BOOKMARKS_TABLE || 'comm-bookmarks';
-const PRESENCE_TABLE = process.env.PRESENCE_TABLE || `${CONNECTIONS_TABLE}-presence`;
 const CHANNELS_TABLE = process.env.CHANNELS_TABLE || 'comm-channels';
 const SCHEDULED_MESSAGES_TABLE = process.env.SCHEDULED_MESSAGES_TABLE || 'comm-scheduled-messages';
-
-const ddb = DynamoDBDocumentClient.from(new DynamoDBClient({ region: REGION }));
-
-// ========================================
-// HELPER FUNCTIONS
-// ========================================
-
-async function sendToClient(
-    apiGwManagement: ApiGatewayManagementApiClient,
-    connectionId: string,
-    payload: object
-): Promise<void> {
-    try {
-        await apiGwManagement.send(new PostToConnectionCommand({
-            ConnectionId: connectionId,
-            Data: Buffer.from(JSON.stringify(payload)),
-        }));
-    } catch (error: any) {
-        if (error.statusCode === 410) {
-            console.log(`Stale connection detected: ${connectionId}`);
-        } else {
-            console.error(`Failed to send to ${connectionId}:`, error);
-        }
-    }
-}
-
-async function getConnectionIdForUser(userID: string): Promise<string | null> {
-    try {
-        const result = await ddb.send(new QueryCommand({
-            TableName: CONNECTIONS_TABLE,
-            IndexName: 'UserIDIndex',
-            KeyConditionExpression: 'userID = :uid',
-            ExpressionAttributeValues: { ':uid': userID },
-            Limit: 1,
-        }));
-        return result.Items?.[0]?.connectionId as string | null;
-    } catch {
-        return null;
-    }
-}
-
-async function broadcastToConversation(
-    apiGwManagement: ApiGatewayManagementApiClient,
-    favorRequestID: string,
-    payload: object,
-    excludeUserID?: string
-): Promise<void> {
-    // Get favor to find participants
-    const favorResult = await ddb.send(new GetCommand({
-        TableName: FAVORS_TABLE,
-        Key: { favorRequestID },
-    }));
-
-    const favor = favorResult.Item;
-    if (!favor) return;
-
-    const participants: string[] = [];
-    if (favor.senderID) participants.push(favor.senderID);
-    if (favor.receiverID) participants.push(favor.receiverID);
-    if (favor.teamID && favor.members) {
-        participants.push(...favor.members);
-    }
-
-    const uniqueParticipants = [...new Set(participants)].filter(p => p !== excludeUserID);
-
-    for (const userID of uniqueParticipants) {
-        const connectionId = await getConnectionIdForUser(userID);
-        if (connectionId) {
-            await sendToClient(apiGwManagement, connectionId, payload);
-        }
-    }
-}
 
 // ========================================
 // REACTIONS HANDLERS
@@ -243,14 +69,7 @@ export async function handleAddReaction(
     const reactionKey = `${messageID}#${emojiCode}`;
 
     try {
-        // First, find the message by querying all messages in this conversation
-        const queryResult = await ddb.send(new QueryCommand({
-            TableName: MESSAGES_TABLE,
-            KeyConditionExpression: 'favorRequestID = :fid',
-            ExpressionAttributeValues: { ':fid': favorRequestID },
-        }));
-
-        const message = queryResult.Items?.find((m: any) => m.messageID === messageID) as MessageData;
+        const message = await getMessageByID(messageID);
 
         if (!message) {
             await sendToClient(apiGwManagement, connectionId, {
@@ -260,7 +79,6 @@ export async function handleAddReaction(
             return;
         }
 
-        // Get existing reactions and update
         let reactions = message.reactions || [];
 
         const existingIndex = reactions.findIndex(r => r.emojiCode === emojiCode);
@@ -320,14 +138,7 @@ export async function handleRemoveReaction(
     const { messageID, favorRequestID, emojiCode } = payload;
 
     try {
-        // Get the message
-        const queryResult = await ddb.send(new QueryCommand({
-            TableName: MESSAGES_TABLE,
-            KeyConditionExpression: 'favorRequestID = :frid',
-            ExpressionAttributeValues: { ':frid': favorRequestID },
-        }));
-
-        const message = queryResult.Items?.find((m: any) => m.messageID === messageID) as MessageData;
+        const message = await getMessageByID(messageID);
         if (!message) {
             await sendToClient(apiGwManagement, connectionId, { type: 'error', message: 'Message not found' });
             return;
@@ -417,14 +228,7 @@ export async function handleReplyToThread(
             Item: threadReply,
         }));
 
-        // Update parent message's thread info
-        const queryResult = await ddb.send(new QueryCommand({
-            TableName: MESSAGES_TABLE,
-            KeyConditionExpression: 'favorRequestID = :frid',
-            ExpressionAttributeValues: { ':frid': favorRequestID },
-        }));
-
-        const parentMessage = queryResult.Items?.find((m: any) => m.messageID === parentMessageID) as MessageData;
+        const parentMessage = await getMessageByID(parentMessageID);
 
         if (parentMessage) {
             const existingParticipants = parentMessage.threadParticipants || [];
@@ -524,17 +328,9 @@ export async function handleEditMessage(
     try {
         let message: MessageData | undefined;
 
-        // Try to find message by messageID first
         if (messageID) {
-            const queryResult = await ddb.send(new QueryCommand({
-                TableName: MESSAGES_TABLE,
-                KeyConditionExpression: 'favorRequestID = :frid',
-                ExpressionAttributeValues: { ':frid': favorRequestID },
-            }));
-            message = queryResult.Items?.find((m: any) => m.messageID === messageID) as MessageData | undefined;
+            message = await getMessageByID(messageID);
         }
-
-        // Fallback: direct lookup by composite key (favorRequestID + timestamp)
         if (!message && timestamp) {
             const getResult = await ddb.send(new GetCommand({
                 TableName: MESSAGES_TABLE,
@@ -596,14 +392,7 @@ export async function handleDeleteMessage(
     const { messageID, favorRequestID } = payload;
 
     try {
-        // Find and verify the message
-        const queryResult = await ddb.send(new QueryCommand({
-            TableName: MESSAGES_TABLE,
-            KeyConditionExpression: 'favorRequestID = :frid',
-            ExpressionAttributeValues: { ':frid': favorRequestID },
-        }));
-
-        const message = queryResult.Items?.find((m: any) => m.messageID === messageID) as MessageData;
+        const message = await getMessageByID(messageID);
 
         if (!message) {
             await sendToClient(apiGwManagement, connectionId, { type: 'error', message: 'Message not found' });
@@ -659,15 +448,10 @@ export async function handleTypingStart(
 ): Promise<void> {
     const { favorRequestID } = payload;
 
-    // Get user's name from connections table
-    const connResult = await ddb.send(new GetCommand({
-        TableName: CONNECTIONS_TABLE,
-        Key: { connectionId },
-    }));
+    // Use cached getSenderInfo (60s TTL) instead of a fresh GetCommand
+    const senderInfo = await _getSenderInfo(connectionId);
+    const userName = (senderInfo as any)?.userName || 'Someone';
 
-    const userName = connResult.Item?.userName || 'Someone';
-
-    // Broadcast to conversation (exclude sender)
     await broadcastToConversation(apiGwManagement, favorRequestID, {
         type: 'typingStart',
         favorRequestID,
@@ -729,34 +513,24 @@ export async function handleGetPresence(
     apiGwManagement: ApiGatewayManagementApiClient
 ): Promise<void> {
     const { userIDs } = payload;
+    const uniqueIDs = [...new Set(userIDs)].slice(0, 50);
 
-    const presences: UserPresence[] = [];
+    // Use connection-service batch API (has 60s cache, avoids N individual queries)
+    const connectionsMap = await batchGetConnectionsByUserIDs(uniqueIDs);
 
-    for (const userID of userIDs.slice(0, 50)) { // Limit to 50 users
-        const connId = await getConnectionIdForUser(userID);
-
-        if (connId) {
-            const result = await ddb.send(new GetCommand({
-                TableName: CONNECTIONS_TABLE,
-                Key: { connectionId: connId },
-            }));
-
-            if (result.Item) {
-                presences.push({
-                    userID,
-                    status: result.Item.presenceStatus || 'online',
-                    lastSeen: result.Item.lastSeen || result.Item.connectedAt || new Date().toISOString(),
-                    customStatus: result.Item.customStatus,
-                });
-            }
-        } else {
-            presences.push({
+    const presences: UserPresence[] = uniqueIDs.map(userID => {
+        const conns = connectionsMap.get(userID);
+        if (conns && conns.length > 0) {
+            const conn = conns[0] as any;
+            return {
                 userID,
-                status: 'offline',
-                lastSeen: '',
-            });
+                status: conn.presenceStatus || 'online',
+                lastSeen: conn.lastSeen || conn.connectedAt || new Date().toISOString(),
+                customStatus: conn.customStatus,
+            };
         }
-    }
+        return { userID, status: 'offline' as const, lastSeen: '' };
+    });
 
     await sendToClient(apiGwManagement, connectionId, {
         type: 'presenceList',
@@ -781,17 +555,9 @@ export async function handlePinMessage(
     try {
         let message: MessageData | undefined;
 
-        // Try to find by messageID first
         if (messageID) {
-            const queryResult = await ddb.send(new QueryCommand({
-                TableName: MESSAGES_TABLE,
-                KeyConditionExpression: 'favorRequestID = :frid',
-                ExpressionAttributeValues: { ':frid': favorRequestID },
-            }));
-            message = queryResult.Items?.find((m: any) => m.messageID === messageID) as MessageData | undefined;
+            message = await getMessageByID(messageID);
         }
-
-        // Fallback: direct lookup by composite key (favorRequestID + timestamp)
         if (!message && timestamp) {
             const getResult = await ddb.send(new GetCommand({
                 TableName: MESSAGES_TABLE,
@@ -859,13 +625,7 @@ export async function handleUnpinMessage(
     const { messageID, favorRequestID } = payload;
 
     try {
-        const queryResult = await ddb.send(new QueryCommand({
-            TableName: MESSAGES_TABLE,
-            KeyConditionExpression: 'favorRequestID = :frid',
-            ExpressionAttributeValues: { ':frid': favorRequestID },
-        }));
-
-        const message = queryResult.Items?.find((m: any) => m.messageID === messageID) as MessageData;
+        const message = await getMessageByID(messageID);
 
         if (!message) {
             await sendToClient(apiGwManagement, connectionId, { type: 'error', message: 'Message not found' });
@@ -1078,39 +838,52 @@ export async function handleSearch(
 
         if (types.includes('message')) {
             // Search in user's conversations
+            // Use SenderIndex (senderID partition key) — matches comm-stack GSI definition
             const favorsResult = await ddb.send(new QueryCommand({
                 TableName: FAVORS_TABLE,
-                IndexName: 'UserIDIndex',
-                KeyConditionExpression: 'userID = :userID',
+                IndexName: 'SenderIndex',
+                KeyConditionExpression: 'senderID = :userID',
                 ExpressionAttributeValues: { ':userID': senderID },
+                ScanIndexForward: false,
                 Limit: 20,
             }));
 
-            for (const favor of favorsResult.Items || []) {
-                if (inConversation && favor.favorRequestID !== inConversation) continue;
+            const favors = favorsResult.Items || [];
+            if (inConversation) {
+                const filtered = favors.filter((f: any) => f.favorRequestID === inConversation);
+                favors.length = 0;
+                favors.push(...filtered);
+            }
 
-                const messagesResult = await ddb.send(new QueryCommand({
-                    TableName: MESSAGES_TABLE,
-                    KeyConditionExpression: 'favorRequestID = :frid',
-                    FilterExpression: 'contains(content, :query)',
-                    ExpressionAttributeValues: {
-                        ':frid': favor.favorRequestID,
-                        ':query': query,
-                    },
-                    Limit: 10,
-                }));
+            // Parallel message search across all matching conversations
+            const messageSearchResults = await Promise.all(
+                favors.map(async (favor: any) => {
+                    const messagesResult = await ddb.send(new QueryCommand({
+                        TableName: MESSAGES_TABLE,
+                        KeyConditionExpression: 'favorRequestID = :frid',
+                        FilterExpression: 'contains(content, :query)',
+                        ExpressionAttributeValues: {
+                            ':frid': favor.favorRequestID,
+                            ':query': query,
+                        },
+                        Limit: 10,
+                    }));
+                    return messagesResult.Items || [];
+                })
+            );
 
-                for (const msg of messagesResult.Items || []) {
+            for (const msgs of messageSearchResults) {
+                for (const msg of msgs) {
                     if (from && msg.senderID !== from) continue;
 
                     results.push({
                         type: 'message',
                         id: msg.messageID || `${msg.favorRequestID}-${msg.timestamp}`,
-                        title: msg.content.slice(0, 50),
+                        title: (msg.content as string).slice(0, 50),
                         preview: msg.content,
                         favorRequestID: msg.favorRequestID,
                         senderName: msg.senderID,
-                        timestamp: new Date(msg.timestamp).toISOString(),
+                        timestamp: new Date(msg.timestamp as number).toISOString(),
                         highlights: [`<mark>${query}</mark>`],
                     });
                 }
@@ -1295,19 +1068,18 @@ export async function handleCreateChannel(
             Item: channel,
         }));
 
-        // Notify all members
-        for (const memberID of allMembers) {
-            const connId = await getConnectionIdForUser(memberID);
-            if (connId) {
-                await sendToClient(apiGwManagement, connId, {
+        // Notify all members in parallel (batch-fetch connections then broadcast)
+        const connMap = await batchGetConnectionIdForUsers(allMembers);
+        await Promise.all(
+            allMembers.map(memberID => {
+                const connId = connMap.get(memberID);
+                if (!connId) return Promise.resolve();
+                return sendToClient(apiGwManagement, connId, {
                     type: 'channelCreated',
-                    channel: {
-                        ...channel,
-                        isMember: true,
-                    },
+                    channel: { ...channel, isMember: true },
                 });
-            }
-        }
+            }),
+        );
 
     } catch (error) {
         console.error('Error creating channel:', error);
@@ -1438,25 +1210,46 @@ export async function handleListChannels(
     const { type, includeArchived = false } = payload;
 
     try {
-        // For now, scan table (in production, use GSI)
-        const { ScanCommand: DDBScanCommand } = await import('@aws-sdk/lib-dynamodb');
+        // Use CreatedByIndex GSI for the user's own channels, then supplement with public channels
+        // via IsArchivedTypeIndex GSI. This avoids a full table scan.
+        const exprNames: Record<string, string> = { '#n': 'name', '#ct': 'type' };
 
-        const result = await ddb.send(new DDBScanCommand({
+        // Query 1: Channels the user created (via CreatedByIndex GSI)
+        const createdByPromise = ddb.send(new QueryCommand({
             TableName: CHANNELS_TABLE,
-            FilterExpression: includeArchived ? undefined : 'isArchived = :notArchived',
-            ExpressionAttributeValues: includeArchived ? undefined : {
-                ':notArchived': false,
-            },
+            IndexName: 'CreatedByIndex',
+            KeyConditionExpression: 'createdBy = :uid',
+            ExpressionAttributeValues: { ':uid': senderID },
+            ProjectionExpression: 'channelID, #n, description, #ct, memberCount, members, isArchived',
+            ExpressionAttributeNames: exprNames,
         }));
 
-        let channels = (result.Items || []) as Channel[];
+        // Query 2: Public non-archived channels (via IsArchivedTypeIndex GSI)
+        const publicPromise = ddb.send(new QueryCommand({
+            TableName: CHANNELS_TABLE,
+            IndexName: 'IsArchivedTypeIndex',
+            KeyConditionExpression: 'isArchivedStr = :notArchived AND begins_with(#ct, :pub)',
+            ExpressionAttributeValues: { ':notArchived': 'false', ':pub': 'public' },
+            ExpressionAttributeNames: { ...exprNames, '#n': 'name' },
+            ProjectionExpression: 'channelID, #n, description, #ct, memberCount, members, isArchived',
+        }));
 
-        // Filter by type if specified
-        if (type) {
-            channels = channels.filter(c => c.type === type);
+        const [createdByResult, publicResult] = await Promise.all([createdByPromise, publicPromise]);
+
+        // Merge and deduplicate
+        const channelMap = new Map<string, Channel>();
+        for (const item of [...(createdByResult.Items || []), ...(publicResult.Items || [])]) {
+            const ch = item as Channel;
+            channelMap.set(ch.channelID, ch);
         }
 
-        // Filter: show public channels + private channels user is member of
+        let channels = Array.from(channelMap.values());
+
+        // Apply filters
+        if (!includeArchived) channels = channels.filter(c => !c.isArchived);
+        if (type) channels = channels.filter(c => c.type === type);
+
+        // Show public channels + private channels user is a member of
         channels = channels.filter(c =>
             c.type === 'public' || c.members.includes(senderID)
         );
@@ -1522,17 +1315,19 @@ export async function handleArchiveChannel(
             },
         }));
 
-        // Notify all members
-        for (const memberID of channel.members) {
-            const connId = await getConnectionIdForUser(memberID);
-            if (connId) {
-                await sendToClient(apiGwManagement, connId, {
+        // Notify all members in parallel
+        const connMap = await batchGetConnectionIdForUsers(channel.members);
+        await Promise.all(
+            channel.members.map(memberID => {
+                const connId = connMap.get(memberID);
+                if (!connId) return Promise.resolve();
+                return sendToClient(apiGwManagement, connId, {
                     type: 'channelArchived',
                     channelID,
                     archivedBy: senderID,
                 });
-            }
-        }
+            }),
+        );
 
     } catch (error) {
         console.error('Error archiving channel:', error);

@@ -1,19 +1,19 @@
 import { APIGatewayProxyEvent, APIGatewayProxyResult } from 'aws-lambda';
-import { DynamoDBClient } from '@aws-sdk/client-dynamodb';
-import { DynamoDBDocumentClient, GetCommand, PutCommand, UpdateCommand, QueryCommand, DeleteCommand, ScanCommand, BatchWriteCommand } from '@aws-sdk/lib-dynamodb';
+import { GetCommand, PutCommand, UpdateCommand, QueryCommand, DeleteCommand, ScanCommand, BatchWriteCommand, BatchGetCommand } from '@aws-sdk/lib-dynamodb';
 import { v4 as uuidv4 } from 'uuid';
 import { createHash, randomBytes, timingSafeEqual } from 'crypto';
 import { AuditService } from './audit-service';
-import { createAttendee, createMeetingForScheduledMeeting, joinMeeting as joinChimeMeeting } from './chime-meeting-manager';
+import { ddb, env } from './shared';
 
-// Environment Variables
-const REGION = process.env.AWS_REGION || 'us-east-1';
-const FAVORS_TABLE = process.env.FAVORS_TABLE || '';
-const TEAMS_TABLE = process.env.TEAMS_TABLE || '';
-const MEETINGS_TABLE = process.env.MEETINGS_TABLE || '';
-const MESSAGES_TABLE = process.env.MESSAGES_TABLE || '';
-const USER_PREFERENCES_TABLE = process.env.USER_PREFERENCES_TABLE || '';
-const LOG_LEVEL = process.env.LOG_LEVEL || 'INFO';
+// Chime meeting manager is lazy-loaded (only needed for meeting join/create, not every request)
+const lazyChimeManager = () => import('./chime-meeting-manager');
+
+const FAVORS_TABLE = env.FAVORS_TABLE;
+const TEAMS_TABLE = env.TEAMS_TABLE;
+const MEETINGS_TABLE = env.MEETINGS_TABLE;
+const MESSAGES_TABLE = env.MESSAGES_TABLE;
+const USER_PREFERENCES_TABLE = env.USER_PREFERENCES_TABLE;
+const USER_TEAMS_TABLE = env.USER_TEAMS_TABLE;
 
 // Public meeting link base (fixed domain default)
 const PUBLIC_APP_BASE_URL = process.env.PUBLIC_APP_BASE_URL || 'https://todaysdentalinsights.com';
@@ -47,7 +47,7 @@ const LOG_LEVEL_PRIORITY: Record<LogLevel, number> = {
  */
 const log = {
     _shouldLog(level: LogLevel): boolean {
-        const configuredLevel = (LOG_LEVEL.toUpperCase() as LogLevel) || 'INFO';
+        const configuredLevel = ((process.env.LOG_LEVEL || 'INFO').toUpperCase() as LogLevel);
         return LOG_LEVEL_PRIORITY[level] >= LOG_LEVEL_PRIORITY[configuredLevel];
     },
 
@@ -165,104 +165,11 @@ const log = {
     },
 };
 
-// System Modules (from shared/types/user.ts)
-const SYSTEM_MODULES = ['HR', 'Accounting', 'Operations', 'Finance', 'Marketing', 'Legal', 'IT'] as const;
-type SystemModule = typeof SYSTEM_MODULES[number];
-
-// SDK Client
-const ddb = DynamoDBDocumentClient.from(new DynamoDBClient({ region: REGION }));
-
-// Types
-type TaskStatus = 'pending' | 'active' | 'in_progress' | 'completed' | 'rejected' | 'forwarded' | 'deleted';
-type TaskPriority = 'Low' | 'Medium' | 'High' | 'Urgent';
-
-interface ForwardRecord {
-    forwardID: string;
-    fromUserID: string;
-    toUserID: string;
-    forwardedAt: string;
-    message?: string;
-    deadline?: string;
-    requireAcceptance: boolean;
-    status: 'pending' | 'accepted' | 'rejected';
-    acceptedAt?: string;
-    rejectedAt?: string;
-    rejectionReason?: string;
-}
-
-interface FavorRequest {
-    favorRequestID: string;
-    senderID: string;
-    receiverID?: string;
-    teamID?: string;
-    title?: string;
-    description?: string;
-    status: TaskStatus;
-    priority: TaskPriority;
-    category?: SystemModule;
-    tags?: string[];
-    forwardingChain?: ForwardRecord[];
-    currentAssigneeID?: string;
-    requiresAcceptance?: boolean;
-    completedAt?: string;
-    completionNotes?: string;
-    rejectionReason?: string;
-    rejectedAt?: string;
-    createdAt: string;
-    updatedAt: string;
-    userID: string;
-    requestType: 'General' | 'Assign Task' | 'IT Ticket' | 'Ask a Favor' | 'Other';
-    unreadCount: number;
-    initialMessage: string;
-    deadline?: string;
-    isMainGroupChat?: boolean;
-
-    // WhatsApp sidebar preview fields
-    lastMessage?: string;
-    lastMessageAt?: string;
-    lastMessageSenderID?: string;
-
-    // Per-user deletion: list of userIDs who have deleted this conversation from their view
-    deletedBy?: string[];
-
-    // Task badge: true when this conversation was created via task assignment
-    isTask?: boolean;
-
-    // Forwarded badge: true when the task has been forwarded
-    isForwarded?: boolean;
-    // Deterministic participant key for dedup: sorted userIDs joined with '#'
-    participantKey?: string;
-}
-
-interface Team {
-    teamID: string;
-    ownerID: string;
-    name: string;
-    description?: string;
-    members: string[];
-    admins?: string[];  // Users with admin privileges
-    adminOnlyMessages?: boolean;  // Only admins can send messages
-    groupImageUrl?: string;       // Shared group profile image (S3 URL)
-    category?: SystemModule;
-    createdAt: string;
-    updatedAt: string;
-}
-
-interface Meeting {
-    meetingID: string;
-    conversationID: string;
-    title?: string;
-    description: string;
-    startTime: string;
-    endTime?: string;
-    location?: string;
-    meetingLink?: string;
-    organizerID: string;
-    participants: string[];
-    status: 'scheduled' | 'completed' | 'cancelled';
-    createdAt: string;
-    updatedAt: string;
-}
+import { SYSTEM_MODULES, getUserTeamIDsFast, syncUserTeamsMembership } from './shared';
+import type {
+    TaskStatus, TaskPriority, SystemModule,
+    ForwardRecord, FavorRequest, Team, Meeting,
+} from './shared';
 
 interface MeetingRecord extends Meeting {
     // Used for unauthenticated guest join (do not expose the hash to clients unless needed)
@@ -275,7 +182,7 @@ interface MeetingRecord extends Meeting {
 }
 
 // Helper functions
-function response(statusCode: number, body: any): APIGatewayProxyResult {
+function response(statusCode: number, body: any, extraHeaders?: Record<string, string>): APIGatewayProxyResult {
     return {
         statusCode,
         headers: {
@@ -283,6 +190,7 @@ function response(statusCode: number, body: any): APIGatewayProxyResult {
             'Access-Control-Allow-Origin': '*',
             'Access-Control-Allow-Headers': 'Content-Type,Authorization',
             'Access-Control-Allow-Methods': 'GET,POST,PUT,DELETE,OPTIONS',
+            ...extraHeaders,
         },
         body: JSON.stringify(body),
     };
@@ -453,7 +361,7 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
             const favorRequestID = pathParameters?.favorRequestID || path.split('/')[3];
             log.info('Routing to getConversationComplete', { ...logCtx, favorRequestID });
             routeMatched = true;
-            result = await getConversationComplete(authedUserID, favorRequestID, logCtx);
+            result = await getConversationComplete(authedUserID, favorRequestID, queryStringParameters, logCtx);
         } else if (path.match(/^\/api\/conversations\/[^/]+\/user-details$/)) {
             const favorRequestID = pathParameters?.favorRequestID || path.split('/')[3];
             log.info('Routing to getConversationUserDetails', { ...logCtx, favorRequestID });
@@ -584,7 +492,11 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
         }
 
         // User Preferences endpoints
-        else if (path.match(/^\/api\/preferences\/[^/]+$/) && httpMethod === 'GET') {
+        else if (path.match(/^\/api\/preferences\/batch$/) && httpMethod === 'POST') {
+            log.info('Routing to batchGetUserPreferences', logCtx);
+            routeMatched = true;
+            result = await restBatchGetUserPreferences(authedUserID, parsedBody, logCtx);
+        } else if (path.match(/^\/api\/preferences\/[^/]+$/) && httpMethod === 'GET') {
             const rawUserID = pathParameters?.userID || path.split('/')[3];
             const targetUserID = decodeURIComponent(rawUserID);
             log.info('Routing to getPublicUserPreferences', { ...logCtx, targetUserID });
@@ -752,13 +664,27 @@ async function searchConversations(userID: string, params: any, logCtx?: LogCont
     const total = conversations.length;
     const paginatedConversations = conversations.slice(Number(offset), Number(offset) + Number(limit));
 
-    log.info('searchConversations completed', { ...fnCtx, total, returned: paginatedConversations.length, durationMs: Date.now() - fnStart });
+    // Enrich with profile images
+    const searchParticipantIDs = new Set<string>();
+    for (const conv of paginatedConversations) {
+        if (conv.senderID) searchParticipantIDs.add(conv.senderID);
+        if (conv.receiverID) searchParticipantIDs.add(conv.receiverID);
+    }
+    const searchProfileMap = await _batchGetProfileImages([...searchParticipantIDs]);
+
+    const enrichedResults = paginatedConversations.map(conv => ({
+        ...conv,
+        senderProfileImage: conv.senderID ? searchProfileMap.get(conv.senderID) || null : null,
+        receiverProfileImage: conv.receiverID ? searchProfileMap.get(conv.receiverID) || null : null,
+    }));
+
+    log.info('searchConversations completed', { ...fnCtx, total, returned: enrichedResults.length, durationMs: Date.now() - fnStart });
 
     return response(200, {
         success: true,
-        conversations: paginatedConversations,
+        conversations: enrichedResults,
         total,
-        hasMore: Number(offset) + paginatedConversations.length < total,
+        hasMore: Number(offset) + enrichedResults.length < total,
     });
 }
 
@@ -852,7 +778,7 @@ async function getConversationProfiles(userID: string, params: any, logCtx?: Log
     });
 }
 
-async function getConversationComplete(userID: string, favorRequestID: string, logCtx?: LogContext): Promise<APIGatewayProxyResult> {
+async function getConversationComplete(userID: string, favorRequestID: string, queryParams?: Record<string, string | undefined> | null, logCtx?: LogContext): Promise<APIGatewayProxyResult> {
     const fnStart = Date.now();
     const fnCtx = { ...logCtx, function: 'getConversationComplete', favorRequestID };
 
@@ -895,22 +821,38 @@ async function getConversationComplete(userID: string, favorRequestID: string, l
         }
     }
 
-    // Get messages
-    const msgDbStart = Date.now();
-    log.dbOperation('Query', MESSAGES_TABLE, { favorRequestID }, fnCtx);
-    const messagesResult = await ddb.send(new QueryCommand({
-        TableName: MESSAGES_TABLE,
-        KeyConditionExpression: 'favorRequestID = :id',
-        ExpressionAttributeValues: { ':id': favorRequestID },
-        ScanIndexForward: true,
-    }));
-    log.dbResult('Query', MESSAGES_TABLE, messagesResult.Items?.length || 0, Date.now() - msgDbStart, fnCtx);
+    // Get messages with pagination (default 200, supports cursor-based)
+    const msgLimit = parseInt(queryParams?.msgLimit || '200', 10);
+    const lastTimestamp = queryParams?.lastTimestamp ? Number(queryParams.lastTimestamp) : undefined;
 
-    const files = (messagesResult.Items || []).filter((m: any) => m.type === 'file');
+    const msgDbStart = Date.now();
+    log.dbOperation('Query', MESSAGES_TABLE, { favorRequestID, msgLimit, lastTimestamp }, fnCtx);
+
+    const msgQueryParams: any = {
+        TableName: MESSAGES_TABLE,
+        KeyConditionExpression: lastTimestamp
+            ? 'favorRequestID = :id AND #ts <= :ts'
+            : 'favorRequestID = :id',
+        ExpressionAttributeValues: {
+            ':id': favorRequestID,
+            ...(lastTimestamp && { ':ts': lastTimestamp }),
+        },
+        ...(lastTimestamp && { ExpressionAttributeNames: { '#ts': 'timestamp' } }),
+        ScanIndexForward: false,
+        Limit: msgLimit,
+    };
+
+    const messagesResult = await ddb.send(new QueryCommand(msgQueryParams));
+    const messages = (messagesResult.Items || []).reverse();
+    log.dbResult('Query', MESSAGES_TABLE, messages.length, Date.now() - msgDbStart, fnCtx);
+
+    const files = messages.filter((m: any) => m.type === 'file');
+    const oldestTimestamp = messages.length > 0 ? (messages[0] as any).timestamp : undefined;
     log.info('getConversationComplete completed', {
         ...fnCtx,
-        messageCount: messagesResult.Items?.length || 0,
+        messageCount: messages.length,
         fileCount: files.length,
+        hasMore: messages.length === msgLimit,
         durationMs: Date.now() - fnStart
     });
 
@@ -918,10 +860,12 @@ async function getConversationComplete(userID: string, favorRequestID: string, l
         success: true,
         conversation: favor,
         participants: [favor.senderID, favor.receiverID, favor.currentAssigneeID].filter(Boolean),
-        tasks: [favor], // Each favor is a task
+        tasks: [favor],
         files,
+        hasMoreMessages: messages.length === msgLimit,
+        oldestTimestamp,
         statistics: {
-            totalMessages: messagesResult.Items?.length || 0,
+            totalMessages: messages.length,
             totalFiles: files.length,
         },
     });
@@ -1375,19 +1319,13 @@ async function getConversations(userID: string, params: any, logCtx?: LogContext
     let conversations = [...(sentResult.Items || []), ...(recvResult.Items || []), ...(assigneeResult.Items || [])] as FavorRequest[];
     log.flowCount('getConversations', 'rawResults', conversations.length, fnCtx);
 
-    // Step 2: Fetch group conversations via TeamIndex (matches WS fetchRequests logic)
+    // Step 2: Fetch group conversations via TeamIndex using fast denormalized lookup
     if (TEAMS_TABLE) {
         try {
-            const teamScanStart = Date.now();
-            log.dbOperation('Scan', TEAMS_TABLE, { filter: 'contains(members, userID)' }, fnCtx);
-            const teamsResult = await ddb.send(new ScanCommand({
-                TableName: TEAMS_TABLE,
-                FilterExpression: 'contains(members, :uid)',
-                ExpressionAttributeValues: { ':uid': userID },
-                ProjectionExpression: 'teamID',
-            }));
-            const teamIDs = (teamsResult.Items || []).map((item: any) => item.teamID as string);
-            log.dbResult('Scan', TEAMS_TABLE, teamIDs.length, Date.now() - teamScanStart, fnCtx);
+            const teamLookupStart = Date.now();
+            log.dbOperation('Query', 'UserTeamsTable', { userID }, fnCtx);
+            const teamIDs = await getUserTeamIDsFast(userID);
+            log.dbResult('Query', 'UserTeamsTable', teamIDs.length, Date.now() - teamLookupStart, fnCtx);
 
             if (teamIDs.length > 0) {
                 const teamQueryStart = Date.now();
@@ -1444,14 +1382,55 @@ async function getConversations(userID: string, params: any, logCtx?: LogContext
     const total = conversations.length;
     const paginatedConversations = conversations.slice(Number(offset), Number(offset) + Number(limit));
 
-    log.info('getConversations completed', { ...fnCtx, total, returned: paginatedConversations.length, durationMs: Date.now() - fnStart });
+    // Enrich paginated results with participant profile images (batch fetch)
+    const participantIDs = new Set<string>();
+    for (const conv of paginatedConversations) {
+        if (conv.senderID) participantIDs.add(conv.senderID);
+        if (conv.receiverID) participantIDs.add(conv.receiverID);
+    }
+    const profileImagesMap = await _batchGetProfileImages([...participantIDs]);
+
+    const enrichedConversations = paginatedConversations.map(conv => ({
+        ...conv,
+        senderProfileImage: conv.senderID ? profileImagesMap.get(conv.senderID) || null : null,
+        receiverProfileImage: conv.receiverID ? profileImagesMap.get(conv.receiverID) || null : null,
+    }));
+
+    log.info('getConversations completed', { ...fnCtx, total, returned: enrichedConversations.length, durationMs: Date.now() - fnStart });
 
     return response(200, {
         success: true,
-        conversations: paginatedConversations,
+        conversations: enrichedConversations,
         total,
-        hasMore: Number(offset) + paginatedConversations.length < total,
+        hasMore: Number(offset) + enrichedConversations.length < total,
     });
+}
+
+/**
+ * Batch-fetch profile images for a list of userIDs from UserPreferences table.
+ * Returns Map<userID, profileImageUrl>.
+ */
+async function _batchGetProfileImages(userIDs: string[]): Promise<Map<string, string>> {
+    const result = new Map<string, string>();
+    if (!USER_PREFERENCES_TABLE || userIDs.length === 0) return result;
+
+    const unique = [...new Set(userIDs)].slice(0, 100);
+    try {
+        const batchResult = await ddb.send(new BatchGetCommand({
+            RequestItems: {
+                [USER_PREFERENCES_TABLE]: {
+                    Keys: unique.map(uid => ({ userID: uid })),
+                    ProjectionExpression: 'userID, profileImage',
+                },
+            },
+        }));
+        for (const item of batchResult.Responses?.[USER_PREFERENCES_TABLE] || []) {
+            if (item.profileImage) result.set(item.userID as string, item.profileImage as string);
+        }
+    } catch (e) {
+        log.warn('Failed to batch-fetch profile images', { error: (e as Error).message });
+    }
+    return result;
 }
 
 // ========================================
@@ -1545,8 +1524,8 @@ async function getTasksByStatus(userID: string, params: any, logCtx?: LogContext
         byCategory: {} as Record<string, number>,
     };
 
-    SYSTEM_MODULES.forEach(m => {
-        stats.byCategory[m] = items.filter(i => i.category === m).length;
+    SYSTEM_MODULES.forEach((m: string) => {
+        stats.byCategory[m] = items.filter((i: any) => i.category === m).length;
     });
 
     // Paginate
@@ -2343,7 +2322,8 @@ async function joinMeeting(userID: string, meetingID: string, body: any, logCtx?
 
     if (meetingRecord.chimeMeetingId) {
         try {
-            joinInfo = await joinChimeMeeting(meetingRecord.chimeMeetingId, userID, displayName);
+            const chime = await lazyChimeManager();
+            joinInfo = await chime.joinMeeting(meetingRecord.chimeMeetingId, userID, displayName);
         } catch (err: any) {
             if (err?.name === 'NotFoundException') {
                 log.warn('Stored Chime meeting not found; recreating', { ...fnCtx, chimeMeetingId: meetingRecord.chimeMeetingId });
@@ -2355,8 +2335,9 @@ async function joinMeeting(userID: string, meetingID: string, body: any, logCtx?
     }
 
     if (!joinInfo) {
-        const chimeMeeting = await createMeetingForScheduledMeeting(meetingID);
-        const attendee = await createAttendee(chimeMeeting.MeetingId, userID, displayName);
+        const chime = await lazyChimeManager();
+        const chimeMeeting = await chime.createMeetingForScheduledMeeting(meetingID);
+        const attendee = await chime.createAttendee(chimeMeeting.MeetingId, userID, displayName);
         joinInfo = { meeting: chimeMeeting, attendee };
         createdNewMeeting = true;
 
@@ -2468,7 +2449,8 @@ async function publicJoinMeeting(meetingID: string, body: any, logCtx?: LogConte
 
     if (meetingRecord.chimeMeetingId) {
         try {
-            joinInfo = await joinChimeMeeting(meetingRecord.chimeMeetingId, guestUserIDBase, displayName);
+            const chime = await lazyChimeManager();
+            joinInfo = await chime.joinMeeting(meetingRecord.chimeMeetingId, guestUserIDBase, displayName);
         } catch (err: any) {
             if (err?.name === 'NotFoundException') {
                 log.warn('Stored Chime meeting not found; recreating', { ...fnCtx, chimeMeetingId: meetingRecord.chimeMeetingId });
@@ -2480,8 +2462,9 @@ async function publicJoinMeeting(meetingID: string, body: any, logCtx?: LogConte
     }
 
     if (!joinInfo) {
-        const chimeMeeting = await createMeetingForScheduledMeeting(meetingID);
-        const attendee = await createAttendee(chimeMeeting.MeetingId, guestUserIDBase, displayName);
+        const chime = await lazyChimeManager();
+        const chimeMeeting = await chime.createMeetingForScheduledMeeting(meetingID);
+        const attendee = await chime.createAttendee(chimeMeeting.MeetingId, guestUserIDBase, displayName);
         joinInfo = { meeting: chimeMeeting, attendee };
         createdNewMeeting = true;
 
@@ -2901,6 +2884,11 @@ async function createGroup(userID: string, body: any, logCtx?: LogContext): Prom
             metadata: { ownerID: userID, conversationID },
         });
 
+        // Sync denormalized UserTeams table for fast membership lookups
+        await syncUserTeamsMembership(teamID, uniqueMembers).catch(e =>
+            log.warn('Failed to sync UserTeams on createGroup', { ...fnCtx, error: String(e) })
+        );
+
         log.info('createGroup completed', { ...fnCtx, teamID, memberCount: uniqueMembers.length, conversationID, durationMs: Date.now() - startTime });
 
         return response(201, {
@@ -2936,33 +2924,66 @@ async function getGroups(userID: string, params: any, logCtx?: LogContext): Prom
 
     log.debug('Get groups params', { ...fnCtx, category, limit, offset });
 
-    // Scan for teams where user is a member
-    const dbStart = Date.now();
-    log.dbOperation('Scan', TEAMS_TABLE, { filter: 'contains(members, userID)' }, fnCtx);
-    const result = await ddb.send(new ScanCommand({
-        TableName: TEAMS_TABLE,
-        FilterExpression: 'contains(members, :uid)',
-        ExpressionAttributeValues: { ':uid': userID },
-    }));
-    log.dbResult('Scan', TEAMS_TABLE, result.Items?.length || 0, Date.now() - dbStart, fnCtx);
+    let groups: Team[];
 
-    let groups = (result.Items || []) as Team[];
+    if (USER_TEAMS_TABLE) {
+        // Fast path: query denormalized UserTeams table then BatchGet team details
+        const dbStart = Date.now();
+        log.dbOperation('Query', USER_TEAMS_TABLE, { userID }, fnCtx);
+        const utResult = await ddb.send(new QueryCommand({
+            TableName: USER_TEAMS_TABLE,
+            KeyConditionExpression: 'userID = :uid',
+            ExpressionAttributeValues: { ':uid': userID },
+            ProjectionExpression: 'teamID',
+        }));
+        const teamIDs = (utResult.Items || []).map(i => i.teamID as string);
+        log.dbResult('Query', USER_TEAMS_TABLE, teamIDs.length, Date.now() - dbStart, fnCtx);
+
+        if (teamIDs.length === 0) {
+            return response(200, { success: true, groups: [], total: 0, hasMore: false });
+        }
+
+        // BatchGet team details (DynamoDB max 100 keys per call)
+        // TeamsTable has composite key (teamID + ownerID), so we must Query each team
+        const teamPromises = teamIDs.map(tid =>
+            ddb.send(new QueryCommand({
+                TableName: TEAMS_TABLE,
+                KeyConditionExpression: 'teamID = :tid',
+                ExpressionAttributeValues: { ':tid': tid },
+                Limit: 1,
+            })).then(r => r.Items?.[0] as Team | undefined)
+        );
+        const teamResults = await Promise.all(teamPromises);
+        groups = teamResults.filter((t): t is Team => !!t);
+    } else {
+        // Fallback: scan (only if UserTeamsTable is not configured)
+        const dbStart = Date.now();
+        log.dbOperation('Scan', TEAMS_TABLE, { filter: 'contains(members, userID)' }, fnCtx);
+        const result = await ddb.send(new ScanCommand({
+            TableName: TEAMS_TABLE,
+            FilterExpression: 'contains(members, :uid)',
+            ExpressionAttributeValues: { ':uid': userID },
+        }));
+        log.dbResult('Scan', TEAMS_TABLE, result.Items?.length || 0, Date.now() - dbStart, fnCtx);
+        groups = (result.Items || []) as Team[];
+    }
+
     log.flowCount('getGroups', 'rawResults', groups.length, fnCtx);
 
-    // Filter by category
     if (category) {
         groups = groups.filter(g => g.category === category);
         log.flowCount('getGroups', 'afterCategoryFilter', groups.length, fnCtx);
     }
 
-    // Sort by updatedAt desc
     groups.sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
 
-    // Paginate
     const total = groups.length;
     const paginated = groups.slice(Number(offset), Number(offset) + Number(limit));
 
     log.info('getGroups completed', { ...fnCtx, total, returned: paginated.length, durationMs: Date.now() - fnStart });
+
+    // Only include full members array when explicitly requested (reduces payload for large groups)
+    const includeMembers = params?.includeMembers !== 'false';
 
     return response(200, {
         success: true,
@@ -2972,7 +2993,7 @@ async function getGroups(userID: string, params: any, logCtx?: LogContext): Prom
             description: g.description,
             ownerID: g.ownerID,
             memberCount: g.members.length,
-            members: g.members,
+            ...(includeMembers && { members: g.members }),
             category: g.category,
             createdAt: g.createdAt,
             updatedAt: g.updatedAt,
@@ -3388,6 +3409,11 @@ async function addGroupMember(userID: string, teamID: string, body: any, logCtx?
             durationMs: Date.now() - startTime,
         });
 
+        // Sync denormalized UserTeams table
+        await syncUserTeamsMembership(teamID, updatedMembers, team.members as string[]).catch(e =>
+            log.warn('Failed to sync UserTeams on addMember', { ...fnCtx, error: String(e) })
+        );
+
         log.info('addGroupMember completed', { ...fnCtx, memberUserID, newMemberCount: updatedMembers.length, durationMs: Date.now() - startTime });
 
         return response(200, {
@@ -3548,6 +3574,11 @@ async function removeGroupMember(userID: string, teamID: string, memberUserID: s
             durationMs: Date.now() - startTime,
         });
 
+        // Sync denormalized UserTeams table
+        await syncUserTeamsMembership(teamID, updatedMembers, team.members as string[]).catch(e =>
+            log.warn('Failed to sync UserTeams on removeMember', { ...fnCtx, error: String(e) })
+        );
+
         log.info('removeGroupMember completed', { ...fnCtx, newMemberCount: updatedMembers.length, durationMs: Date.now() - startTime });
 
         return response(200, {
@@ -3617,7 +3648,6 @@ async function restGetUserPreferences(
                 },
             });
         } else {
-            // Only public data
             return response(200, {
                 success: true,
                 userID: targetUserID,
@@ -3625,11 +3655,109 @@ async function restGetUserPreferences(
                     profileImage: prefs.profileImage || null,
                     profileAbout: prefs.profileAbout || null,
                 },
-            });
+            }, { 'Cache-Control': 'public, max-age=300' });
         }
     } catch (error) {
         const err = error instanceof Error ? error : new Error(String(error));
         log.error('Failed to get user preferences', fnCtx, err);
+        return response(500, { success: false, message: 'Failed to fetch preferences.' });
+    }
+}
+
+/**
+ * POST /api/preferences/batch
+ * Body: { userIDs: string[] }
+ * Returns all public preferences in a single DynamoDB BatchGetCommand (up to 100 keys).
+ */
+async function restBatchGetUserPreferences(
+    callerUserID: string,
+    body: { userIDs?: string[] },
+    logCtx?: LogContext
+): Promise<APIGatewayProxyResult> {
+    const fnCtx = { ...logCtx, function: 'restBatchGetUserPreferences' };
+    const fnStart = Date.now();
+
+    if (!USER_PREFERENCES_TABLE) {
+        log.error('USER_PREFERENCES_TABLE not configured', fnCtx);
+        return response(500, { success: false, message: 'Server error: Preferences table not configured.' });
+    }
+
+    const userIDs = body?.userIDs;
+    if (!Array.isArray(userIDs) || userIDs.length === 0) {
+        return response(400, { success: false, message: 'userIDs array is required.' });
+    }
+
+    const uniqueIDs = [...new Set(userIDs)].slice(0, 500);
+
+    try {
+        const preferences: Record<string, { profileImage?: string | null; profileAbout?: string | null }> = {};
+
+        // DynamoDB BatchGetItem supports max 100 keys per call — run batches in parallel
+        const BATCH_SIZE = 100;
+        const batches: string[][] = [];
+        for (let i = 0; i < uniqueIDs.length; i += BATCH_SIZE) {
+            batches.push(uniqueIDs.slice(i, i + BATCH_SIZE));
+        }
+
+        const batchResults = await Promise.all(batches.map(async (batch) => {
+            const batchResult = await ddb.send(new BatchGetCommand({
+                RequestItems: {
+                    [USER_PREFERENCES_TABLE]: {
+                        Keys: batch.map(uid => ({ userID: uid })),
+                        ProjectionExpression: 'userID, profileImage, profileAbout',
+                    },
+                },
+            }));
+
+            const items = batchResult.Responses?.[USER_PREFERENCES_TABLE] || [];
+            const partialPrefs: Record<string, { profileImage?: string | null; profileAbout?: string | null }> = {};
+            for (const item of items) {
+                partialPrefs[item.userID as string] = {
+                    profileImage: (item.profileImage as string) || null,
+                    profileAbout: (item.profileAbout as string) || null,
+                };
+            }
+
+            // Retry unprocessed keys with exponential backoff
+            let unprocessed = batchResult.UnprocessedKeys?.[USER_PREFERENCES_TABLE]?.Keys;
+            let retryDelay = 50;
+            while (unprocessed && unprocessed.length > 0 && retryDelay <= 400) {
+                await new Promise(r => setTimeout(r, retryDelay));
+                const retryResult = await ddb.send(new BatchGetCommand({
+                    RequestItems: {
+                        [USER_PREFERENCES_TABLE]: { Keys: unprocessed, ProjectionExpression: 'userID, profileImage, profileAbout' },
+                    },
+                }));
+                for (const item of retryResult.Responses?.[USER_PREFERENCES_TABLE] || []) {
+                    partialPrefs[item.userID as string] = {
+                        profileImage: (item.profileImage as string) || null,
+                        profileAbout: (item.profileAbout as string) || null,
+                    };
+                }
+                unprocessed = retryResult.UnprocessedKeys?.[USER_PREFERENCES_TABLE]?.Keys;
+                retryDelay *= 2;
+            }
+            return partialPrefs;
+        }));
+
+        for (const partial of batchResults) {
+            Object.assign(preferences, partial);
+        }
+
+        log.info('batchGetUserPreferences completed', {
+            ...fnCtx,
+            requested: uniqueIDs.length,
+            returned: Object.keys(preferences).length,
+            durationMs: Date.now() - fnStart,
+        });
+
+        return response(200, {
+            success: true,
+            preferences,
+        }, { 'Cache-Control': 'public, max-age=300' });
+    } catch (error) {
+        const err = error instanceof Error ? error : new Error(String(error));
+        log.error('Failed to batch get user preferences', fnCtx, err);
         return response(500, { success: false, message: 'Failed to fetch preferences.' });
     }
 }

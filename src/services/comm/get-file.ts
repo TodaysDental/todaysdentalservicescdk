@@ -4,6 +4,7 @@ import { buildCorsHeaders } from '../../shared/utils/cors';
 
 const REGION = process.env.AWS_REGION || 'us-east-1';
 const FILE_BUCKET_NAME = process.env.FILE_BUCKET_NAME || '';
+const FILES_CDN_DOMAIN = process.env.FILES_CDN_DOMAIN || '';
 
 // Initialize S3 Client
 const s3 = new S3Client({ region: REGION });
@@ -87,17 +88,19 @@ export const handler = async (event: APIGatewayEvent): Promise<APIGatewayProxyRe
             throw headError;
         }
 
-        // 2. Build the direct public S3 URL
-        // The bucket is now public, so we can access files directly without presigned URLs
-        const publicS3Url = `https://${FILE_BUCKET_NAME}.s3.${REGION}.amazonaws.com/${encodeURIComponent(fileKey).replace(/%2F/g, '/')}`;
+        // 2. Build the file URL — prefer CloudFront CDN for edge caching, fall back to direct S3
+        const encodedPath = encodeURIComponent(fileKey).replace(/%2F/g, '/');
+        const publicUrl = FILES_CDN_DOMAIN
+            ? `https://${FILES_CDN_DOMAIN}/${encodedPath}`
+            : `https://${FILE_BUCKET_NAME}.s3.${REGION}.amazonaws.com/${encodedPath}`;
 
-        console.log('[SUCCESS] Redirecting to public S3 URL for file:', fileKey);
+        console.log('[SUCCESS] Redirecting to', FILES_CDN_DOMAIN ? 'CDN' : 'S3', 'URL for file:', fileKey);
 
         // 3. Return a 302 Found redirect to the public S3 URL with CORS headers
         return {
             statusCode: 302,
             headers: {
-                'Location': publicS3Url,
+                'Location': publicUrl,
                 ...corsHeaders,
                 'Cache-Control': 'public, max-age=3600', // Cache for 1 hour since it's a public URL
             },

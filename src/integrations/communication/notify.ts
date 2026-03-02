@@ -457,7 +457,6 @@ async function handleSendNotification(event: APIGatewayProxyEvent, userPerms: Us
     // Determine recipient phone
     let phoneRaw = String(body.toPhone || body.phone || body.phoneNumber || body.CALL || '').trim();
     if (!phoneRaw) {
-      // Best-effort fallback to OpenDental lookup when phone isn't supplied
       try {
         const contact = await fetchPatientContact(clinicId, patNum);
         phoneRaw = String(contact.phone || '').trim();
@@ -467,6 +466,29 @@ async function handleSendNotification(event: APIGatewayProxyEvent, userPerms: Us
     }
     const toPhone = normalizePhone(phoneRaw);
     if (!toPhone) return http(400, { error: 'No phone provided for CALL' }, event);
+
+    // Check if recipient has unsubscribed from CALL
+    const callUnsubscribed = UNSUBSCRIBE_TABLE ? await isUnsubscribed(
+      ddb,
+      UNSUBSCRIBE_TABLE,
+      { patientId: patNum, phone: toPhone },
+      clinicId,
+      'CALL'
+    ) : false;
+
+    if (callUnsubscribed) {
+      console.log(`Skipping CALL for patient ${patNum} - unsubscribed`);
+      results.skipped.push({ channel: 'CALL', reason: 'unsubscribed' });
+      await storeNotification({
+        patNum,
+        clinicId,
+        type: 'CALL',
+        phone: toPhone,
+        templateName: templateMessage || 'custom',
+        sentBy,
+        status: 'SKIPPED_UNSUBSCRIBED'
+      });
+    } else {
 
     // Caller ID (clinic phone number)
     const clinicConfig = await getClinicConfig(clinicId);
@@ -478,7 +500,7 @@ async function handleSendNotification(event: APIGatewayProxyEvent, userPerms: Us
     if (isCustomCall) {
       callText = renderTemplateString(customVoiceText, mergedCtx);
     } else {
-      const tplText = String(template?.voice_message || template?.text_message || '');
+      const tplText = String(template?.voice_message || '');
       callText = renderTemplateString(tplText, mergedCtx);
     }
     callText = String(callText || '').trim();
@@ -592,6 +614,7 @@ async function handleSendNotification(event: APIGatewayProxyEvent, userPerms: Us
       }).catch(() => undefined);
       return http(500, { error: 'Failed to start CALL notification' }, event);
     }
+    } // end else (not unsubscribed)
   }
 
   return http(200, { success: true, sent: results, clinicId, patNum, template: templateMessage || 'custom', sent_by: sentBy }, event);

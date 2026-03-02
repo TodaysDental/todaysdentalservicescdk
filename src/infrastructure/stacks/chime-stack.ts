@@ -186,6 +186,12 @@ export interface ChimeStackProps extends StackProps {
    * @default 5
    */
   inboundRouterProvisionedConcurrency?: number;
+
+  /**
+   * StaffUser table name — used by the GetOnlineAgents Lambda to enrich agent
+   * presence entries with display names and email addresses.
+   */
+  staffUserTableName?: string;
 }
 
 export type VoiceConnectorOriginationProtocol = 'UDP' | 'TCP' | 'TLS';
@@ -2124,8 +2130,36 @@ export class ChimeStack extends Stack {
       sourceArn: `arn:aws:execute-api:${this.region}:${this.account}:*/*/*`
     });
 
-    // ========================================
-    // 3c. QUEUE MONITOR (Scheduled)
+    // Lambda for GET /admin/agents/online
+    // Returns all agents that are currently active (in AgentActive table), enriched
+    // with their staff profile (name / email) from the StaffUser table.
+    const getOnlineAgentsFn = new lambdaNode.NodejsFunction(this, 'GetOnlineAgentsFn', {
+      functionName: `${this.stackName}-GetOnlineAgents`,
+      entry: path.join(__dirname, '..', '..', 'services', 'chime', 'get-online-agents.ts'),
+      handler: 'handler',
+      runtime: lambda.Runtime.NODEJS_20_X,
+      memorySize: 256,
+      timeout: Duration.seconds(10),
+      environment: {
+        AGENT_ACTIVE_TABLE_NAME: this.agentActiveTable.tableName,
+        STAFF_USER_TABLE: props.staffUserTableName || '',
+        JWT_SECRET: jwtSecretValue,
+      },
+    });
+    applyTags(getOnlineAgentsFn, { Function: 'get-online-agents' });
+    this.agentActiveTable.grantReadData(getOnlineAgentsFn);
+    if (props.staffUserTableName) {
+      getOnlineAgentsFn.addToRolePolicy(new iam.PolicyStatement({
+        effect: iam.Effect.ALLOW,
+        actions: ['dynamodb:GetItem', 'dynamodb:BatchGetItem'],
+        resources: [`arn:aws:dynamodb:${this.region}:${this.account}:table/${props.staffUserTableName}`],
+      }));
+    }
+    getOnlineAgentsFn.addPermission('AdminApiInvokeGetOnlineAgents', {
+      principal: new iam.ServicePrincipal('apigateway.amazonaws.com'),
+      sourceArn: `arn:aws:execute-api:${this.region}:${this.account}:*/*/*`
+    });
+
     // ========================================
 
     const queueMonitorFn = new lambdaNode.NodejsFunction(this, 'QueueMonitorFn', {
@@ -2462,6 +2496,10 @@ export class ChimeStack extends Stack {
     new CfnOutput(this, 'GetJoinableCallsFnArn', {
       value: getJoinableCallsFn.functionArn,
       exportName: `${this.stackName}-GetJoinableCallsArn`,
+    });
+    new CfnOutput(this, 'GetOnlineAgentsFnArn', {
+      value: getOnlineAgentsFn.functionArn,
+      exportName: `${this.stackName}-GetOnlineAgentsArn`,
     });
 
     // Voicemail Bucket

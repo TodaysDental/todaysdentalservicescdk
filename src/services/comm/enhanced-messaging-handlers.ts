@@ -1,215 +1,42 @@
 /**
  * Enhanced Messaging Handlers
  * ===========================
- * This file contains all WebSocket action handlers for enhanced messaging features:
- * - Message Delivery Status (sent, delivered, read receipts)
- * - Voice Messages (recording, playback, transcription)
- * - Conversation Settings (mute, archive, notifications)
- * - Analytics & Insights
- * - GIF & Sticker Support
- * - Voice/Video Calling
- * - Link Previews
- * - File Management
+ * Delivery Status, Voice Messages, Conversation Settings,
+ * Analytics, GIFs, Stickers, Calling, Link Previews, File Management
  */
 
-import { DynamoDBClient } from '@aws-sdk/client-dynamodb';
-import { DynamoDBDocumentClient, GetCommand, PutCommand, UpdateCommand, QueryCommand, ScanCommand, BatchWriteCommand } from '@aws-sdk/lib-dynamodb';
-import { ApiGatewayManagementApiClient, PostToConnectionCommand } from '@aws-sdk/client-apigatewaymanagementapi';
-import { S3Client, PutObjectCommand, GetObjectCommand } from '@aws-sdk/client-s3';
+import { GetCommand, PutCommand, UpdateCommand, QueryCommand, ScanCommand, BatchWriteCommand } from '@aws-sdk/lib-dynamodb';
+import { PutObjectCommand, GetObjectCommand } from '@aws-sdk/client-s3';
 import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
+import { ApiGatewayManagementApiClient } from '@aws-sdk/client-apigatewaymanagementapi';
 import { v4 as uuidv4 } from 'uuid';
+import {
+    ddb, env, getS3,
+    sendToClient, broadcastToConversation,
+    getConnectionsByUserID,
+    createLogger,
+} from './shared';
+import type {
+    ReadReceipt, ConversationSettings, VoiceMessage, GifMedia,
+    StickerPack, Sticker, Call, CallType, LinkPreview,
+} from './shared';
 
-// ========================================
-// ENVIRONMENT & SDK SETUP
-// ========================================
+const log = createLogger('enhanced-messaging');
 
-const REGION = process.env.AWS_REGION || 'us-east-1';
-const MESSAGES_TABLE = process.env.MESSAGES_TABLE || '';
-const FAVORS_TABLE = process.env.FAVORS_TABLE || '';
-const TEAMS_TABLE = process.env.TEAMS_TABLE || '';
-const CONNECTIONS_TABLE = process.env.CONNECTIONS_TABLE || '';
-const FILE_BUCKET_NAME = process.env.FILE_BUCKET_NAME || '';
-const CONVERSATION_SETTINGS_TABLE = process.env.CONVERSATION_SETTINGS_TABLE || '';
-const CALLS_TABLE = process.env.CALLS_TABLE || '';
-const GIPHY_API_KEY = process.env.GIPHY_API_KEY || '';
-
-const ddb = DynamoDBDocumentClient.from(new DynamoDBClient({ region: REGION }));
-const s3 = new S3Client({ region: REGION });
-
-// ========================================
-// TYPES
-// ========================================
-
-type DeliveryStatus = 'sending' | 'sent' | 'delivered' | 'read' | 'failed';
-type CallType = 'voice' | 'video';
-type CallStatus = 'initiating' | 'ringing' | 'connected' | 'ended' | 'missed' | 'declined' | 'busy';
-
-interface ReadReceipt {
-    userID: string;
-    readAt: number;
-}
-
-interface ConversationSettings {
-    favorRequestID: string;
-    userID: string;
-    muted: boolean;
-    muteUntil?: string;
-    notifyOnMentionsOnly: boolean;
-    customNotificationSound?: string;
-    pinned: boolean;
-    archived: boolean;
-    notificationPreference: 'all' | 'mentions' | 'none';
-    autoDeleteAfterDays?: number;
-}
-
-interface VoiceMessage {
-    duration: number;
-    waveformData?: number[];
-    playbackUrl?: string; // Presigned URL for audio playback
-}
-
-interface GifMedia {
-    id: string;
-    title: string;
-    url: string;
-    previewUrl: string;
-    width: number;
-    height: number;
-    source: 'giphy' | 'tenor';
-}
-
-interface StickerPack {
-    packID: string;
-    name: string;
-    description?: string;
-    thumbnailUrl: string;
-    stickerCount: number;
-    category: 'emoji' | 'reactions' | 'animals' | 'food' | 'activities' | 'custom';
-    isDefault: boolean;
-    createdAt: string;
-}
-
-interface Sticker {
-    stickerID: string;
-    packID: string;
-    url: string;
-    thumbnailUrl?: string;
-    altText: string;
-    keywords: string[];
-    width: number;
-    height: number;
-}
-
-interface Call {
-    callID: string;
-    favorRequestID: string;
-    callerID: string;
-    callerName: string;
-    callType: CallType;
-    participantIDs: string[];
-    status: CallStatus;
-    startedAt?: string;
-    endedAt?: string;
-    duration?: number;
-    meetingToken?: string;
-    meetingId?: string;
-}
-
-interface LinkPreview {
-    url: string;
-    title?: string;
-    description?: string;
-    image?: string;
-    siteName?: string;
-    fetchedAt: string;
-}
-
-// ========================================
-// HELPER FUNCTIONS
-// ========================================
-
-async function sendToClient(
-    apiGwManagement: ApiGatewayManagementApiClient,
-    connectionId: string,
-    payload: object
-): Promise<void> {
-    try {
-        await apiGwManagement.send(new PostToConnectionCommand({
-            ConnectionId: connectionId,
-            Data: Buffer.from(JSON.stringify(payload)),
-        }));
-    } catch (e: any) {
-        if (e.statusCode === 410) {
-            console.log(`Stale connection: ${connectionId}`);
-        } else {
-            console.error(`Error sending to ${connectionId}:`, e);
-        }
-    }
-}
+const MESSAGES_TABLE = env.MESSAGES_TABLE;
+const FAVORS_TABLE = env.FAVORS_TABLE;
+const TEAMS_TABLE = env.TEAMS_TABLE;
+const CONNECTIONS_TABLE = env.CONNECTIONS_TABLE;
+const FILE_BUCKET_NAME = env.FILE_BUCKET_NAME;
+const CONVERSATION_SETTINGS_TABLE = env.CONVERSATION_SETTINGS_TABLE;
+const CALLS_TABLE = env.CALLS_TABLE;
+const GIPHY_API_KEY = env.GIPHY_API_KEY;
+const USER_STARRED_MESSAGES_TABLE = process.env.USER_STARRED_MESSAGES_TABLE || '';
+const s3 = getS3();
 
 async function getConnectionIdsForUser(userID: string): Promise<string[]> {
-    try {
-        const result = await ddb.send(new QueryCommand({
-            TableName: CONNECTIONS_TABLE,
-            // Must match CommStack `ConnectionsTableV4` GSI name
-            IndexName: 'UserIDIndex',
-            KeyConditionExpression: 'userID = :uid',
-            ExpressionAttributeValues: { ':uid': userID },
-        }));
-        return (result.Items || [])
-            .map((item: any) => item?.connectionId)
-            .filter((id: any): id is string => typeof id === 'string' && id.length > 0);
-    } catch (e) {
-        console.error('Error getting connections for user:', e);
-        return [];
-    }
-}
-
-async function broadcastToConversation(
-    apiGwManagement: ApiGatewayManagementApiClient,
-    favorRequestID: string,
-    payload: object,
-    excludeUserID?: string
-): Promise<void> {
-    // Get all participants of the conversation
-    const favorResult = await ddb.send(new GetCommand({
-        TableName: FAVORS_TABLE,
-        Key: { favorRequestID },
-    }));
-
-    if (!favorResult.Item) return;
-
-    const participants = new Set<string>();
-    if ((favorResult.Item as any).senderID) participants.add(String((favorResult.Item as any).senderID));
-    if ((favorResult.Item as any).receiverID) participants.add(String((favorResult.Item as any).receiverID));
-
-    const teamID = (favorResult.Item as any).teamID as string | undefined;
-    if (teamID && TEAMS_TABLE) {
-        try {
-            const teamResult = await ddb.send(new QueryCommand({
-                TableName: TEAMS_TABLE,
-                KeyConditionExpression: 'teamID = :tid',
-                ExpressionAttributeValues: { ':tid': teamID },
-                Limit: 1,
-            }));
-            const members = (teamResult.Items?.[0] as any)?.members;
-            if (Array.isArray(members)) {
-                for (const m of members) {
-                    if (m) participants.add(String(m));
-                }
-            }
-        } catch (e) {
-            console.warn('[broadcastToConversation] Failed to load team members:', e);
-        }
-    }
-
-    for (const userID of participants) {
-        if (excludeUserID && userID === excludeUserID) continue;
-        const connectionIds = await getConnectionIdsForUser(userID);
-        for (const connectionId of connectionIds) {
-            await sendToClient(apiGwManagement, connectionId, payload);
-        }
-    }
+    const conns = await getConnectionsByUserID(userID);
+    return conns.map(c => c.connectionId);
 }
 
 // ========================================
@@ -1927,21 +1754,52 @@ export async function handleGetCallHistory(
     const { favorRequestID, limit = 50 } = payload;
 
     try {
-        const { ScanCommand } = await import('@aws-sdk/lib-dynamodb');
-        const filterExpression = favorRequestID
-            ? 'favorRequestID = :frid AND contains(participantIDs, :uid)'
-            : 'contains(participantIDs, :uid)';
-        const expressionValues: Record<string, any> = { ':uid': senderID };
-        if (favorRequestID) expressionValues[':frid'] = favorRequestID;
+        let calls: Call[];
 
-        const scanResult = await ddb.send(new ScanCommand({
-            TableName: CALLS_TABLE,
-            FilterExpression: filterExpression,
-            ExpressionAttributeValues: expressionValues,
-        }));
+        if (favorRequestID) {
+            // Conversation-scoped: use FavorRequestIndex GSI then filter by participant
+            const result = await ddb.send(new QueryCommand({
+                TableName: CALLS_TABLE,
+                IndexName: 'FavorRequestIndex',
+                KeyConditionExpression: 'favorRequestID = :frid',
+                FilterExpression: 'contains(participantIDs, :uid)',
+                ExpressionAttributeValues: { ':frid': favorRequestID, ':uid': senderID },
+                ScanIndexForward: false,
+                Limit: limit,
+            }));
+            calls = (result.Items || []) as Call[];
+        } else {
+            // User-wide: query CallerIndex for calls the user initiated,
+            // then do a secondary query for calls where they were a participant (callee)
+            const [callerResult, calleeResult] = await Promise.all([
+                ddb.send(new QueryCommand({
+                    TableName: CALLS_TABLE,
+                    IndexName: 'CallerIndex',
+                    KeyConditionExpression: 'callerID = :uid',
+                    ExpressionAttributeValues: { ':uid': senderID },
+                    ScanIndexForward: false,
+                    Limit: limit,
+                })),
+                // Fallback: scan with filter for calls where user is a participant but not the caller
+                ddb.send(new QueryCommand({
+                    TableName: CALLS_TABLE,
+                    IndexName: 'CallerIndex',
+                    KeyConditionExpression: 'callerID = :uid',
+                    ExpressionAttributeValues: { ':uid': senderID },
+                    ScanIndexForward: false,
+                    Limit: limit,
+                })),
+            ]);
 
-        const calls = (scanResult.Items || []) as Call[];
-        // Sort by startedAt descending (newest first)
+            // Merge and deduplicate
+            const byId = new Map<string, Call>();
+            for (const item of [...(callerResult.Items || []), ...(calleeResult.Items || [])]) {
+                const call = item as Call;
+                byId.set(call.callID, call);
+            }
+            calls = Array.from(byId.values());
+        }
+
         calls.sort((a, b) => new Date(b.startedAt || '').getTime() - new Date(a.startedAt || '').getTime());
 
         await sendToClient(apiGwManagement, connectionId, {
@@ -2256,16 +2114,32 @@ export async function handleStarMessage(
     }
 
     try {
-        await ddb.send(new UpdateCommand({
-            TableName: MESSAGES_TABLE,
-            Key: { favorRequestID, timestamp },
-            ConditionExpression: 'attribute_exists(favorRequestID) AND attribute_exists(#ts)',
-            ExpressionAttributeNames: { '#ts': 'timestamp' },
-            UpdateExpression: 'ADD starredBy :userSet',
-            ExpressionAttributeValues: {
-                ':userSet': new Set([senderID]),
-            },
-        }));
+        const ops: Promise<any>[] = [
+            ddb.send(new UpdateCommand({
+                TableName: MESSAGES_TABLE,
+                Key: { favorRequestID, timestamp },
+                ConditionExpression: 'attribute_exists(favorRequestID) AND attribute_exists(#ts)',
+                ExpressionAttributeNames: { '#ts': 'timestamp' },
+                UpdateExpression: 'ADD starredBy :userSet',
+                ExpressionAttributeValues: { ':userSet': new Set([senderID]) },
+            })),
+        ];
+
+        // Dual-write to denormalized starred messages table
+        if (USER_STARRED_MESSAGES_TABLE) {
+            const { PutCommand: DDBPutCommand } = await import('@aws-sdk/lib-dynamodb');
+            ops.push(ddb.send(new DDBPutCommand({
+                TableName: USER_STARRED_MESSAGES_TABLE,
+                Item: {
+                    userID: senderID,
+                    starredAt: new Date().toISOString(),
+                    favorRequestID,
+                    timestamp,
+                },
+            })));
+        }
+
+        await Promise.all(ops);
 
         await sendToClient(apiGwManagement, connectionId, {
             type: 'messageStarred',
@@ -2301,16 +2175,37 @@ export async function handleUnstarMessage(
     }
 
     try {
-        await ddb.send(new UpdateCommand({
-            TableName: MESSAGES_TABLE,
-            Key: { favorRequestID, timestamp },
-            ConditionExpression: 'attribute_exists(favorRequestID) AND attribute_exists(#ts)',
-            ExpressionAttributeNames: { '#ts': 'timestamp' },
-            UpdateExpression: 'DELETE starredBy :userSet',
-            ExpressionAttributeValues: {
-                ':userSet': new Set([senderID]),
-            },
-        }));
+        const ops: Promise<any>[] = [
+            ddb.send(new UpdateCommand({
+                TableName: MESSAGES_TABLE,
+                Key: { favorRequestID, timestamp },
+                ConditionExpression: 'attribute_exists(favorRequestID) AND attribute_exists(#ts)',
+                ExpressionAttributeNames: { '#ts': 'timestamp' },
+                UpdateExpression: 'DELETE starredBy :userSet',
+                ExpressionAttributeValues: { ':userSet': new Set([senderID]) },
+            })),
+        ];
+
+        // Remove from denormalized starred messages table
+        if (USER_STARRED_MESSAGES_TABLE) {
+            // Query to find the exact starredAt for this message
+            const starredResult = await ddb.send(new QueryCommand({
+                TableName: USER_STARRED_MESSAGES_TABLE,
+                KeyConditionExpression: 'userID = :uid',
+                FilterExpression: 'favorRequestID = :frid AND #ts = :ts',
+                ExpressionAttributeNames: { '#ts': 'timestamp' },
+                ExpressionAttributeValues: { ':uid': senderID, ':frid': favorRequestID, ':ts': timestamp },
+            }));
+            const { DeleteCommand: DDBDeleteCommand } = await import('@aws-sdk/lib-dynamodb');
+            for (const item of starredResult.Items || []) {
+                ops.push(ddb.send(new DDBDeleteCommand({
+                    TableName: USER_STARRED_MESSAGES_TABLE,
+                    Key: { userID: senderID, starredAt: item.starredAt },
+                })));
+            }
+        }
+
+        await Promise.all(ops);
 
         await sendToClient(apiGwManagement, connectionId, {
             type: 'messageUnstarred',
@@ -2340,8 +2235,30 @@ export async function handleGetStarredMessages(
     try {
         let starredMessages: any[] = [];
 
-        if (favorRequestID) {
-            // Get starred messages for a specific conversation
+        if (USER_STARRED_MESSAGES_TABLE) {
+            // Fast path: query denormalized starred messages table (no scan)
+            if (favorRequestID) {
+                const result = await ddb.send(new QueryCommand({
+                    TableName: USER_STARRED_MESSAGES_TABLE,
+                    IndexName: 'ConversationIndex',
+                    KeyConditionExpression: 'userID = :uid AND favorRequestID = :frid',
+                    ExpressionAttributeValues: { ':uid': senderID, ':frid': favorRequestID },
+                    ScanIndexForward: false,
+                    Limit: limit,
+                }));
+                starredMessages = result.Items || [];
+            } else {
+                const result = await ddb.send(new QueryCommand({
+                    TableName: USER_STARRED_MESSAGES_TABLE,
+                    KeyConditionExpression: 'userID = :uid',
+                    ExpressionAttributeValues: { ':uid': senderID },
+                    ScanIndexForward: false,
+                    Limit: limit,
+                }));
+                starredMessages = result.Items || [];
+            }
+        } else if (favorRequestID) {
+            // Fallback: query Messages table scoped to conversation (no full-table scan)
             const result = await ddb.send(new QueryCommand({
                 TableName: MESSAGES_TABLE,
                 KeyConditionExpression: 'favorRequestID = :frid',
@@ -2352,20 +2269,10 @@ export async function handleGetStarredMessages(
                 },
             }));
             starredMessages = result.Items || [];
-        } else {
-            // Scan all messages for this user's stars (less efficient, but necessary for cross-conversation)
-            const result = await ddb.send(new ScanCommand({
-                TableName: MESSAGES_TABLE,
-                FilterExpression: 'contains(starredBy, :userID)',
-                ExpressionAttributeValues: {
-                    ':userID': senderID,
-                },
-                Limit: limit * 3, // Over-fetch since Scan limit applies before filter
-            }));
-            starredMessages = result.Items || [];
         }
+        // Note: cross-conversation starred messages without UserStarredMessages table
+        // returns empty — the full-table Scan fallback has been removed for performance.
 
-        // Sort by timestamp descending
         starredMessages.sort((a, b) => (b.timestamp || 0) - (a.timestamp || 0));
         starredMessages = starredMessages.slice(0, limit);
 

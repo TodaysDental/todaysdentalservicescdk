@@ -13,7 +13,7 @@ import { DynamoDBDocumentClient, GetCommand, PutCommand, QueryCommand, UpdateCom
 // Secret key for HMAC token generation - should be set in environment
 const UNSUBSCRIBE_SECRET = process.env.UNSUBSCRIBE_SECRET || 'todays-dental-unsubscribe-secret-key-2024';
 
-export type CommunicationChannel = 'EMAIL' | 'SMS' | 'RCS';
+export type CommunicationChannel = 'EMAIL' | 'SMS' | 'RCS' | 'CALL';
 
 export interface UnsubscribePreference {
   pk: string;                    // PREF#<patientId> or EMAIL#<email> or PHONE#<phone>

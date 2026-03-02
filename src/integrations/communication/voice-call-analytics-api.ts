@@ -111,60 +111,68 @@ async function handleDashboard(
   const startIso = isoDaysAgo(periodDays);
   const nowIso = new Date().toISOString();
 
-  // Query recent calls for this clinic
-  const result = await ddb.send(
-    new QueryCommand({
-      TableName: VOICE_CALL_ANALYTICS_TABLE,
-      IndexName: 'clinicId-startedAt-index',
-      KeyConditionExpression: 'clinicId = :cid AND startedAt BETWEEN :start AND :end',
-      ExpressionAttributeValues: {
-        ':cid': clinicId,
-        ':start': startIso,
-        ':end': nowIso,
-      },
-      ScanIndexForward: false,
-      Limit: 1000, // best-effort snapshot (keeps Lambda fast)
-    })
-  );
-
-  const items = (result.Items || []) as any[];
-
   const totals = {
-    total: items.length,
+    total: 0,
     initiated: 0,
     answered: 0,
     completed: 0,
     failed: 0,
   };
 
-  for (const it of items) {
-    const status = String(it.status || '').toUpperCase();
-    if (status === 'INITIATED') totals.initiated++;
-    if (status === 'ANSWERED') totals.answered++;
-    if (status === 'COMPLETED') totals.completed++;
-    if (status === 'FAILED') totals.failed++;
-  }
+  const recentCalls: any[] = [];
+  let lastKey: any = undefined;
+
+  // Paginate to get accurate totals; collect only the first 10 items for the recent list
+  do {
+    const result = await ddb.send(
+      new QueryCommand({
+        TableName: VOICE_CALL_ANALYTICS_TABLE,
+        IndexName: 'clinicId-startedAt-index',
+        KeyConditionExpression: 'clinicId = :cid AND startedAt BETWEEN :start AND :end',
+        ExpressionAttributeValues: {
+          ':cid': clinicId,
+          ':start': startIso,
+          ':end': nowIso,
+        },
+        ScanIndexForward: false,
+        ...(lastKey ? { ExclusiveStartKey: lastKey } : {}),
+      })
+    );
+
+    for (const it of (result.Items || []) as any[]) {
+      totals.total++;
+      const status = String(it.status || '').toUpperCase();
+      if (status === 'INITIATED') totals.initiated++;
+      if (status === 'ANSWERED') totals.answered++;
+      if (status === 'COMPLETED') totals.completed++;
+      if (status === 'FAILED') totals.failed++;
+
+      if (recentCalls.length < 10) {
+        recentCalls.push({
+          callId: it.callId,
+          clinicId: it.clinicId,
+          patNum: it.patNum,
+          patientName: it.patientName,
+          recipientPhone: it.recipientPhone,
+          templateName: it.templateName,
+          scheduleId: it.scheduleId,
+          status: it.status,
+          startedAt: it.startedAt,
+          answeredAt: it.answeredAt,
+          endedAt: it.endedAt,
+          endReason: it.endReason,
+          sipResponseCode: it.sipResponseCode,
+          voiceId: it.voiceId,
+        });
+      }
+    }
+
+    lastKey = result.LastEvaluatedKey;
+  } while (lastKey);
 
   const answerRate = totals.total > 0 ? Math.round((totals.answered / totals.total) * 10000) / 100 : 0;
   const completionRate = totals.total > 0 ? Math.round((totals.completed / totals.total) * 10000) / 100 : 0;
   const failureRate = totals.total > 0 ? Math.round((totals.failed / totals.total) * 10000) / 100 : 0;
-
-  const recentCalls = items.slice(0, 10).map((it) => ({
-    callId: it.callId,
-    clinicId: it.clinicId,
-    patNum: it.patNum,
-    patientName: it.patientName,
-    recipientPhone: it.recipientPhone,
-    templateName: it.templateName,
-    scheduleId: it.scheduleId,
-    status: it.status,
-    startedAt: it.startedAt,
-    answeredAt: it.answeredAt,
-    endedAt: it.endedAt,
-    endReason: it.endReason,
-    sipResponseCode: it.sipResponseCode,
-    voiceId: it.voiceId,
-  }));
 
   return http(
     200,

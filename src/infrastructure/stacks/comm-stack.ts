@@ -13,6 +13,8 @@ import * as apigw from 'aws-cdk-lib/aws-apigateway';
 import * as cloudwatch from 'aws-cdk-lib/aws-cloudwatch';
 import * as events from 'aws-cdk-lib/aws-events';
 import * as targets from 'aws-cdk-lib/aws-events-targets';
+import * as cloudfront from 'aws-cdk-lib/aws-cloudfront';
+import * as origins from 'aws-cdk-lib/aws-cloudfront-origins';
 
 export interface CommStackProps extends StackProps {
   // Authorizer imported via CloudFormation export
@@ -48,14 +50,18 @@ export class CommStack extends Stack {
   public readonly favorsTable: dynamodb.Table;
   public readonly connectionsTable: dynamodb.Table;
   public readonly teamsTable: dynamodb.Table;
-  public readonly meetingsTable: dynamodb.Table; // Meetings table for scheduled meetings
-  public readonly callsTable: dynamodb.Table; // Calls table for voice/video calling sessions
-  public readonly auditLogsTable: dynamodb.Table; // Audit trail table
-  public readonly userPreferencesTable: dynamodb.Table; // User preferences (profile image, wallpaper, etc.)
+  public readonly meetingsTable: dynamodb.Table;
+  public readonly callsTable: dynamodb.Table;
+  public readonly auditLogsTable: dynamodb.Table;
+  public readonly userPreferencesTable: dynamodb.Table;
+  public readonly userTeamsTable: dynamodb.Table;
+  public readonly channelsTable: dynamodb.Table;
+  public readonly userStarredMessagesTable: dynamodb.Table;
   public readonly fileBucket: s3.Bucket;
+  public readonly filesCdn: cloudfront.Distribution;
   public readonly notificationsTopic: sns.Topic;
   public readonly getFileFn: lambdaNode.NodejsFunction;
-  public readonly restApi: apigw.RestApi; // REST API for CRUD operations
+  public readonly restApi: apigw.RestApi;
 
   constructor(scope: Construct, id: string, props: CommStackProps) {
     super(scope, id, props);
@@ -128,11 +134,19 @@ export class CommStack extends Stack {
     });
     applyTags(this.connectionsTable, { Table: 'ws-connections' });
 
-    // FIX: Add GSI for efficient user lookup by userID (required by ws-default.ts)
+    // Original KEYS_ONLY GSI — kept so CloudFormation doesn't try to delete it in the same update.
+    // TODO: Remove this GSI in a follow-up deploy after UserIDIndexV2 is active.
     this.connectionsTable.addGlobalSecondaryIndex({
       indexName: 'UserIDIndex',
       partitionKey: { name: 'userID', type: dynamodb.AttributeType.STRING },
       projectionType: dynamodb.ProjectionType.KEYS_ONLY,
+    });
+
+    // V2: ALL projection avoids double-read for presence/broadcast
+    this.connectionsTable.addGlobalSecondaryIndex({
+      indexName: 'UserIDIndexV2',
+      partitionKey: { name: 'userID', type: dynamodb.AttributeType.STRING },
+      projectionType: dynamodb.ProjectionType.ALL,
     });
 
     // 2. Favor Requests Table (Stores request metadata)
@@ -214,6 +228,12 @@ export class CommStack extends Stack {
       sortKey: { name: 'timestamp', type: dynamodb.AttributeType.NUMBER },
       projectionType: dynamodb.ProjectionType.ALL,
     });
+    // GSI for looking up messages by messageID (used by task status updates)
+    this.messagesTable.addGlobalSecondaryIndex({
+      indexName: 'MessageIDIndex',
+      partitionKey: { name: 'messageID', type: dynamodb.AttributeType.STRING },
+      projectionType: dynamodb.ProjectionType.ALL,
+    });
 
     // 4. Teams Table (Stores Group/Team Metadata)
     // NOTE: The table has a composite key (teamID + ownerID). Handler code uses
@@ -269,6 +289,22 @@ export class CommStack extends Stack {
     });
     applyTags(this.callsTable, { Table: 'calls' });
 
+    // GSI for efficient caller-based lookups (replaces full-table ScanCommand)
+    this.callsTable.addGlobalSecondaryIndex({
+      indexName: 'CallerIndex',
+      partitionKey: { name: 'callerID', type: dynamodb.AttributeType.STRING },
+      sortKey: { name: 'startedAt', type: dynamodb.AttributeType.STRING },
+      projectionType: dynamodb.ProjectionType.ALL,
+    });
+
+    // GSI for conversation-scoped call lookups
+    this.callsTable.addGlobalSecondaryIndex({
+      indexName: 'FavorRequestIndex',
+      partitionKey: { name: 'favorRequestID', type: dynamodb.AttributeType.STRING },
+      sortKey: { name: 'startedAt', type: dynamodb.AttributeType.STRING },
+      projectionType: dynamodb.ProjectionType.ALL,
+    });
+
     // 6. Audit Logs Table (for tracking all user actions)
     this.auditLogsTable = new dynamodb.Table(this, 'AuditLogsTableV1', {
       tableName: `${this.stackName}-AuditLogsV1`,
@@ -313,6 +349,61 @@ export class CommStack extends Stack {
     });
     applyTags(this.userPreferencesTable, { Table: 'user-preferences' });
 
+    // 8. User Teams Table (Denormalized lookup: userID → teamIDs to eliminate TEAMS_TABLE scans)
+    // Written to whenever team membership changes; queried by fetchRequests, getConversations, listTeams.
+    this.userTeamsTable = new dynamodb.Table(this, 'UserTeamsTableV1', {
+      tableName: `${this.stackName}-UserTeamsV1`,
+      partitionKey: { name: 'userID', type: dynamodb.AttributeType.STRING },
+      sortKey: { name: 'teamID', type: dynamodb.AttributeType.STRING },
+      billingMode: dynamodb.BillingMode.PAY_PER_REQUEST,
+      removalPolicy: RemovalPolicy.RETAIN,
+    });
+    applyTags(this.userTeamsTable, { Table: 'user-teams' });
+
+    // 9. Channels Table (Public/Private channels for messaging)
+    // GSIs eliminate the full table scan in handleListChannels.
+    this.channelsTable = new dynamodb.Table(this, 'ChannelsTableV1', {
+      tableName: `${this.stackName}-ChannelsV1`,
+      partitionKey: { name: 'channelID', type: dynamodb.AttributeType.STRING },
+      billingMode: dynamodb.BillingMode.PAY_PER_REQUEST,
+      removalPolicy: RemovalPolicy.RETAIN,
+    });
+    applyTags(this.channelsTable, { Table: 'channels' });
+
+    // GSI: Lookup channels by creator
+    this.channelsTable.addGlobalSecondaryIndex({
+      indexName: 'CreatedByIndex',
+      partitionKey: { name: 'createdBy', type: dynamodb.AttributeType.STRING },
+      sortKey: { name: 'createdAt', type: dynamodb.AttributeType.STRING },
+      projectionType: dynamodb.ProjectionType.ALL,
+    });
+
+    // GSI: Lookup channels by archived status + type (avoids scan for listing)
+    this.channelsTable.addGlobalSecondaryIndex({
+      indexName: 'IsArchivedTypeIndex',
+      partitionKey: { name: 'isArchivedStr', type: dynamodb.AttributeType.STRING },
+      sortKey: { name: 'type', type: dynamodb.AttributeType.STRING },
+      projectionType: dynamodb.ProjectionType.ALL,
+    });
+
+    // 10. User Starred Messages Table (denormalized lookup, eliminates Messages table scan)
+    this.userStarredMessagesTable = new dynamodb.Table(this, 'UserStarredMessagesV1', {
+      tableName: `${this.stackName}-UserStarredMessagesV1`,
+      partitionKey: { name: 'userID', type: dynamodb.AttributeType.STRING },
+      sortKey: { name: 'starredAt', type: dynamodb.AttributeType.STRING },
+      billingMode: dynamodb.BillingMode.PAY_PER_REQUEST,
+      removalPolicy: RemovalPolicy.RETAIN,
+    });
+    applyTags(this.userStarredMessagesTable, { Table: 'user-starred-messages' });
+
+    // GSI: Lookup starred messages by conversation
+    this.userStarredMessagesTable.addGlobalSecondaryIndex({
+      indexName: 'ConversationIndex',
+      partitionKey: { name: 'userID', type: dynamodb.AttributeType.STRING },
+      sortKey: { name: 'favorRequestID', type: dynamodb.AttributeType.STRING },
+      projectionType: dynamodb.ProjectionType.ALL,
+    });
+
     // ========================================
     // S3 BUCKET (for File Sharing)
     // ========================================
@@ -340,6 +431,27 @@ export class CommStack extends Stack {
     applyTags(this.fileBucket, { Bucket: 'comm-files' });
 
     // ========================================
+    // CLOUDFRONT CDN (for profile images and shared files)
+    // ========================================
+    this.filesCdn = new cloudfront.Distribution(this, 'FilesCdnDistribution', {
+      defaultBehavior: {
+        origin: origins.S3BucketOrigin.withOriginAccessIdentity(this.fileBucket),
+        viewerProtocolPolicy: cloudfront.ViewerProtocolPolicy.REDIRECT_TO_HTTPS,
+        cachePolicy: new cloudfront.CachePolicy(this, 'FilesCachePolicy', {
+          cachePolicyName: `${this.stackName}-FilesCachePolicy`,
+          defaultTtl: Duration.hours(24),
+          maxTtl: Duration.days(30),
+          minTtl: Duration.minutes(1),
+          enableAcceptEncodingGzip: true,
+          enableAcceptEncodingBrotli: true,
+        }),
+      },
+      comment: `${this.stackName} - CDN for profile images and shared files`,
+      priceClass: cloudfront.PriceClass.PRICE_CLASS_100,
+    });
+    applyTags(this.filesCdn, { CDN: 'comm-files' });
+
+    // ========================================
     // PUSH NOTIFICATIONS (SNS Topic)
     // ========================================
     this.notificationsTopic = new sns.Topic(this, 'NewMessageNotificationsTopic', {
@@ -360,9 +472,12 @@ export class CommStack extends Stack {
       CALLS_TABLE: this.callsTable.tableName,
       AUDIT_LOGS_TABLE: this.auditLogsTable.tableName,
       USER_PREFERENCES_TABLE: this.userPreferencesTable.tableName,
+      USER_TEAMS_TABLE: this.userTeamsTable.tableName,
+      CHANNELS_TABLE: this.channelsTable.tableName,
+      USER_STARRED_MESSAGES_TABLE: this.userStarredMessagesTable.tableName,
       FILE_BUCKET_NAME: this.fileBucket.bucketName,
+      FILES_CDN_DOMAIN: this.filesCdn.distributionDomainName,
       NOTIFICATIONS_TOPIC_ARN: this.notificationsTopic.topicArn,
-      // Push Notifications Integration
       ...(props.deviceTokensTableName && { DEVICE_TOKENS_TABLE: props.deviceTokensTableName }),
       ...(props.sendPushFunctionArn && { SEND_PUSH_FUNCTION_ARN: props.sendPushFunctionArn }),
     };
@@ -374,9 +489,10 @@ export class CommStack extends Stack {
       runtime: lambda.Runtime.NODEJS_20_X,
       memorySize: 128,
       timeout: Duration.seconds(10),
-      bundling: { format: lambdaNode.OutputFormat.ESM, target: 'node20' },
+      bundling: { format: lambdaNode.OutputFormat.ESM, target: 'node20', minify: true },
       environment: {
         FILE_BUCKET_NAME: this.fileBucket.bucketName,
+        FILES_CDN_DOMAIN: this.filesCdn.distributionDomainName,
       },
     });
     applyTags(this.getFileFn, { Function: 'get-file' });
@@ -407,7 +523,7 @@ export class CommStack extends Stack {
       runtime: lambda.Runtime.NODEJS_20_X,
       memorySize: 256,
       timeout: Duration.seconds(10),
-      bundling: { format: lambdaNode.OutputFormat.ESM, target: 'node20' },
+      bundling: { format: lambdaNode.OutputFormat.ESM, target: 'node20', minify: true },
       environment: defaultLambdaEnv,
     });
     applyTags(disconnectFn, { Function: 'ws-disconnect' });
@@ -424,16 +540,23 @@ export class CommStack extends Stack {
       entry: path.join(__dirname, '..', '..', 'services', 'comm', 'ws-default.ts'),
       handler: 'handler',
       runtime: lambda.Runtime.NODEJS_20_X,
-      memorySize: 512,
+      memorySize: 1024,
       timeout: Duration.seconds(30),
-      bundling: { format: lambdaNode.OutputFormat.ESM, target: 'node20' },
+      bundling: { format: lambdaNode.OutputFormat.ESM, target: 'node20', minify: true },
       environment: {
         ...defaultLambdaEnv,
         SES_SOURCE_EMAIL: 'no-reply@todaysdentalinsights.com',
-        STAFF_USER_TABLE: 'StaffUser', // For looking up user emails
+        STAFF_USER_TABLE: 'StaffUser',
       },
     });
     applyTags(defaultFn, { Function: 'ws-default' });
+
+    // Provisioned concurrency to eliminate cold starts on the latency-critical WebSocket handler
+    const defaultFnAlias = new lambda.Alias(this, 'WsDefaultFnLiveAlias', {
+      aliasName: 'live',
+      version: defaultFn.currentVersion,
+      provisionedConcurrentExecutions: 2,
+    });
 
     // Grant permissions to the Default Lambda
     this.connectionsTable.grantReadWriteData(defaultFn);
@@ -443,6 +566,9 @@ export class CommStack extends Stack {
     this.meetingsTable.grantReadWriteData(defaultFn);
     this.callsTable.grantReadWriteData(defaultFn);
     this.userPreferencesTable.grantReadWriteData(defaultFn);
+    this.userTeamsTable.grantReadWriteData(defaultFn);
+    this.channelsTable.grantReadWriteData(defaultFn);
+    this.userStarredMessagesTable.grantReadWriteData(defaultFn);
     this.fileBucket.grantReadWrite(defaultFn);
     this.notificationsTopic.grantPublish(defaultFn);
 
@@ -511,12 +637,19 @@ export class CommStack extends Stack {
       entry: path.join(__dirname, '..', '..', 'services', 'comm', 'rest-api-handler.ts'),
       handler: 'handler',
       runtime: lambda.Runtime.NODEJS_20_X,
-      memorySize: 512,
+      memorySize: 1024,
       timeout: Duration.seconds(30),
-      bundling: { format: lambdaNode.OutputFormat.ESM, target: 'node20' },
+      bundling: { format: lambdaNode.OutputFormat.ESM, target: 'node20', minify: true },
       environment: defaultLambdaEnv,
     });
     applyTags(restApiHandler, { Function: 'rest-api-handler' });
+
+    // Provisioned concurrency to eliminate cold starts on the REST API handler
+    const restApiAlias = new lambda.Alias(this, 'RestApiHandlerLiveAlias', {
+      aliasName: 'live',
+      version: restApiHandler.currentVersion,
+      provisionedConcurrentExecutions: 2,
+    });
 
     // Grant permissions to REST API handler
     this.connectionsTable.grantReadData(restApiHandler);
@@ -526,6 +659,9 @@ export class CommStack extends Stack {
     this.meetingsTable.grantReadWriteData(restApiHandler);
     this.auditLogsTable.grantReadWriteData(restApiHandler);
     this.userPreferencesTable.grantReadWriteData(restApiHandler);
+    this.userTeamsTable.grantReadWriteData(restApiHandler);
+    this.channelsTable.grantReadData(restApiHandler);
+    this.userStarredMessagesTable.grantReadWriteData(restApiHandler);
 
     // ========================================
     // CHIME SDK MEETINGS PERMISSIONS (MEETINGS JOIN)
@@ -570,7 +706,7 @@ export class CommStack extends Stack {
       runtime: lambda.Runtime.NODEJS_20_X,
       memorySize: 256,
       timeout: Duration.seconds(120), // May need to scan many tasks and send emails
-      bundling: { format: lambdaNode.OutputFormat.ESM, target: 'node20' },
+      bundling: { format: lambdaNode.OutputFormat.ESM, target: 'node20', minify: true },
       environment: {
         FAVORS_TABLE: this.favorsTable.tableName,
         SES_SOURCE_EMAIL: 'no-reply@todaysdentalinsights.com',
@@ -625,6 +761,10 @@ export class CommStack extends Stack {
         stageName: 'prod',
         throttlingRateLimit: 100,
         throttlingBurstLimit: 200,
+        cachingEnabled: true,
+        cacheClusterEnabled: true,
+        cacheClusterSize: '0.5',
+        cacheDataEncrypted: true,
       },
     });
 
@@ -640,7 +780,7 @@ export class CommStack extends Stack {
     const authorizer = new apigw.RequestAuthorizer(this, 'CommAuthorizer', {
       handler: authorizerFn,
       identitySources: [apigw.IdentitySource.header('Authorization')],
-      resultsCacheTtl: Duration.seconds(0),
+      resultsCacheTtl: Duration.seconds(300),
     });
 
     // Grant API Gateway permission to invoke the authorizer Lambda
@@ -651,15 +791,15 @@ export class CommStack extends Stack {
       sourceArn: `arn:aws:execute-api:${this.region}:${this.account}:${this.restApi.restApiId}/authorizers/*`,
     });
 
-    // Create Lambda integration for REST API
-    // Use allowTestInvoke: false to prevent individual permissions per method (avoids 20KB policy limit)
-    const restIntegration = new apigw.LambdaIntegration(restApiHandler, {
+    // Create Lambda integration for REST API — point at the provisioned-concurrency alias
+    // to eliminate cold starts. Use allowTestInvoke: false to avoid 20KB policy limit.
+    const restIntegration = new apigw.LambdaIntegration(restApiAlias, {
       requestTemplates: { 'application/json': '{ "statusCode": "200" }' },
       allowTestInvoke: false,
     });
 
-    // Add a single catch-all permission for API Gateway to invoke Lambda (avoids 20KB policy limit)
-    restApiHandler.addPermission('ApiGatewayInvokePermission', {
+    // Add a single catch-all permission for API Gateway to invoke the alias (avoids 20KB policy limit)
+    restApiAlias.addPermission('ApiGatewayInvokePermission', {
       principal: new iam.ServicePrincipal('apigateway.amazonaws.com'),
       sourceArn: this.restApi.arnForExecuteApi('*', '/*', '*'),
     });
@@ -667,21 +807,30 @@ export class CommStack extends Stack {
     // API Resources
     const api = this.restApi.root.addResource('api');
 
+    // Per-method cache settings for high-traffic read endpoints
+    const cachedMethodOptions: apigw.MethodOptions = {
+      authorizer,
+      methodResponses: [{ statusCode: '200' }],
+      requestParameters: {
+        'method.request.header.Authorization': true,
+      },
+    };
+
     // /api/conversations endpoints
     const conversations = api.addResource('conversations');
-    conversations.addMethod('GET', restIntegration, { authorizer });
+    conversations.addMethod('GET', restIntegration, cachedMethodOptions);
     const conversationsFindOrCreate = conversations.addResource('find-or-create');
     conversationsFindOrCreate.addMethod('POST', restIntegration, { authorizer });
     const conversationsSearch = conversations.addResource('search');
-    conversationsSearch.addMethod('GET', restIntegration, { authorizer });
+    conversationsSearch.addMethod('GET', restIntegration, cachedMethodOptions);
     const conversationsProfiles = conversations.addResource('profiles');
-    conversationsProfiles.addMethod('GET', restIntegration, { authorizer });
+    conversationsProfiles.addMethod('GET', restIntegration, cachedMethodOptions);
     const conversationById = conversations.addResource('{favorRequestID}');
     conversationById.addMethod('DELETE', restIntegration, { authorizer });
     const conversationComplete = conversationById.addResource('complete');
-    conversationComplete.addMethod('GET', restIntegration, { authorizer });
+    conversationComplete.addMethod('GET', restIntegration, cachedMethodOptions);
     const conversationUserDetails = conversationById.addResource('user-details');
-    conversationUserDetails.addMethod('GET', restIntegration, { authorizer });
+    conversationUserDetails.addMethod('GET', restIntegration, cachedMethodOptions);
     const conversationDeadline = conversationById.addResource('deadline');
     conversationDeadline.addMethod('PUT', restIntegration, { authorizer });
 
@@ -689,11 +838,11 @@ export class CommStack extends Stack {
     const tasks = api.addResource('tasks');
     tasks.addMethod('POST', restIntegration, { authorizer });
     const tasksByStatus = tasks.addResource('by-status');
-    tasksByStatus.addMethod('GET', restIntegration, { authorizer });
+    tasksByStatus.addMethod('GET', restIntegration, cachedMethodOptions);
     const tasksForwardHistory = tasks.addResource('forward-history');
-    tasksForwardHistory.addMethod('GET', restIntegration, { authorizer });
+    tasksForwardHistory.addMethod('GET', restIntegration, cachedMethodOptions);
     const tasksForwardedToMe = tasks.addResource('forwarded-to-me');
-    tasksForwardedToMe.addMethod('GET', restIntegration, { authorizer });
+    tasksForwardedToMe.addMethod('GET', restIntegration, cachedMethodOptions);
     const tasksGroup = tasks.addResource('group');
     tasksGroup.addMethod('POST', restIntegration, { authorizer });
     const taskById = tasks.addResource('{taskID}');
@@ -708,7 +857,7 @@ export class CommStack extends Stack {
 
     // /api/meetings endpoints
     const meetings = api.addResource('meetings');
-    meetings.addMethod('GET', restIntegration, { authorizer });
+    meetings.addMethod('GET', restIntegration, cachedMethodOptions);
     meetings.addMethod('POST', restIntegration, { authorizer });
     const meetingById = meetings.addResource('{meetingID}');
     meetingById.addMethod('PUT', restIntegration, { authorizer });
@@ -725,10 +874,10 @@ export class CommStack extends Stack {
 
     // /api/groups endpoints
     const groups = api.addResource('groups');
-    groups.addMethod('GET', restIntegration, { authorizer });
+    groups.addMethod('GET', restIntegration, cachedMethodOptions);
     groups.addMethod('POST', restIntegration, { authorizer });
     const groupById = groups.addResource('{teamID}');
-    groupById.addMethod('GET', restIntegration, { authorizer });
+    groupById.addMethod('GET', restIntegration, cachedMethodOptions);
     groupById.addMethod('PUT', restIntegration, { authorizer });
     const groupMembers = groupById.addResource('members');
     groupMembers.addMethod('POST', restIntegration, { authorizer });
@@ -737,22 +886,24 @@ export class CommStack extends Stack {
 
     // /api/preferences endpoints (User Preferences — profile image, wallpaper, etc.)
     const preferences = api.addResource('preferences');
-    preferences.addMethod('GET', restIntegration, { authorizer });   // Get own preferences
+    preferences.addMethod('GET', restIntegration, cachedMethodOptions);   // Get own preferences
     preferences.addMethod('PUT', restIntegration, { authorizer });   // Save a preference
+    const preferencesBatch = preferences.addResource('batch');
+    preferencesBatch.addMethod('POST', restIntegration, { authorizer }); // Batch fetch (up to 100 users)
     const preferencesByUser = preferences.addResource('{userID}');
-    preferencesByUser.addMethod('GET', restIntegration, { authorizer }); // Get another user's public prefs
+    preferencesByUser.addMethod('GET', restIntegration, cachedMethodOptions);
 
     // /api/audit-logs endpoints (Audit Trail)
     const auditLogs = api.addResource('audit-logs');
-    auditLogs.addMethod('GET', restIntegration, { authorizer });  // Get current user's audit logs
+    auditLogs.addMethod('GET', restIntegration, cachedMethodOptions);
     const auditLogsByUser = auditLogs.addResource('user');
-    auditLogsByUser.addMethod('GET', restIntegration, { authorizer }); // Get current user's audit logs (explicit)
+    auditLogsByUser.addMethod('GET', restIntegration, cachedMethodOptions);
     const auditLogsByResource = auditLogs.addResource('resource');
     const auditLogsByResourceId = auditLogsByResource.addResource('{resourceID}');
-    auditLogsByResourceId.addMethod('GET', restIntegration, { authorizer }); // Get audit logs for a specific resource
+    auditLogsByResourceId.addMethod('GET', restIntegration, cachedMethodOptions);
     const auditLogsByAction = auditLogs.addResource('action');
     const auditLogsByActionName = auditLogsByAction.addResource('{action}');
-    auditLogsByActionName.addMethod('GET', restIntegration, { authorizer }); // Get audit logs by action type
+    auditLogsByActionName.addMethod('GET', restIntegration, cachedMethodOptions);
 
     // CloudWatch alarms for REST API handler
     createLambdaErrorAlarm(restApiHandler, 'rest-api-handler');
@@ -773,7 +924,7 @@ export class CommStack extends Stack {
         integration: new apigw2Integrations.WebSocketLambdaIntegration('DisconnectIntegration', disconnectFn),
       },
       defaultRouteOptions: {
-        integration: new apigw2Integrations.WebSocketLambdaIntegration('DefaultIntegration', defaultFn),
+        integration: new apigw2Integrations.WebSocketLambdaIntegration('DefaultIntegration', defaultFnAlias),
       },
     });
 
@@ -792,7 +943,7 @@ export class CommStack extends Stack {
       principal: new iam.ServicePrincipal('apigateway.amazonaws.com'),
       sourceArn: this.websocketApi.arnForExecuteApi(),
     });
-    defaultFn.addPermission('ApiGwInvokeDefault', {
+    defaultFnAlias.addPermission('ApiGwInvokeDefault', {
       principal: new iam.ServicePrincipal('apigateway.amazonaws.com'),
       sourceArn: this.websocketApi.arnForExecuteApi(),
     });
@@ -818,6 +969,8 @@ export class CommStack extends Stack {
     createDynamoThrottleAlarm(this.meetingsTable.tableName, 'MeetingsTable');
     createDynamoThrottleAlarm(this.callsTable.tableName, 'CallsTable');
     createDynamoThrottleAlarm(this.auditLogsTable.tableName, 'AuditLogsTable');
+    createDynamoThrottleAlarm(this.channelsTable.tableName, 'ChannelsTable');
+    createDynamoThrottleAlarm(this.userStarredMessagesTable.tableName, 'UserStarredMessagesTable');
 
     // ========================================
     // CUSTOM DOMAIN MAPPING
@@ -884,6 +1037,23 @@ export class CommStack extends Stack {
     new CfnOutput(this, 'UserPreferencesTableName', {
       value: this.userPreferencesTable.tableName,
       exportName: `${this.stackName}-UserPreferencesTableName`,
+    });
+    new CfnOutput(this, 'UserTeamsTableName', {
+      value: this.userTeamsTable.tableName,
+      exportName: `${this.stackName}-UserTeamsTableName`,
+    });
+    new CfnOutput(this, 'FilesCdnDomain', {
+      value: this.filesCdn.distributionDomainName,
+      description: 'CloudFront CDN domain for profile images and shared files',
+      exportName: `${this.stackName}-FilesCdnDomain`,
+    });
+    new CfnOutput(this, 'ChannelsTableName', {
+      value: this.channelsTable.tableName,
+      exportName: `${this.stackName}-ChannelsTableName`,
+    });
+    new CfnOutput(this, 'UserStarredMessagesTableName', {
+      value: this.userStarredMessagesTable.tableName,
+      exportName: `${this.stackName}-UserStarredMessagesTableName`,
     });
   }
 }
