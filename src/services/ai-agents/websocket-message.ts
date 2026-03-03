@@ -618,12 +618,23 @@ export const handler = async (event: WebSocketMessageEvent) => {
           const chunk = new TextDecoder().decode(event.chunk.bytes);
           fullResponse += chunk;
 
-          // Send chunk immediately for real-time streaming
-          sendToClient(apiClient, connectionId, {
-            type: 'chunk',
-            content: chunk,
-            timestamp: new Date().toISOString(),
-          }); // Fire and forget for speed
+          // Filter out internal Bedrock tool invocation XML that users should never see
+          // e.g. <invoke><tool_name>POST::requestAppointment</tool_name><parameters>...</parameters></invoke>
+          let cleanChunk = chunk
+            .replace(/<invoke>[\s\S]*?<\/invoke>/g, '')
+            .replace(/<function_calls>[\s\S]*?<\/function_calls>/g, '')
+            .replace(/<tool_use>[\s\S]*?<\/tool_use>/g, '')
+            .replace(/<invoke>[\s\S]*$/g, '')  // partial opening tag at end of chunk
+            .trim();
+
+          // Only send non-empty chunks after filtering
+          if (cleanChunk) {
+            sendToClient(apiClient, connectionId, {
+              type: 'chunk',
+              content: cleanChunk,
+              timestamp: new Date().toISOString(),
+            }); // Fire and forget for speed
+          }
         }
       }
     }
@@ -633,10 +644,18 @@ export const handler = async (event: WebSocketMessageEvent) => {
       sendToClient(apiClient, connectionId, traceEvent);
     }
 
+    // Clean tool invocation XML from full response before completion
+    const cleanResponse = fullResponse
+      .replace(/<invoke>[\s\S]*?<\/invoke>/g, '')
+      .replace(/<function_calls>[\s\S]*?<\/function_calls>/g, '')
+      .replace(/<tool_use>[\s\S]*?<\/tool_use>/g, '')
+      .replace(/<invoke>[\s\S]*$/g, '')
+      .trim();
+
     // Send completion event
     await sendToClient(apiClient, connectionId, {
       type: 'complete',
-      content: fullResponse || 'No response from agent',
+      content: cleanResponse || 'No response from agent',
       sessionId,
       timestamp: new Date().toISOString(),
     });
@@ -675,7 +694,7 @@ export const handler = async (event: WebSocketMessageEvent) => {
 
     if (error.name === 'DependencyFailedException') {
       // This error occurs when the Bedrock Agent's action group Lambda fails
-      // Common causes: timeout, OpenDental API issues, or configuration problems
+      // Common causes: timeout, API issues, or configuration problems
       console.error('[WebSocket] DependencyFailedException - Action group Lambda may have failed');
       userMessage = 'I had trouble looking that up. Could you please try again? If the problem persists, please contact the office directly.';
     } else if (error.name === 'ThrottlingException') {

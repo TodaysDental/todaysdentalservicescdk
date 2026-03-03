@@ -2,7 +2,7 @@
  * Invoke Agent Handler - Uses Bedrock Agent Runtime
  * 
  * Invokes a prepared Bedrock Agent with session management.
- * The agent uses Action Groups to call OpenDental tools.
+ * The agent uses Action Groups to call dental assistant tools.
  */
 
 import { DynamoDBClient } from '@aws-sdk/client-dynamodb';
@@ -761,7 +761,7 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
 
     if (error.name === 'DependencyFailedException') {
       // This error occurs when the Bedrock Agent's action group Lambda fails
-      // Common causes: timeout, OpenDental API issues, or configuration problems
+      // Common causes: timeout, API issues, or configuration problems
       console.error('[InvokeAgent] DependencyFailedException - Action group Lambda may have failed');
       return {
         statusCode: 502,

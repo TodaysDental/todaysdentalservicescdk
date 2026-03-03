@@ -1,8 +1,7 @@
 /**
- * Action Group Handler for Bedrock AI Agents
+ * Action Group Handler for Bedrock Agent
  *
- * Handles patient-facing AI voice/chat requests without any direct
- * OpenDental API integration. All appointment requests, patient inquiries,
+ * Handles tool calls from the AI dental assistant. All appointment requests, patient inquiries,
  * and service requests are recorded as Callback entries for clinic staff
  * to review and action in their dental management system.
  *
@@ -105,19 +104,31 @@ function parseParameters(event: ActionGroupEvent): Record<string, string> {
     result.patientName = sessionAttrs.patientName;
   }
 
-  // 2. URL / path parameters (override session defaults)
+  // Helper: detect unresolved Bedrock template variables like "$clinicName" or "{toolName}"
+  const isUnresolved = (v: string) => !v || v.startsWith('$') || (v.startsWith('{') && v.endsWith('}'));
+
+  // 2. URL / path parameters (override session defaults, skip unresolved templates)
   for (const p of event.parameters ?? []) {
-    if (p.value) result[p.name] = p.value;
+    if (p.value && !isUnresolved(p.value)) result[p.name] = p.value;
   }
 
   // 3. Request body properties — highest priority (application/json)
+  //    Skip unresolved template variables (e.g. "$clinicName") that Bedrock
+  //    sends when using the proxy schema — these would overwrite valid
+  //    session attribute values.
   const bodyContent = event.requestBody?.content;
   if (bodyContent) {
     for (const contentType of Object.keys(bodyContent)) {
       for (const prop of bodyContent[contentType]?.properties ?? []) {
-        if (prop.value) result[prop.name] = prop.value;
+        if (prop.value && !isUnresolved(prop.value)) result[prop.name] = prop.value;
       }
     }
+  }
+
+  // 4. FORCE clinicId from session attributes — Bedrock's body values are
+  //    unreliable (sends "clinicName", "$clinicName", etc.)
+  if (sessionAttrs.clinicId) {
+    result.clinicId = sessionAttrs.clinicId;
   }
 
   return result;
@@ -217,35 +228,46 @@ async function handleRequestAppointment(
     isNewPatient,
   } = params;
 
-  if (!clinicId || !patientName || !patientPhone) {
-    return buildResponse(event, 400, {
-      success: false,
-      message:
-        'Missing required fields: clinicId, patientName, and patientPhone are required.',
-    });
+  if (!clinicId || !patientName) {
+    // Try to use userName from session attributes as fallback
+    const fallbackName = patientName || params.userName || 'Unknown';
+    if (!clinicId) {
+      return buildResponse(event, 400, {
+        success: false,
+        message: 'Missing required field: clinicId is required.',
+      });
+    }
+    // Use fallback name and continue
+    params.patientName = fallbackName;
   }
 
   const now = new Date().toISOString();
   const requestId = uuidv4();
 
+  // Map old schema field names to our expected names
+  const effectiveName = params.patientName || patientName || params.userName || 'Unknown';
+  const effectivePhone = patientPhone || params.callerPhone || 'Not provided';
+  const effectiveReason = appointmentReason || params.Reason || params.reason || 'General visit';
+  const effectiveDate = preferredDate || params.Date || params.date || null;
+
   const preferredSlot =
-    [preferredDate, preferredTime].filter(Boolean).join(' at ') ||
+    [effectiveDate, preferredTime].filter(Boolean).join(' at ') ||
     'No preference provided';
 
   const callbackItem = {
     RequestID: requestId,
     clinicId,
-    name: patientName,
-    phone: patientPhone,
+    name: effectiveName,
+    phone: effectivePhone,
     email: patientEmail || undefined,
-    message: `New appointment request. Reason: ${appointmentReason || 'General visit'}. Preferred: ${preferredSlot}. New patient: ${isNewPatient || 'unknown'}.`,
+    message: `New appointment request. Reason: ${effectiveReason}. Preferred: ${preferredSlot}. New patient: ${isNewPatient || 'unknown'}.`,
     module: 'Operations',
-    notes: `Auto-created by AI Agent — patient called to book an appointment. Please confirm availability and call back to schedule.`,
+    notes: `Auto-created by AI Agent — patient requested an appointment via website chat. Please confirm availability and follow up.`,
     source: 'ai-agent',
     type: 'appointment-request',
-    preferredDate: preferredDate || null,
+    preferredDate: effectiveDate,
     preferredTime: preferredTime || null,
-    appointmentReason: appointmentReason || null,
+    appointmentReason: effectiveReason,
     isNewPatient: isNewPatient === 'true' || isNewPatient === '1',
     calledBack: 'NO',
     createdAt: now,
@@ -258,8 +280,8 @@ async function handleRequestAppointment(
     success: true,
     requestId,
     message:
-      `Your appointment request has been received. A team member from your clinic will call you back at ${patientPhone} to confirm your appointment. ` +
-      `If you provided a preferred date of ${preferredDate || 'any time'}, we will do our best to accommodate that.`,
+      `Your appointment request has been received! A team member will follow up with you to confirm your appointment. ` +
+      `Preferred date: ${effectiveDate || 'flexible'}. Reason: ${effectiveReason}.`,
   });
 }
 
@@ -287,13 +309,14 @@ async function handleRescheduleAppointment(
     reason,
   } = params;
 
-  if (!clinicId || !patientName || !patientPhone) {
+  if (!clinicId) {
     return buildResponse(event, 400, {
       success: false,
-      message:
-        'Missing required fields: clinicId, patientName, and patientPhone are required.',
+      message: 'Missing required field: clinicId.',
     });
   }
+  const effectiveName = patientName || params.userName || 'Unknown';
+  const effectivePhone = patientPhone || 'Not provided';
 
   const now = new Date().toISOString();
   const requestId = uuidv4();
@@ -301,8 +324,8 @@ async function handleRescheduleAppointment(
   const callbackItem = {
     RequestID: requestId,
     clinicId,
-    name: patientName,
-    phone: patientPhone,
+    name: effectiveName,
+    phone: effectivePhone,
     message: `Reschedule request. Current appointment: ${currentDate || 'unknown'}. Preferred new slot: ${[preferredDate, preferredTime].filter(Boolean).join(' at ') || 'flexible'}. Reason: ${reason || 'not specified'}.`,
     module: 'Operations',
     notes: `Auto-created by AI Agent — patient requested to reschedule. Please look up the existing appointment and call back.`,
@@ -342,13 +365,14 @@ async function handleCancelAppointment(
   const { clinicId, patientName, patientPhone, appointmentDate, reason } =
     params;
 
-  if (!clinicId || !patientName || !patientPhone) {
+  if (!clinicId) {
     return buildResponse(event, 400, {
       success: false,
-      message:
-        'Missing required fields: clinicId, patientName, and patientPhone are required.',
+      message: 'Missing required field: clinicId.',
     });
   }
+  const effectiveName = patientName || params.userName || 'Unknown';
+  const effectivePhone = patientPhone || 'Not provided';
 
   const now = new Date().toISOString();
   const requestId = uuidv4();
@@ -356,8 +380,8 @@ async function handleCancelAppointment(
   const callbackItem = {
     RequestID: requestId,
     clinicId,
-    name: patientName,
-    phone: patientPhone,
+    name: effectiveName,
+    phone: effectivePhone,
     message: `Cancellation request for appointment on ${appointmentDate || 'unknown date'}. Reason: ${reason || 'not specified'}.`,
     module: 'Operations',
     notes: `Auto-created by AI Agent — patient requested cancellation. Please cancel the appointment in the system and update availability.`,
@@ -450,13 +474,16 @@ async function handleRequestCallback(
     reason,
   } = params;
 
-  if (!clinicId || !patientName || !patientPhone || !message) {
+  if (!clinicId) {
     return buildResponse(event, 400, {
       success: false,
-      message:
-        'Missing required fields: clinicId, patientName, patientPhone, and message are required.',
+      message: 'Missing required field: clinicId.',
     });
   }
+
+  const effectiveName = patientName || params.userName || 'Unknown';
+  const effectivePhone = patientPhone || 'Not provided';
+  const effectiveMessage = message || reason || 'General inquiry';
 
   const now = new Date().toISOString();
   const requestId = uuidv4();
@@ -464,12 +491,12 @@ async function handleRequestCallback(
   const callbackItem = {
     RequestID: requestId,
     clinicId,
-    name: patientName,
-    phone: patientPhone,
+    name: effectiveName,
+    phone: effectivePhone,
     email: patientEmail || undefined,
-    message,
+    message: effectiveMessage,
     module: 'Operations',
-    notes: `Auto-created by AI Agent. Reason: ${reason || 'General inquiry'}. Patient left a message via the AI phone agent.`,
+    notes: `Auto-created by AI Agent. Reason: ${reason || effectiveMessage}. Patient contacted via website chat.`,
     source: 'ai-agent',
     type: 'general-callback',
     calledBack: 'NO',
@@ -482,7 +509,7 @@ async function handleRequestCallback(
   return buildResponse(event, 200, {
     success: true,
     requestId,
-    message: `Your message has been recorded. A team member will call you back at ${patientPhone} as soon as possible. Thank you!`,
+    message: `Your request has been recorded. A team member will follow up with you as soon as possible. Thank you!`,
   });
 }
 
@@ -496,8 +523,22 @@ export const handler = async (
   console.log('[ActionGroupHandler] Event:', JSON.stringify(event, null, 2));
 
   try {
-    // Normalise tool name from apiPath: "/requestAppointment" → "requestAppointment"
-    let toolName = event.apiPath.replace(/^\//, '');
+    // Normalise tool name from apiPath
+    // Handles direct paths ("/requestAppointment" → "requestAppointment"),
+    // proxy paths ("/open-dental/scheduleAppointment" → "scheduleAppointment"),
+    // and literal templates ("/open-dental/{toolName}" → extract from parameters/body)
+    let toolName = event.apiPath.replace(/^\//, '').replace(/^open-dental\//, '');
+
+    // CRITICAL FIX: When Bedrock uses the proxy schema, apiPath is the literal
+    // template "/open-dental/{toolName}" — the {toolName} is NOT resolved.
+    // The actual tool name comes as a parameter named "toolName" in the event.
+    if (toolName.includes('{') || toolName === '{toolName}') {
+      const fromParams = event.parameters?.find(p => p.name === 'toolName')?.value;
+      const fromBody = event.requestBody?.content?.['application/json']?.properties
+        ?.find((p: any) => p.name === 'toolName')?.value;
+      toolName = fromParams || fromBody || toolName;
+      console.log(`[ActionGroupHandler] Resolved toolName from parameters: ${toolName}`);
+    }
 
     const params = parseParameters(event);
 
@@ -513,13 +554,17 @@ export const handler = async (
     });
 
     switch (toolName) {
+      // Appointment booking
       case 'requestAppointment':
+      case 'scheduleAppointment':
         return await handleRequestAppointment(event, params);
 
       case 'rescheduleAppointment':
         return await handleRescheduleAppointment(event, params);
 
+      // Cancellation
       case 'cancelAppointment':
+      case 'breakAppointment':
         return await handleCancelAppointment(event, params);
 
       case 'getClinicInfo':
@@ -529,10 +574,16 @@ export const handler = async (
         return await handleRequestCallback(event, params);
 
       default:
-        console.warn(`[ActionGroupHandler] Unknown tool: ${toolName}`);
-        return buildResponse(event, 400, {
+        console.warn(`[ActionGroupHandler] Unknown/unsupported tool: ${toolName}`);
+        // Return a helpful message that guides the AI to use callback-based tools
+        return buildResponse(event, 200, {
           success: false,
-          message: `Unknown tool '${toolName}'. Supported tools: requestAppointment, rescheduleAppointment, cancelAppointment, getClinicInfo, requestCallback.`,
+          message:
+            `The tool '${toolName}' is not directly supported. ` +
+            `To book an appointment, use requestAppointment or scheduleAppointment. ` +
+            `To reschedule, use rescheduleAppointment. ` +
+            `To cancel, use cancelAppointment. ` +
+            `For other requests, use requestCallback to leave a message for staff.`,
         });
     }
   } catch (err: any) {

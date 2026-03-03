@@ -228,7 +228,7 @@ interface CallAnalytics {
 
   // Analytics fields
   transcriptSummary?: string;
-  toolsUsed?: string[];       // Which OpenDental tools were called
+  toolsUsed?: string[];       // Which tools were called
   appointmentBooked?: boolean;
   overallSentiment?: 'POSITIVE' | 'NEUTRAL' | 'NEGATIVE' | 'MIXED';  // Aligned with Comprehend
 

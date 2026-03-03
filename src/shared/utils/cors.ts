@@ -40,9 +40,13 @@ const STATIC_ALLOWED_ORIGIN_INPUTS: unknown[] = [
   // New brand domain — tdscopy project
   'https://todaysdentalservices.com',
   'https://www.todaysdentalservices.com',
-  // Local development origins (frontend runs on port 3000 via Vite)
+  // Clinic-specific domains
+  'https://dentistryatkewgardens.com',
+  // Local development origins (frontend runs on port 3000 or 5173 via Vite)
   'http://localhost:3000',
+  'http://localhost:5173',
   'http://127.0.0.1:3000',
+  'http://127.0.0.1:5173',
   ...(clinicsData as any[]).map(c => c.websiteLink).filter(Boolean),
   ...(clinicsData as any[]).map(c => c.wwwUrl).filter(Boolean),
 ];
@@ -73,9 +77,13 @@ export async function getAllowedOriginsAsync(): Promise<string[]> {
       // New brand domain
       'https://todaysdentalservices.com',
       'https://www.todaysdentalservices.com',
+      // Clinic-specific domains
+      'https://dentistryatkewgardens.com',
       // Local development origins
       'http://localhost:3000',
+      'http://localhost:5173',
       'http://127.0.0.1:3000',
+      'http://127.0.0.1:5173',
       ...configs.map((c: ClinicConfig) => c.websiteLink).filter(Boolean),
       ...configs.map((c: ClinicConfig) => (c as any).wwwUrl).filter(Boolean),
     ];
