@@ -6,7 +6,7 @@ import { SESv2Client, SendEmailCommand } from '@aws-sdk/client-sesv2';
 import type { Ticket } from './types';
 
 const ses = new SESv2Client({ region: process.env.SES_REGION || 'us-east-1' });
-const FROM_EMAIL = process.env.FROM_EMAIL || 'no-reply@todaysdentalinsights.com';
+const FROM_EMAIL = process.env.FROM_EMAIL || 'no-reply@todaysdentalservices.com';
 
 /**
  * Send a resolution notification email to the ticket reporter.

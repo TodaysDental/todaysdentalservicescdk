@@ -23,6 +23,8 @@ import { getCdkCorsConfig, getCorsErrorHeaders } from '../../shared/utils/cors';
 
 export interface ItTicketStackProps extends StackProps {
     staffClinicInfoTableName: string; // from CoreStack
+    /** Custom domain name token from CoreStack — creates implicit dependency so domain exists first */
+    apiDomainName?: string;
 }
 
 // ========================================
@@ -268,7 +270,7 @@ export class ItTicketStack extends Stack {
                 MEDIA_BUCKET: this.mediaBucket.bucketName,
                 STAFF_CLINIC_INFO_TABLE: props.staffClinicInfoTableName,
                 STAFF_USER_TABLE: staffUserTableName,
-                FROM_EMAIL: 'no-reply@todaysdentalinsights.com',
+                FROM_EMAIL: 'no-reply@todaysdentalservices.com',
                 SES_REGION: 'us-east-1',
                 PRESIGNED_URL_EXPIRY: '3600',
             },
@@ -367,8 +369,8 @@ export class ItTicketStack extends Stack {
         // ========================================
 
         new apigw.CfnBasePathMapping(this, 'ItTicketApiBasePathMapping', {
-            domainName: 'apig.todaysdentalinsights.com',
-            basePath: 'it-ticket', // Available at https://apig.todaysdentalinsights.com/it-ticket
+            domainName: props.apiDomainName ?? 'api.todaysdentalservices.com',
+            basePath: 'it-ticket', // Available at https://api.todaysdentalservices.com/it-ticket
             restApiId: this.api.restApiId,
             stage: this.api.deploymentStage.stageName,
         });
@@ -378,7 +380,7 @@ export class ItTicketStack extends Stack {
         // ========================================
 
         new CfnOutput(this, 'ItTicketApiUrl', {
-            value: 'https://apig.todaysdentalinsights.com/it-ticket/',
+            value: 'https://api.todaysdentalservices.com/it-ticket/',
             description: 'IT Ticket System API Gateway URL',
             exportName: `${Stack.of(this).stackName}-ItTicketApiUrl`,
         });

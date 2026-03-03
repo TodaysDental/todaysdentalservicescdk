@@ -42,6 +42,8 @@ export interface CommStackProps extends StackProps {
    * Send push Lambda function ARN for invoking push notifications
    */
   sendPushFunctionArn?: string;
+  /** Custom domain name token from CoreStack — creates implicit dependency so domain exists first */
+  apiDomainName?: string;
 }
 
 export class CommStack extends Stack {
@@ -545,7 +547,7 @@ export class CommStack extends Stack {
       bundling: { format: lambdaNode.OutputFormat.ESM, target: 'node20', minify: true },
       environment: {
         ...defaultLambdaEnv,
-        SES_SOURCE_EMAIL: 'no-reply@todaysdentalinsights.com',
+        SES_SOURCE_EMAIL: 'no-reply@todaysdentalservices.com',
         STAFF_USER_TABLE: 'StaffUser',
       },
     });
@@ -709,7 +711,7 @@ export class CommStack extends Stack {
       bundling: { format: lambdaNode.OutputFormat.ESM, target: 'node20', minify: true },
       environment: {
         FAVORS_TABLE: this.favorsTable.tableName,
-        SES_SOURCE_EMAIL: 'no-reply@todaysdentalinsights.com',
+        SES_SOURCE_EMAIL: 'no-reply@todaysdentalservices.com',
         FRONTEND_URL: 'https://todaysdentalinsights.com',
       },
     });
@@ -975,9 +977,9 @@ export class CommStack extends Stack {
     // ========================================
     // CUSTOM DOMAIN MAPPING
     // ========================================
-    // Map REST API to the shared custom domain: apig.todaysdentalinsights.com/comm
+    // Map REST API to the shared custom domain: api.todaysdentalservices.com/comm
     new apigw.CfnBasePathMapping(this, 'CommRestApiBasePathMapping', {
-      domainName: 'apig.todaysdentalinsights.com',
+      domainName: props.apiDomainName ?? 'api.todaysdentalservices.com',
       basePath: 'comm',
       restApiId: this.restApi.restApiId,
       stage: this.restApi.deploymentStage.stageName,
@@ -1004,7 +1006,7 @@ export class CommStack extends Stack {
       exportName: `${this.stackName}-WebSocketApiUrl`,
     });
     new CfnOutput(this, 'RestApiUrl', {
-      value: 'https://apig.todaysdentalinsights.com/comm/',
+      value: 'https://api.todaysdentalservices.com/comm/',
       description: 'The REST API Endpoint for Tasks, Meetings, Groups (Custom Domain)',
       exportName: `${this.stackName}-RestApiUrl`,
     });

@@ -3,57 +3,27 @@ import 'source-map-support/register';
 import * as dotenv from 'dotenv';
 
 // Load environment variables from .env file in the project root
-// dotenv.config() looks for .env in the current working directory by default
 dotenv.config();
 
 import * as cdk from 'aws-cdk-lib';
 import { CoreStack } from './stacks/core-stack';
 import { CallbackStack } from './stacks/callback-stack';
-import { PatientPortalStack } from './stacks/patient-portal-stack';
-import { ChatbotStack } from './stacks/chatbot-stack';
-// Granular service stacks
 import { TemplatesStack } from './stacks/templates-stack';
-// Import the new stack
-import { ConsentFormDataStack } from './stacks/consent-form-data-stack';
 import { SchedulesStack } from './stacks/schedules-stack';
-import { QueriesStack } from './stacks/queries-stack';
-import { ReportsStack } from './stacks/reports-stack';
-import { ClinicHoursStack } from './stacks/clinic-hours-stack';
-import { ClinicPricingStack } from './stacks/clinic-pricing-stack';
-import { ClinicCostStack } from './stacks/clinic-cost-stack';
-import { ClinicBudgetStack } from './stacks/clinic-budget-stack';
-import { ClinicInsuranceStack } from './stacks/clinic-insurance-stack';
 import { AdminStack } from './stacks/admin-stack';
-import { OpenDentalStack } from './stacks/opendental-stack';
 import { NotificationsStack } from './stacks/notifications-stack';
 import { ChimeStack, type VoiceConnectorOriginationRouteConfig } from './stacks/chime-stack';
 import { HrStack } from './stacks/hr-stack';
-import { AttendanceStack } from './stacks/attendance-stack';
-import { PatientPortalApptTypesStack } from './stacks/patient-portal-appttypes-stack';
-import { FluorideAutomationStack } from './stacks/fluoride-automation-stack';
 import { MarketingStack } from './stacks/marketing-stack';
 import { GoogleAdsStack } from './stacks/google-ads-stack';
-import { CommStack } from './stacks/comm-stack'; // <-- NEW IMPORT ADDED HERE
-import { AnalyticsStack } from './stacks/analytics-stack';
+import { CommStack } from './stacks/comm-stack';
 import { ClinicImagesStack } from './stacks/clinic-images-stack';
 import { AiAgentsStack } from './stacks/ai-agents-stack';
-import { QueryGeneratorStack } from './stacks/query-generator-stack';
-import { RcsStack } from './stacks/rcs-stack';
-import { CredentialingStack } from './stacks/credentialing-stack';
 import { LeaseManagementStack } from './stacks/lease-management-stack';
-import { InsurancePlanSyncStack } from './stacks/insurance-plan-sync-stack';
-import { FeeScheduleSyncStack } from './stacks/fee-schedule-sync-stack';
-import { EmailStack } from './stacks/email-stack';
-import { AccountingStack } from './stacks/accounting-stack';
-import { InsuranceAutomationStack } from './stacks/insurance-automation-stack';
-import { PaymentPostingSalaryStack } from './stacks/payment-posting-salary-stack';
-import { ClaimsSalaryStack } from './stacks/claims-salary-stack';
 import { SecretsStack } from './stacks/secrets-stack';
 import { ItTicketStack } from './stacks/it-ticket-stack';
-import { PushNotificationsStack } from './stacks/push-notifications-stack';
 import { ConnectLexAiStack } from './stacks/connect-lex-ai-stack';
-import { AnalyticsDashboardStack } from './stacks/analytics-dashboard-stack';
-// import { DentalSoftwareStack } from './stacks/dental-software-stack';
+import { PushNotificationsStack } from './stacks/push-notifications-stack';
 
 // Import clinic config for AI phone number mapping (used by Connect/Lex stack)
 import clinicConfigData from './configs/clinic-config.json';
@@ -76,7 +46,6 @@ if (Array.isArray(voiceConnectorTerminationCidrsContext)) {
     .filter((value) => value.length > 0);
 } else if (typeof voiceConnectorTerminationCidrsContext === 'string') {
   const trimmed = voiceConnectorTerminationCidrsContext.trim();
-
   if (trimmed.startsWith('[') && trimmed.endsWith(']')) {
     try {
       const parsed = JSON.parse(trimmed);
@@ -184,366 +153,198 @@ if (voiceConnectorOriginationRoutes && voiceConnectorOriginationRoutes.length ==
   voiceConnectorOriginationRoutes = undefined;
 }
 
-// 1. Core Stack - JWT-based authentication (minimal resources)
+// ========================================
+// STACK NAME CONSTANTS
+// ========================================
+// Using constants prevents CloudFormation from creating implicit exports
+// which cause UPDATE_ROLLBACK failures when tables need replacement.
+
+const CHIME_STACK_NAME = 'TodaysDentalInsightsChimeN1';
+const CHATBOT_STACK_NAME_CONSTANT = 'TodaysDentalInsightsChatbotN1';
+const CHATBOT_CONVERSATIONS_TABLE_NAME = `${CHATBOT_STACK_NAME_CONSTANT}-ConversationN1`;
+const AI_AGENTS_STACK_NAME = 'TodaysDentalInsightsAiAgentsN1';
+const COMM_STACK_NAME = 'TodaysDentalInsightsCommN1';
+const COMM_FAVORS_TABLE_NAME = `${COMM_STACK_NAME}-FavorRequestsV4`;
+const COMM_TEAMS_TABLE_NAME = `${COMM_STACK_NAME}-TeamsV4`;
+
+// Chime table name constants (must match actual ChimeStack table names)
+const CALL_QUEUE_TABLE_NAME = `${CHIME_STACK_NAME}-CallQueueV2`;
+const AGENT_PRESENCE_TABLE_NAME = `${CHIME_STACK_NAME}-AgentPresence`;
+const AGENT_PERFORMANCE_TABLE_NAME = `${CHIME_STACK_NAME}-AgentPerformance`;
+
+// ========================================
+// CORE STACK — JWT auth & shared tables
+// ========================================
 const coreStack = new CoreStack(app, 'TodaysDentalInsightsCoreN1', { env });
 
 // ========================================
-// SECRETS STACK - Centralized secrets management with KMS-encrypted DynamoDB tables
+// SECRETS STACK — KMS-encrypted DynamoDB tables for secrets
 // ========================================
-// This stack creates:
-// - KMS CMK for encryption
-// - ClinicSecrets table (per-clinic API keys, passwords)
-// - GlobalSecrets table (system-wide secrets: Ayrshare, Odoo, Gmail, Twilio)
-// - ClinicConfig table (non-sensitive clinic configuration)
-// - Seeder CustomResource to populate tables on deployment
 const secretsStack = new SecretsStack(app, 'TodaysDentalInsightsSecretsN1', {
   env,
   seedInitialData: true,
 });
 
-// SecretsStack has no dependencies - it's a foundational stack
-
-// 3. Granular Service Stacks - Each service has its own stack with table and API endpoints
-
-// Clinic Hours service - MOVED HERE as it's used by ChatbotStack, AdminStack, and SchedulesStack
-const clinicHoursStack = new ClinicHoursStack(app, 'TodaysDentalInsightsClinicHoursN1', {
+// ========================================
+// PUSH NOTIFICATIONS STACK (must come before Chime, Comm, and HR)
+// ========================================
+const pushNotificationsStack = new PushNotificationsStack(app, 'TodaysDentalInsightsPushN1', {
   env,
+  globalSecretsTableName: secretsStack.globalSecretsTable.tableName,
+  globalSecretsTableArn: secretsStack.globalSecretsTable.tableArn,
+  secretsEncryptionKeyArn: secretsStack.secretsEncryptionKey.keyArn,
+  apiDomainName: coreStack.customDomain.domainName,
 });
+pushNotificationsStack.addDependency(coreStack);    // imports AuthorizerFunctionArn
+pushNotificationsStack.addDependency(secretsStack); // reads GlobalSecrets for FCM credentials
 
-// Clinic Pricing service
-const clinicPricingStack = new ClinicPricingStack(app, 'TodaysDentalInsightsClinicPricingN1', {
-  env,
-});
-
-// Clinic Cost of Operation service - Stores daily operational costs per clinic
-// Only Super Admins and Global Super Admins can update costs (PUT)
-const clinicCostStack = new ClinicCostStack(app, 'TodaysDentalInsightsClinicCostN1', {
-  env,
-});
-
-// Clinic Daily Budget service - Stores daily budget targets per clinic
-// Only Super Admins and Global Super Admins can update budgets (PUT)
-const clinicBudgetStack = new ClinicBudgetStack(app, 'TodaysDentalInsightsClinicBudgetN1', {
-  env,
-});
-
-// Clinic Insurance service - TEMPORARILY DISABLED
-// const clinicInsuranceStack = new ClinicInsuranceStack(app, 'TodaysDentalInsightsClinicInsuranceN1', {
-//   env,
-// });
-
-// Templates service
+// ========================================
+// TEMPLATES STACK
+// ========================================
 const templatesStack = new TemplatesStack(app, 'TodaysDentalInsightsTemplatesN1', {
   env,
-  // No longer passing authorizerFunction - will import via CloudFormation export
+  apiDomainName: coreStack.customDomain.domainName,
 });
+templatesStack.addDependency(coreStack);
 
-// *** NEW STACK ***
-// Consent Form Data service
-const consentFormDataStack = new ConsentFormDataStack(app, 'TodaysDentalInsightsConsentFormDataN1', {
-  env,
-  globalSecretsTableName: secretsStack.globalSecretsTable.tableName,
-  clinicSecretsTableName: secretsStack.clinicSecretsTable.tableName,
-  clinicConfigTableName: secretsStack.clinicConfigTable.tableName,
-  secretsEncryptionKeyArn: secretsStack.secretsEncryptionKey.keyArn,
-});
-// *** END NEW STACK ***
-
-// Queries service
-const queriesStack = new QueriesStack(app, 'TodaysDentalInsightsQueriesN1', {
-  env,
-});
-
-// Reports service
-const reportsStack = new ReportsStack(app, 'TodaysDentalInsightsReportsN1', {
-  env,
-});
-
-// OpenDental service with SFTP resources
-const openDentalStack = new OpenDentalStack(app, 'TodaysDentalInsightsOpenDentalN1', {
-  env,
-  // Pass secrets table names for dynamic SFTP credential retrieval
-  globalSecretsTableName: secretsStack.globalSecretsTable.tableName,
-  clinicSecretsTableName: secretsStack.clinicSecretsTable.tableName,
-  clinicConfigTableName: secretsStack.clinicConfigTable.tableName,
-  secretsEncryptionKeyArn: secretsStack.secretsEncryptionKey.keyArn,
-});
-openDentalStack.addDependency(secretsStack); // Explicit - uses GlobalSecrets for SFTP password
-consentFormDataStack.addDependency(openDentalStack); // Explicit - imports consolidated Transfer endpoint/bucket outputs
-
-// Notifications service
+// ========================================
+// NOTIFICATIONS STACK
+// ========================================
 const notificationsStack = new NotificationsStack(app, 'TodaysDentalInsightsNotificationsN1', {
   env,
   templatesTableName: templatesStack.templatesTable.tableName,
-  // Pass secrets table names for dynamic secret retrieval (unsubscribe secret)
   globalSecretsTableName: secretsStack.globalSecretsTable.tableName,
   clinicConfigTableName: secretsStack.clinicConfigTable.tableName,
   secretsEncryptionKeyArn: secretsStack.secretsEncryptionKey.keyArn,
-  // Chime outbound calling (Marketing voice campaigns)
-  // NOTE: NotificationsStack is instantiated before CHIME_STACK_NAME is declared below,
-  // so we pass the known parameter name explicitly here.
   smaIdMapParameterName: '/TodaysDentalInsightsChimeN1/SmaIdMap',
   chimeMediaRegion: process.env.CHIME_MEDIA_REGION || 'us-east-1',
+  apiDomainName: coreStack.customDomain.domainName,
 });
-notificationsStack.addDependency(secretsStack); // Explicit - uses GlobalSecrets for unsubscribe secret
+notificationsStack.addDependency(coreStack);
+notificationsStack.addDependency(secretsStack);
+notificationsStack.addDependency(templatesStack);
+
+// ========================================
+// MARKETING STACK
+// ========================================
 const marketingStack = new MarketingStack(app, 'TodaysDentalInsightsMarketingN1', {
   env,
   authorizerFunctionArn: coreStack.authorizerFunction.functionArn,
-  // Pass secrets table names for dynamic secret retrieval
   globalSecretsTableName: secretsStack.globalSecretsTable.tableName,
   clinicSecretsTableName: secretsStack.clinicSecretsTable.tableName,
   clinicConfigTableName: secretsStack.clinicConfigTable.tableName,
   secretsEncryptionKeyArn: secretsStack.secretsEncryptionKey.keyArn,
+  apiDomainName: coreStack.customDomain.domainName,
 });
-marketingStack.addDependency(secretsStack); // Explicit - uses secrets tables for Ayrshare credentials
+marketingStack.addDependency(coreStack);
+marketingStack.addDependency(secretsStack);
 
-// Google Ads Stack - Separated from Marketing to stay under 500 resource limit
+// ========================================
+// GOOGLE ADS STACK
+// ========================================
 const googleAdsStack = new GoogleAdsStack(app, 'TodaysDentalInsightsGoogleAdsN1', {
   env,
   authorizerFunctionArn: coreStack.authorizerFunction.functionArn,
-  // Pass secrets table names for dynamic secret retrieval
   globalSecretsTableName: secretsStack.globalSecretsTable.tableName,
   clinicSecretsTableName: secretsStack.clinicSecretsTable.tableName,
   clinicConfigTableName: secretsStack.clinicConfigTable.tableName,
   secretsEncryptionKeyArn: secretsStack.secretsEncryptionKey.keyArn,
+  apiDomainName: coreStack.customDomain.domainName,
 });
-googleAdsStack.addDependency(coreStack); // Explicit - imports AuthorizerFunctionArn
-googleAdsStack.addDependency(secretsStack); // Explicit - uses secrets tables for Google Ads credentials
+googleAdsStack.addDependency(coreStack);
+googleAdsStack.addDependency(secretsStack);
 
-// Amazon Chime Voice Integration - create Chime stack first and export
-// Lambda ARNs. We intentionally do NOT pass the Admin API object into the
-// Chime stack to avoid a two-way construct dependency which leads to
-// cyclic CloudFormation references.
-
-// Define ChimeStack name for consistent cross-stack references
-const CHIME_STACK_NAME = 'TodaysDentalInsightsChimeN1';
-
-// Define ChatbotStack name for consistent cross-stack references
-// CRITICAL: This avoids CloudFormation export/import which causes UPDATE_ROLLBACK_IN_PROGRESS issues
-const CHATBOT_STACK_NAME = 'TodaysDentalInsightsChatbotN1';
-// The conversations table name follows the pattern: ${stackName}-ConversationN1
-const CHATBOT_CONVERSATIONS_TABLE_NAME = `${CHATBOT_STACK_NAME}-ConversationN1`;
-
-// Define AnalyticsStack name for consistent cross-stack references
-// CRITICAL FIX: Using constant names prevents CloudFormation from creating implicit exports
-// which cause UPDATE_ROLLBACK failures when the table needs replacement
-const ANALYTICS_STACK_NAME = 'TodaysDentalInsightsAnalyticsN1';
-const ANALYTICS_DASHBOARD_STACK_NAME = 'TodaysDentalInsightsAnalyticsDashboardN1';
-// Table names follow the pattern: ${stackName}-TableNameSuffix
-const ANALYTICS_TABLE_NAME = `${ANALYTICS_STACK_NAME}-CallAnalyticsN1`;
-const ANALYTICS_DEDUP_TABLE_NAME = `${ANALYTICS_STACK_NAME}-CallAnalytics-dedupV2`;
-
-// ChimeStack table names - defined as constants to pass to AnalyticsStack
-// CRITICAL: These must match the actual table names created in ChimeStack
-const CALL_QUEUE_TABLE_NAME = `${CHIME_STACK_NAME}-CallQueueV2`;
-const AGENT_PRESENCE_TABLE_NAME = `${CHIME_STACK_NAME}-AgentPresence`;
-const AGENT_PERFORMANCE_TABLE_NAME = `${CHIME_STACK_NAME}-AgentPerformance`;
-
-// Define AI Agents stack name for consistent cross-stack references
-const AI_AGENTS_STACK_NAME = 'TodaysDentalInsightsAiAgentsN1';
-
-// Define Push Notifications stack name for consistent cross-stack references
-const PUSH_NOTIFICATIONS_STACK_NAME = 'TodaysDentalInsightsPushN1';
-
-// Define CommStack name and table names for consistent cross-stack references
-// CRITICAL: Using constant names prevents CloudFormation from creating implicit exports
-// which cause UPDATE_ROLLBACK failures when the table needs replacement
-const COMM_STACK_NAME = 'TodaysDentalInsightsCommN1';
-const COMM_FAVORS_TABLE_NAME = `${COMM_STACK_NAME}-FavorRequestsV4`;
-const COMM_TEAMS_TABLE_NAME = `${COMM_STACK_NAME}-TeamsV4`;
-
-// ** ANALYTICS STACK INSTANTIATION (BEFORE CHIME) **
 // ========================================
-// NOTE ON CIRCULAR DEPENDENCY RESOLUTION:
+// CALLBACK STACK
 // ========================================
-// There's a 3-way dependency: AnalyticsStack <-> ChimeStack <-> AiAgentsStack
-// 
-// Solution: Deploy in phases
-// Phase 1 (first deploy): AnalyticsStack (no Voice AI) -> ChimeStack -> AiAgentsStack
-// Phase 2 (second deploy): Update AnalyticsStack with Voice AI tables from AiAgentsStack
-//
-// For Phase 1, ENABLE_VOICE_AI_ANALYTICS should be false
-// For Phase 2, set ENABLE_VOICE_AI_ANALYTICS=true after AiAgentsStack is deployed
-
-const ENABLE_VOICE_AI_ANALYTICS = process.env.ENABLE_VOICE_AI_ANALYTICS === 'true';
-
-const analyticsStack = new AnalyticsStack(app, ANALYTICS_STACK_NAME, {
+const callbackStack = new CallbackStack(app, 'TodaysDentalInsightsCallbackN1', {
   env,
-  jwtSecret: coreStack.jwtSecretValue,
-  region: env.region || process.env.AWS_REGION || 'us-east-1',
-  supervisorEmails: [], // Add supervisor emails for alerts
-  // ========================================
-  // CHIME STACK INTEGRATION
-  // ========================================
-  // Pass explicit table names to avoid fragile derivation
-  chimeStackName: CHIME_STACK_NAME,
-  // Explicit table names from constants (must match ChimeStack table names)
-  callQueueTableName: CALL_QUEUE_TABLE_NAME,
-  agentPresenceTableName: AGENT_PRESENCE_TABLE_NAME,
-  agentPerformanceTableName: AGENT_PERFORMANCE_TABLE_NAME,
-
-  // ========================================
-  // VOICE AI INTEGRATION (Phase 2 Deployment)
-  // ========================================
-  // Requires AiAgentsStack to be deployed first
-  // Set ENABLE_VOICE_AI_ANALYTICS=true after initial deployment
-  voiceSessionsTableName: ENABLE_VOICE_AI_ANALYTICS
-    ? cdk.Fn.importValue(`${AI_AGENTS_STACK_NAME}-VoiceSessionsTableName`)
-    : undefined,
-  voiceSessionsTableArn: ENABLE_VOICE_AI_ANALYTICS
-    ? cdk.Fn.importValue(`${AI_AGENTS_STACK_NAME}-VoiceSessionsTableArn`)
-    : undefined,
-  aiAgentsTableName: ENABLE_VOICE_AI_ANALYTICS
-    ? cdk.Fn.importValue(`${AI_AGENTS_STACK_NAME}-AiAgentsTableName`)
-    : undefined,
-  aiAgentsTableArn: ENABLE_VOICE_AI_ANALYTICS
-    ? cdk.Fn.importValue(`${AI_AGENTS_STACK_NAME}-AiAgentsTableArn`)
-    : undefined,
+  apiDomainName: coreStack.customDomain.domainName,
+  secretsEncryptionKeyArn: secretsStack.secretsEncryptionKey.keyArn,
 });
+callbackStack.addDependency(coreStack);
+callbackStack.addDependency(secretsStack);
 
-// Flag to enable after-hours AI routing (requires AiAgentsStack to be deployed first)
-// AiAgentsStack is deployed, so we enable this by default
-// Can be disabled via environment variable: ENABLE_AFTER_HOURS_AI=false
-const ENABLE_AFTER_HOURS_AI = process.env.ENABLE_AFTER_HOURS_AI !== 'false';
-
-// Chime Media Region - Chime SDK only supports specific regions for media operations
-// Override via environment variable if deploying to a different region
-// Supported: us-east-1, us-west-2, eu-west-2, ap-southeast-1, etc.
+// ========================================
+// CHIME MEDIA REGION & CONNECT CONFIG
+// ========================================
 const CHIME_MEDIA_REGION = process.env.CHIME_MEDIA_REGION || 'us-east-1';
-
-// ========================================
-// AMAZON CONNECT (LEX AI) RECORDINGS (OPTIONAL)
-// ========================================
-// Connect recordings are stored in the Connect-managed S3 bucket configured on the instance.
-// We pass these values to ChimeStack's GetRecording Lambda so /admin/recordings/call/{callId}
-// can also serve recordings for Connect/Lex calls (callId = connect-{ContactId}).
-//
-// NOTE: Override via environment variables if the Connect instance storage config changes.
 const CONNECT_CALL_RECORDINGS_BUCKET_NAME =
   process.env.CONNECT_CALL_RECORDINGS_BUCKET_NAME || 'amazon-connect-c827a75574aa';
 const CONNECT_CALL_RECORDINGS_PREFIX =
   process.env.CONNECT_CALL_RECORDINGS_PREFIX || 'connect/todaysdentalcommunications/CallRecordings';
 const CONNECT_CALL_RECORDINGS_KMS_KEY_ARN =
-  process.env.CONNECT_CALL_RECORDINGS_KMS_KEY_ARN || 'arn:aws:kms:us-east-1:851620242036:key/5dae5a1c-2e8f-4157-a04c-20e3293d01a7';
+  process.env.CONNECT_CALL_RECORDINGS_KMS_KEY_ARN ||
+  'arn:aws:kms:us-east-1:851620242036:key/5dae5a1c-2e8f-4157-a04c-20e3293d01a7';
 
 // ========================================
-// PUSH NOTIFICATIONS STACK (must be defined before ChimeStack and CommStack)
+// COMM STACK (must be before Admin and HR)
 // ========================================
-// Mobile push notifications via DIRECT Firebase FCM HTTP v1 API
-// No AWS SNS Platform Applications - all notifications sent directly to Firebase
-//
-// Required GlobalSecrets entries for FCM (Android & iOS):
-// - secretId: fcm, secretType: service_account (Firebase Service Account JSON)
-//
-// For iOS support: Configure APNs key in Firebase Console:
-// 1. Go to Firebase Console > Project Settings > Cloud Messaging
-// 2. Upload your APNs authentication key (.p8 file)
-// 3. Firebase will route iOS notifications to APNs automatically
-//
-// Used by: CommStack (offline messaging), ChimeStack (call notifications), HrStack
-const pushNotificationsStack = new PushNotificationsStack(app, PUSH_NOTIFICATIONS_STACK_NAME, {
+const communicationsStack = new CommStack(app, COMM_STACK_NAME, {
   env,
-  // GlobalSecrets table for FCM service account credentials
-  globalSecretsTableName: secretsStack.globalSecretsTable.tableName,
-  globalSecretsTableArn: secretsStack.globalSecretsTable.tableArn,
-  secretsEncryptionKeyArn: secretsStack.secretsEncryptionKey.keyArn,
+  jwtSecret: coreStack.jwtSecretValue,
+  authorizerFunctionArn: coreStack.authorizerFunction.functionArn,
+  // Push Notifications Integration
+  deviceTokensTableName: pushNotificationsStack.deviceTokensTable.tableName,
+  deviceTokensTableArn: pushNotificationsStack.deviceTokensTable.tableArn,
+  sendPushFunctionArn: pushNotificationsStack.sendPushFn.functionArn,
+  apiDomainName: coreStack.customDomain.domainName,
 });
-pushNotificationsStack.addDependency(coreStack); // Explicit - imports AuthorizerFunctionArn
-pushNotificationsStack.addDependency(secretsStack); // Explicit - reads from GlobalSecrets table
+communicationsStack.addDependency(coreStack);
+communicationsStack.addDependency(pushNotificationsStack);
 
+// ========================================
+// CHIME STACK (Voice/Call infrastructure)
+// ========================================
+const ENABLE_AFTER_HOURS_AI = process.env.ENABLE_AFTER_HOURS_AI !== 'false';
 
 const chimeStack = new ChimeStack(app, CHIME_STACK_NAME, {
   env,
   jwtSecret: coreStack.jwtSecretValue,
   voiceConnectorTerminationCidrs,
   voiceConnectorOriginationRoutes,
-  // CRITICAL FIX: Use constant table names instead of direct references to avoid CloudFormation
-  // implicit exports which cause UPDATE_ROLLBACK failures when the table needs replacement
-  analyticsTableName: ANALYTICS_TABLE_NAME,
-  analyticsDedupTableName: ANALYTICS_DEDUP_TABLE_NAME,
-  enableCallRecording: true, // Enable call recording by default
-  recordingRetentionDays: 2555, // ~7 years for compliance
-  medicalVocabularyName: analyticsStack.medicalVocabularyName,
-  // Chime Media Region - passed to all Lambda functions for consistent region usage
+  analyticsTableName: `TodaysDentalInsightsAnalyticsN1-CallAnalyticsN1`,
+  analyticsDedupTableName: `TodaysDentalInsightsAnalyticsN1-CallAnalytics-dedupV2`,
+  enableCallRecording: true,
+  recordingRetentionDays: 2555,
   chimeMediaRegion: CHIME_MEDIA_REGION,
-  // Connect/Lex recordings support (used by GetRecording fallback for connect-{ContactId})
   connectCallRecordingsBucketName: CONNECT_CALL_RECORDINGS_BUCKET_NAME,
   connectCallRecordingsPrefix: CONNECT_CALL_RECORDINGS_PREFIX,
   connectCallRecordingsKmsKeyArn: CONNECT_CALL_RECORDINGS_KMS_KEY_ARN,
-  // After-hours forwarding to Connect/Lex (AI phone number)
   enableAfterHoursAi: ENABLE_AFTER_HOURS_AI,
-  // CRITICAL FIX: Use ClinicHoursStack table directly - it's the source of truth for clinic hours
-  clinicHoursTableName: clinicHoursStack.clinicHoursTable.tableName,
-  voiceConfigTableName: ENABLE_AFTER_HOURS_AI ? cdk.Fn.importValue(`${AI_AGENTS_STACK_NAME}-VoiceConfigTableName`) : undefined,
-  // ========================================
-  // PUSH NOTIFICATIONS INTEGRATION
-  // ========================================
-  // Enables mobile push notifications for call events (incoming, missed, voicemail)
+  clinicHoursTableName: `TodaysDentalInsightsClinicHoursN1-ClinicHours`,
+  voiceConfigTableName: ENABLE_AFTER_HOURS_AI
+    ? cdk.Fn.importValue(`${AI_AGENTS_STACK_NAME}-VoiceConfigTableName`)
+    : undefined,
+  // Push Notifications — direct references (no circular dep; Chime doesn't feed back into Push)
   deviceTokensTableName: pushNotificationsStack.deviceTokensTable.tableName,
   deviceTokensTableArn: pushNotificationsStack.deviceTokensTable.tableArn,
   sendPushFunctionArn: pushNotificationsStack.sendPushFn.functionArn,
-  // StaffUser table for enriching GetOnlineAgents responses with names/emails
   staffUserTableName: coreStack.staffUserTable.tableName,
 });
-// ChimeStack depends on PushNotificationsStack for call notifications
 chimeStack.addDependency(pushNotificationsStack);
 
-// ** COMMUNICATIONS STACK INSTANTIATION **
-const communicationsStack = new CommStack(app, 'TodaysDentalInsightsCommN1', {
-  env,
-  jwtSecret: coreStack.jwtSecretValue,
-  // REST API Authorizer - authenticates all API requests
-  authorizerFunctionArn: coreStack.authorizerFunction.functionArn,
-  // Push Notifications Integration
-  // Enables mobile push notifications for offline users receiving messages/tasks
-  deviceTokensTableName: pushNotificationsStack.deviceTokensTable.tableName,
-  deviceTokensTableArn: pushNotificationsStack.deviceTokensTable.tableArn,
-  sendPushFunctionArn: pushNotificationsStack.sendPushFn.functionArn,
-});
-communicationsStack.addDependency(coreStack); // Explicit - imports AuthorizerFunctionArn
-
-// Chatbot Stack - WebSocket-based dental assistant chatbot (depends on core and clinic data)
-// NOTE: Use CHATBOT_STACK_NAME constant for consistent naming and to avoid cross-stack reference issues
-const chatbotStack = new ChatbotStack(app, CHATBOT_STACK_NAME, {
-  env,
-  // Chatbot reads directly from DynamoDB tables - no API calls needed
-  clinicHoursTableName: clinicHoursStack.clinicHoursTable.tableName,
-  clinicPricingTableName: clinicPricingStack.clinicPricingTable.tableName,
-  clinicInsuranceTableName: 'TodaysDentalInsightsClinicInsuranceN1-ClinicInsurance', // TEMP: hardcoded while stack disabled
-});
-
-// Admin services (AdminStack will import Chime lambda ARNs and wire API
-// methods). Importing the ARNs makes Admin depend on Chime (one-way), which
-// avoids the cyclic dependency we were seeing.
+// ========================================
+// ADMIN STACK
+// ========================================
 const adminStack = new AdminStack(app, 'TodaysDentalInsightsAdminN1', {
   env,
   staffUserTableName: coreStack.staffUserTable.tableName,
   staffClinicInfoTableName: coreStack.staffClinicInfoTable.tableName,
-  // CRITICAL FIX: Use constant table names instead of direct references to avoid CloudFormation
-  // implicit exports which cause UPDATE_ROLLBACK failures when the table needs replacement
   favorsTableName: COMM_FAVORS_TABLE_NAME,
-  teamsTableName: COMM_TEAMS_TABLE_NAME, // For group favor requests
-  clinicHoursTableName: clinicHoursStack.clinicHoursTable.tableName,
-  // CRITICAL FIX: Use constant table name instead of direct reference to avoid CloudFormation
-  // implicit exports which cause UPDATE_ROLLBACK failures when the table needs replacement
-  analyticsTableName: ANALYTICS_TABLE_NAME,
+  teamsTableName: COMM_TEAMS_TABLE_NAME,
+  clinicHoursTableName: `TodaysDentalInsightsClinicHoursN1-ClinicHours`,
+  analyticsTableName: `TodaysDentalInsightsAnalyticsN1-CallAnalyticsN1`,
   jwtSecretValue: coreStack.jwtSecretValue,
-  // Pass secrets table names for dynamic credential retrieval (cPanel credentials)
   globalSecretsTableName: secretsStack.globalSecretsTable.tableName,
   clinicConfigTableName: secretsStack.clinicConfigTable.tableName,
   secretsEncryptionKeyArn: secretsStack.secretsEncryptionKey.keyArn,
-  // Additional table names for detailed analytics
   callQueueTableName: chimeStack.callQueueTable.tableName,
   recordingMetadataTableName: chimeStack.recordingMetadataTable?.tableName,
-  // CRITICAL FIX: Use constant table name instead of cross-stack reference
-  // This avoids CloudFormation export/import which causes UPDATE_ROLLBACK_IN_PROGRESS issues
-  // when the exporting stack (ChatbotStack) tries to rollback while AdminStack still references the export
   chatHistoryTableName: CHATBOT_CONVERSATIONS_TABLE_NAME,
   clinicsTableName: chimeStack.clinicsTable.tableName,
   recordingsBucketName: chimeStack.recordingsBucket?.bucketName,
-  // CRITICAL: Add TranscriptBuffers table for LexAI/Voice AI transcript lookup
-  transcriptBufferTableName: analyticsStack.transcriptBufferTable.tableName,
-  // Import ARNs exported by the Chime stack
+  transcriptBufferTableName: `TodaysDentalInsightsAnalyticsN1-TranscriptBuffersV2`,
   agentActiveFnArn: cdk.Fn.importValue(`${chimeStack.stackName}-AgentActiveArn`),
   agentInactiveFnArn: cdk.Fn.importValue(`${chimeStack.stackName}-AgentInactiveArn`),
   outboundCallFnArn: cdk.Fn.importValue(`${chimeStack.stackName}-OutboundCallArn`),
@@ -559,249 +360,123 @@ const adminStack = new AdminStack(app, 'TodaysDentalInsightsAdminN1', {
   agentActiveTableName: chimeStack.agentActiveTable.tableName,
   holdCallFnArn: cdk.Fn.importValue(`${chimeStack.stackName}-HoldCallArn`),
   resumeCallFnArn: cdk.Fn.importValue(`${chimeStack.stackName}-ResumeCallArn`),
-  // New features: Add Call, DTMF, Notes, Conference
   addCallFnArn: cdk.Fn.importValue(`${chimeStack.stackName}-AddCallArn`),
   sendDtmfFnArn: cdk.Fn.importValue(`${chimeStack.stackName}-SendDtmfArn`),
   callNotesFnArn: cdk.Fn.importValue(`${chimeStack.stackName}-CallNotesArn`),
   conferenceCallFnArn: cdk.Fn.importValue(`${chimeStack.stackName}-ConferenceCallArn`),
-  // New features: Join Queue and Active Calls
   joinQueuedCallFnArn: cdk.Fn.importValue(`${chimeStack.stackName}-JoinQueuedCallArn`),
   joinActiveCallFnArn: cdk.Fn.importValue(`${chimeStack.stackName}-JoinActiveCallArn`),
   getJoinableCallsFnArn: cdk.Fn.importValue(`${chimeStack.stackName}-GetJoinableCallsArn`),
-  // Online Agents (for transfer list in iOS app and web)
   getOnlineAgentsFnArn: cdk.Fn.importValue(`${chimeStack.stackName}-GetOnlineAgentsArn`),
-  // Call Recording
   getRecordingFnArn: cdk.Fn.importValue(`${chimeStack.stackName}-GetRecordingFnArn`),
+  apiDomainName: coreStack.customDomain.domainName,
 });
-
-// CRITICAL FIX: Avoid circular dependencies between adminStack and chimeStack
-// 1. Ensure Admin is deployed after Chime (explicit dependency for clarity)
-// This is needed because Admin imports exported values from Chime
+adminStack.addDependency(coreStack);
 adminStack.addDependency(chimeStack);
+adminStack.addDependency(secretsStack);
 
-// 2. ChimeStack depends only on Core, not on AdminStack
-// This avoids the circular dependency where ChimeStack -> AdminStack -> ChimeStack
-// chimeStack.addDependency(coreStack); // Implicit through authorizerFunction
-
-// 3. Add a warning comment to prevent future circular dependencies
-// DO NOT add a dependency from ChimeStack to AdminStack as this would create a circular reference:
-// ChimeStack -> AdminStack -> ChimeStack
-
-// The Admin stack now receives the agent presence table name via props,
-// so no additional configuration is needed here.
-
+// ========================================
+// HR STACK
+// ========================================
 const hrStack = new HrStack(app, 'TodaysDentalInsightsHrN1', {
   env,
   staffClinicInfoTableName: coreStack.staffClinicInfoTable.tableName,
-  clinicsTableName: chimeStack.clinicsTable.tableName, // For timezone lookup in shift emails
-  // ========================================
-  // PUSH NOTIFICATIONS INTEGRATION
-  // ========================================
-  // Enables mobile push notifications for HR events (shifts, leave, advance pay)
-  deviceTokensTableName: pushNotificationsStack.deviceTokensTable.tableName,
-  deviceTokensTableArn: pushNotificationsStack.deviceTokensTable.tableArn,
-  sendPushFunctionArn: pushNotificationsStack.sendPushFn.functionArn,
-});
-// hrStack.addDependency(coreStack); // Implicit
-
-// Attendance Stack - Staff geofence + WiFi attendance tracking
-const attendanceStack = new AttendanceStack(app, 'TodaysDentalInsightsAttendanceN1', {
-  env,
-  staffClinicInfoTableName: coreStack.staffClinicInfoTable.tableName,
-  clinicHoursTableName: clinicHoursStack.clinicHoursTable.tableName,
-  shiftsTableName: hrStack.shiftsTable.tableName,
+  clinicsTableName: chimeStack.clinicsTable.tableName,
   // Push Notifications Integration
   deviceTokensTableName: pushNotificationsStack.deviceTokensTable.tableName,
   deviceTokensTableArn: pushNotificationsStack.deviceTokensTable.tableArn,
   sendPushFunctionArn: pushNotificationsStack.sendPushFn.functionArn,
+  apiDomainName: coreStack.customDomain.domainName,
 });
-attendanceStack.addDependency(coreStack); // Explicit - imports AuthorizerFunctionArn
-attendanceStack.addDependency(clinicHoursStack); // Explicit - reads clinic hours
-attendanceStack.addDependency(hrStack); // Explicit - reads shifts table
-attendanceStack.addDependency(pushNotificationsStack); // Explicit - push notifications
-
-
-// Credentialing Stack - Provider credentialing and payer enrollment management
-const credentialingStack = new CredentialingStack(app, 'TodaysDentalInsightsCredentialingN1', {
-  env,
-  staffClinicInfoTableName: coreStack.staffClinicInfoTable.tableName,
-});
-credentialingStack.addDependency(coreStack); // Explicit - imports AuthorizerFunctionArn
+hrStack.addDependency(coreStack);
+hrStack.addDependency(chimeStack);
+hrStack.addDependency(pushNotificationsStack);
 
 // ========================================
-// IT TICKET STACK — Bug Reporting & Feature Requests
+// CLINIC IMAGES STACK
 // ========================================
-// Self-contained stack: creates its own DynamoDB tables, S3 bucket, Lambda, and API Gateway.
-// Only reads from CoreStack (authorizer + StaffClinicInfo table).
-const ITTicketStack = new ItTicketStack(app, 'TodaysDentalInsightsItTicketN1', {
+const clinicImagesStack = new ClinicImagesStack(app, 'TodaysDentalInsightsClinicImagesN1', {
   env,
-  staffClinicInfoTableName: coreStack.staffClinicInfoTable.tableName,
+  globalSecretsTableName: secretsStack.globalSecretsTable.tableName,
+  clinicConfigTableName: secretsStack.clinicConfigTable.tableName,
+  secretsEncryptionKeyArn: secretsStack.secretsEncryptionKey.keyArn,
+  apiDomainName: coreStack.customDomain.domainName,
 });
-ITTicketStack.addDependency(coreStack); // Explicit - imports AuthorizerFunctionArn + StaffClinicInfo
+clinicImagesStack.addDependency(coreStack);
+clinicImagesStack.addDependency(secretsStack);
 
+// ========================================
+// AI AGENTS STACK
+// ========================================
+const ENABLE_VOICE_AI_ANALYTICS = process.env.ENABLE_VOICE_AI_ANALYTICS === 'true';
+const ANALYTICS_TABLE_NAME = 'TodaysDentalInsightsAnalyticsN1-CallAnalyticsN1';
 
-// Schedules service (depends on other services for cross-table access)
+const aiAgentsStack = new AiAgentsStack(app, AI_AGENTS_STACK_NAME, {
+  env,
+  clinicHoursTableName: `TodaysDentalInsightsClinicHoursN1-ClinicHours`,
+  clinicHoursTableArn: `arn:aws:dynamodb:${env.region || 'us-east-1'}:${env.account}:table/TodaysDentalInsightsClinicHoursN1-ClinicHours`,
+  // Chime props passed as hardcoded constants (not chimeStack.xxx) to break the synth-time
+  // circular: ChimeStack reads VoiceConfigTableName from AiAgentsStack via Fn.importValue
+  // at deploy-time, so aiAgentsStack must deploy first and cannot synth-depend on chimeStack.
+  clinicsTableName: `${CHIME_STACK_NAME}-Clinics`,
+  clinicsTableArn: `arn:aws:dynamodb:${env.region || 'us-east-1'}:${env.account}:table/${CHIME_STACK_NAME}-Clinics`,
+  smaIdMapParameterName: `/${CHIME_STACK_NAME}/SmaIdMap`,
+  chimeStackName: CHIME_STACK_NAME,
+  callQueueTableName: CALL_QUEUE_TABLE_NAME,
+  agentPresenceTableName: AGENT_PRESENCE_TABLE_NAME,
+  agentPerformanceTableName: AGENT_PERFORMANCE_TABLE_NAME,
+  mediaInsightsPipelineParameter: `/${CHIME_STACK_NAME}/MediaInsightsPipelineConfigArn`,
+  holdMusicBucketName: `${CHIME_STACK_NAME.toLowerCase()}-hold-music`,
+  holdMusicBucketArn: `arn:aws:s3:::${CHIME_STACK_NAME.toLowerCase()}-hold-music`,
+  secretsEncryptionKeyArn: secretsStack.secretsEncryptionKey.keyArn,
+  callAnalyticsTableName: ANALYTICS_TABLE_NAME,
+  callAnalyticsTableArn: `arn:aws:dynamodb:${env.region || 'us-east-1'}:${env.account}:table/${ANALYTICS_TABLE_NAME}`,
+  sharedRecordingsBucketName: `${CHIME_STACK_NAME.toLowerCase()}-recordings-${env.account}`,
+  sharedRecordingsBucketArn: `arn:aws:s3:::${CHIME_STACK_NAME.toLowerCase()}-recordings-${env.account}`,
+  webSocketDomainName: 'ws.todaysdentalservices.com',
+  wsHostedZoneId: 'Z0739065CXDA7H4CVUFQ',    // Route53 zone for ws.todaysdentalservices.com
+  connectInstanceId: '147f641d-ae2f-4d9f-8126-5ac2ff0c26f4',
+  outboundContactFlowId: '9a66f56c-0d7d-41ad-9447-dda3cf1699ee',
+  // Callback tables (from CallbackStack) for the action group Lambda
+  callbackTablePrefix: 'todaysdentalinsights-callback-',
+  defaultCallbackTableName: `TodaysDentalInsightsCallbackN1-CallbackRequests`,
+  defaultCallbackTableArn: `arn:aws:dynamodb:${env.region || 'us-east-1'}:${env.account}:table/TodaysDentalInsightsCallbackN1-CallbackRequests`,
+  apiDomainName: coreStack.customDomain.domainName,
+});
+aiAgentsStack.addDependency(coreStack);
+aiAgentsStack.addDependency(secretsStack);
+// AiAgentsStack must deploy BEFORE ChimeStack because ChimeStack reads
+// Fn.importValue(`${AI_AGENTS_STACK_NAME}-VoiceConfigTableName`) at deploy time.
+// No synth-time dependency between the two stacks.
+chimeStack.addDependency(aiAgentsStack);
+
+// ========================================
+// SCHEDULES STACK (depends on Templates + SecretStack)
+// ========================================
 const schedulesStack = new SchedulesStack(app, 'TodaysDentalInsightsSchedulesN1', {
   env,
   templatesTableName: templatesStack.templatesTable.tableName,
-  queriesTableName: queriesStack.queriesTable.tableName,
-  clinicHoursTableName: clinicHoursStack.clinicHoursTable.tableName,
-  consolidatedTransferServerId: openDentalStack.consolidatedTransferServer.attrServerId,
-  // Pass secrets table names for dynamic SFTP credential retrieval
+  queriesTableName: `TodaysDentalInsightsQueriesN1-Queries`,
+  clinicHoursTableName: `TodaysDentalInsightsClinicHoursN1-ClinicHours`,
   globalSecretsTableName: secretsStack.globalSecretsTable.tableName,
   clinicSecretsTableName: secretsStack.clinicSecretsTable.tableName,
   clinicConfigTableName: secretsStack.clinicConfigTable.tableName,
   secretsEncryptionKeyArn: secretsStack.secretsEncryptionKey.keyArn,
-  // Consent Forms scheduling (create instances + snapshot template)
-  consentFormTemplatesTableName: consentFormDataStack.consentFormDataTable.tableName,
-  consentFormInstancesTableName: consentFormDataStack.consentFormInstancesTable.tableName,
-  // Chime outbound calling (marketing voice campaigns)
+  consentFormTemplatesTableName: `TodaysDentalInsightsConsentFormDataN1-ConsentFormData`,
+  consentFormInstancesTableName: `TodaysDentalInsightsConsentFormDataN1-ConsentFormInstances`,
   smaIdMapParameterName: `/${CHIME_STACK_NAME}/SmaIdMap`,
   chimeMediaRegion: CHIME_MEDIA_REGION,
-  // Amazon Connect for AI outbound calls (AI_CALL notification type)
-  // NOTE: outboundContactFlowId is initially set to 'pending' because the Connect stack
-  // deploys after this stack and creates the flow via a custom resource.
-  // Once the Connect stack has deployed and the flow is created, update this to the actual flow ID.
-  // You can find it via: aws cloudformation list-exports | grep OutboundFlowId
-  connectInstanceId: '0626aa86-d377-44c8-9311-84e4f230cc72',
+  connectInstanceId: '147f641d-ae2f-4d9f-8126-5ac2ff0c26f4',
   outboundContactFlowId: '9a66f56c-0d7d-41ad-9447-dda3cf1699ee',
+  apiDomainName: coreStack.customDomain.domainName,
 });
-schedulesStack.addDependency(secretsStack); // Explicit - uses GlobalSecrets for SFTP password
-schedulesStack.addDependency(consentFormDataStack); // Explicit - reads/writes Consent Forms tables for scheduling
-
-const callbackStack = new CallbackStack(app, 'TodaysDentalInsightsCallbackN1', {
-  env,
-});
-
-// 7. Patient Portal Stack - Dedicated patient portal API (depends on core and OpenDental)
-const patientPortalStack = new PatientPortalStack(app, 'TodaysDentalInsightsPatientPortalN1', {
-  env,
-  consolidatedTransferServerId: openDentalStack.consolidatedTransferServer.attrServerId,
-  consolidatedTransferServerBucket: openDentalStack.consolidatedSftpBucket.bucketName,
-  // Pass secrets table names for dynamic SFTP credential retrieval
-  globalSecretsTableName: secretsStack.globalSecretsTable.tableName,
-  clinicSecretsTableName: secretsStack.clinicSecretsTable.tableName,
-  clinicConfigTableName: secretsStack.clinicConfigTable.tableName,
-  secretsEncryptionKeyArn: secretsStack.secretsEncryptionKey.keyArn,
-});
-patientPortalStack.addDependency(secretsStack); // Explicit - uses GlobalSecrets for SFTP password
-const patientPortalApptTypesStack = new PatientPortalApptTypesStack(app, 'TodaysDentalInsightsPatientPortalApptTypesN1', {
-  env,
-});
-// patientPortalApptTypesStack.addDependency(coreStack); // Implicit
-
-// Clinic Images Stack - S3 bucket and API for clinic image management
-const clinicImagesStack = new ClinicImagesStack(app, 'TodaysDentalInsightsClinicImagesN1', {
-  env,
-  // Pass secrets table names for dynamic clinic configuration retrieval
-  globalSecretsTableName: secretsStack.globalSecretsTable.tableName,
-  clinicConfigTableName: secretsStack.clinicConfigTable.tableName,
-  secretsEncryptionKeyArn: secretsStack.secretsEncryptionKey.keyArn,
-});
-clinicImagesStack.addDependency(secretsStack); // Explicit - uses ClinicConfig for clinic data
-
-// AI Agents Stack - Customizable AI agents with 3-level prompt system
-// Integrates with existing Chime infrastructure for voice AI
-// CRITICAL FIX: Uses shared CallAnalytics table from AnalyticsStack to avoid data fragmentation
-const aiAgentsStack = new AiAgentsStack(app, AI_AGENTS_STACK_NAME, {
-  env,
-  // ========================================
-  // CLINIC HOURS INTEGRATION (from ClinicHoursStack)
-  // ========================================
-  // CRITICAL FIX: Use the shared ClinicHours table from ClinicHoursStack
-  // This table is synced hourly from OpenDental and contains the authoritative clinic hours
-  clinicHoursTableName: clinicHoursStack.clinicHoursTable.tableName,
-  clinicHoursTableArn: clinicHoursStack.clinicHoursTable.tableArn,
-
-  // ========================================
-  // PATIENT PORTAL APPT TYPES INTEGRATION (from PatientPortalApptTypesStack)
-  // ========================================
-  // Used by Action Group Lambda to look up appointment types when booking
-  apptTypesTableName: patientPortalApptTypesStack.apptTypesTable.tableName,
-  apptTypesTableArn: patientPortalApptTypesStack.apptTypesTable.tableArn,
-
-  // ========================================
-  // CHIME STACK INTEGRATION (REQUIRED)
-  // ========================================
-  // CRITICAL FIX: Pass all required props explicitly to avoid fragile hardcoded defaults
-  clinicsTableName: chimeStack.clinicsTable.tableName,
-  clinicsTableArn: chimeStack.clinicsTable.tableArn,
-  // SMA ID Map SSM Parameter name (value stored in SSM due to CloudFormation 1024 char limit)
-  smaIdMapParameterName: `/${CHIME_STACK_NAME}/SmaIdMap`,
-  chimeStackName: CHIME_STACK_NAME,
-  // Call queue and agent tables for meeting join handler
-  callQueueTableName: chimeStack.callQueueTable.tableName,
-  agentPresenceTableName: chimeStack.agentPresenceTable.tableName,
-  agentPerformanceTableName: chimeStack.agentPerformanceTable.tableName,
-  // Media Insights Pipeline for real-time transcription in meetings
-  mediaInsightsPipelineParameter: `/${CHIME_STACK_NAME}/MediaInsightsPipelineConfigArn`,
-  // Hold music bucket for streaming TTS audio
-  holdMusicBucketName: chimeStack.holdMusicBucket?.bucketName,
-  holdMusicBucketArn: chimeStack.holdMusicBucket?.bucketArn,
-
-  // ========================================
-  // SECRETS STACK INTEGRATION (from SecretsStack)
-  // ========================================
-  // Required for Action Group Lambda to read from KMS-encrypted secrets tables (ClinicSecrets fallback)
-  secretsEncryptionKeyArn: secretsStack.secretsEncryptionKey.keyArn,
-
-  // ========================================
-  // UNIFIED ANALYTICS (REQUIRED)
-  // ========================================
-  // Use shared CallAnalytics table from AnalyticsStack
-  // This ensures Voice AI call records go to the same table as Chime stream records,
-  // making dashboards and reconciliation jobs see all data in one place.
-  // Schema: PK=callId (String), SK=timestamp (Number)
-  // CRITICAL FIX: Use constant table name instead of direct reference to avoid CloudFormation
-  // implicit exports which cause UPDATE_ROLLBACK failures when the table needs replacement
-  callAnalyticsTableName: ANALYTICS_TABLE_NAME,
-  // Construct ARN from known components to avoid cross-stack reference
-  callAnalyticsTableArn: `arn:aws:dynamodb:${env.region || 'us-east-1'}:${env.account}:table/${ANALYTICS_TABLE_NAME}`,
-
-  // ========================================
-  // SHARED RECORDINGS BUCKET
-  // ========================================
-  // Use ChimeStack's recordings bucket to avoid data fragmentation
-  // between AI calls and human calls
-  sharedRecordingsBucketName: chimeStack.recordingsBucket?.bucketName,
-  sharedRecordingsBucketArn: chimeStack.recordingsBucket?.bucketArn,
-
-  // ========================================
-  // WEBSOCKET DOMAIN (from ChatbotStack)
-  // ========================================
-  // CRITICAL FIX: Use explicit values for the WebSocket domain created by ChatbotStack
-  // These are static AWS-assigned values that don't change after domain creation
-  // Using hardcoded values avoids CloudFormation cross-stack reference issues
-  webSocketDomainName: 'ws.todaysdentalinsights.com',
-  webSocketRegionalDomainName: 'd-1623htv8c4.execute-api.us-east-1.amazonaws.com',
-  webSocketRegionalHostedZoneId: 'Z1UJRXOUMOOFQ8',
-
-  // Amazon Connect for AI outbound calls
-  // NOTE: outboundContactFlowId is initially set to 'pending' because the Connect stack
-  // deploys after this stack and creates the flow via a custom resource.
-  // Once the Connect stack has deployed, update this with the actual flow ID.
-  connectInstanceId: '0626aa86-d377-44c8-9311-84e4f230cc72',
-  outboundContactFlowId: '9a66f56c-0d7d-41ad-9447-dda3cf1699ee',
-});
-
-// Add dependencies so AI Agents stack deploys after Chime, Analytics, Chatbot, and ClinicHours
-// Chatbot creates the ws.todaysdentalinsights.com domain that AI Agents uses
-// ClinicHours provides the shared clinic hours table
-aiAgentsStack.addDependency(chimeStack);
-aiAgentsStack.addDependency(analyticsStack);
-aiAgentsStack.addDependency(chatbotStack);
-aiAgentsStack.addDependency(clinicHoursStack);
-aiAgentsStack.addDependency(secretsStack);
-aiAgentsStack.addDependency(patientPortalApptTypesStack); // For ApptTypes table access
+schedulesStack.addDependency(coreStack);
+schedulesStack.addDependency(secretsStack);
+schedulesStack.addDependency(templatesStack);
 
 // ========================================
 // CONNECT + LEX AI STACK
 // ========================================
-// Provides a fully serverless AI phone number via Amazon Connect + Lex V2.
-// Alternative to Chime Voice Connector (which requires an SBC for direct inbound calls).
-// Writes to the same AnalyticsStack tables (CallAnalyticsN1 + TranscriptBuffersV2) for unified dashboards.
-
-// Build AI phone numbers mapping from clinic-config.json (same pattern as ChimeStack)
 const clinicsWithAiPhones = (clinicConfigData as any[])
   .filter((c: any) => c.aiPhoneNumber && c.aiPhoneNumber.trim() !== '')
   .map((c: any) => ({
@@ -809,13 +484,11 @@ const clinicsWithAiPhones = (clinicConfigData as any[])
     aiPhoneNumber: c.aiPhoneNumber.trim(),
   }));
 
-// Map aiPhoneNumber -> clinicId for Lex hook to detect which clinic the call is for
 const aiPhoneNumbersMap = clinicsWithAiPhones.reduce(
   (acc, c) => ({ ...acc, [c.aiPhoneNumber]: c.clinicId }),
   {} as Record<string, string>
 );
 
-// Use the first AI phone number as the primary Connect AI phone (or fallback)
 const primaryAiPhoneNumber = clinicsWithAiPhones[0]?.aiPhoneNumber || '+14439272295';
 const defaultClinicForAi = clinicsWithAiPhones[0]?.clinicId || 'dentistingreenville';
 const connectAiPhoneNumbers = Array.from(new Set(clinicsWithAiPhones.map((c) => c.aiPhoneNumber)));
@@ -824,321 +497,55 @@ console.log(`[ConnectLexAiStack] Found ${clinicsWithAiPhones.length} clinics wit
 
 const connectLexAiStack = new ConnectLexAiStack(app, 'TodaysDentalInsightsConnectLexAiN1', {
   env,
-  // Existing Amazon Connect instance
-  connectInstanceId: '0626aa86-d377-44c8-9311-84e4f230cc72',
-  connectInstanceArn: 'arn:aws:connect:us-east-1:851620242036:instance/0626aa86-d377-44c8-9311-84e4f230cc72',
-  // Primary phone number to attach to AI contact flow (kept for outputs/testing)
+  connectInstanceId: '147f641d-ae2f-4d9f-8126-5ac2ff0c26f4',
+  connectInstanceArn: 'arn:aws:connect:us-east-1:489502444760:instance/147f641d-ae2f-4d9f-8126-5ac2ff0c26f4',
   connectAiPhoneNumber: primaryAiPhoneNumber,
-  // Associate all clinic AI numbers to the same inbound AI flow
   connectAiPhoneNumbers,
-  // AI Agents table for Bedrock agent lookup (from AiAgentsStack)
   agentsTableName: aiAgentsStack.agentsTable.tableName,
   agentsTableArn: aiAgentsStack.agentsTable.tableArn,
-  // Sessions table for session management (from AiAgentsStack)
   sessionsTableName: aiAgentsStack.sessionsTable.tableName,
   sessionsTableArn: aiAgentsStack.sessionsTable.tableArn,
-  // Voice agent config table (per-clinic voice + greetings)
   voiceConfigTableName: aiAgentsStack.voiceConfigTable.tableName,
   voiceConfigTableArn: aiAgentsStack.voiceConfigTable.tableArn,
-  // Scheduled calls table (AI outbound status tracking)
   scheduledCallsTableName: aiAgentsStack.scheduledCallsTable.tableName,
   scheduledCallsTableArn: aiAgentsStack.scheduledCallsTable.tableArn,
-  // Shared analytics tables from AnalyticsStack
   callAnalyticsTableName: ANALYTICS_TABLE_NAME,
   callAnalyticsTableArn: `arn:aws:dynamodb:${env.region || 'us-east-1'}:${env.account}:table/${ANALYTICS_TABLE_NAME}`,
-  transcriptBufferTableName: analyticsStack.transcriptBufferTable.tableName,
-  transcriptBufferTableArn: analyticsStack.transcriptBufferTable.tableArn,
-  // AI phone numbers mapping for clinic detection (built from clinic-config.json)
+  transcriptBufferTableName: `TodaysDentalInsightsAnalyticsN1-TranscriptBuffersV2`,
+  transcriptBufferTableArn: `arn:aws:dynamodb:${env.region || 'us-east-1'}:${env.account}:table/TodaysDentalInsightsAnalyticsN1-TranscriptBuffersV2`,
   aiPhoneNumbersJson: JSON.stringify(aiPhoneNumbersMap),
   defaultClinicId: defaultClinicForAi,
   thinkingAudioMode: 'verbal',
-  // SecretsStack tables for OpenDental caller lookup + clinic display name
   clinicSecretsTableName: secretsStack.clinicSecretsTable.tableName,
   clinicConfigTableName: secretsStack.clinicConfigTable.tableName,
   globalSecretsTableName: secretsStack.globalSecretsTable.tableName,
   secretsEncryptionKeyArn: secretsStack.secretsEncryptionKey.keyArn,
-  // Enable async pattern for 60s Bedrock timeout (overcomes Connect's 8s sync limit)
-  // This allows complex tool calls (patient search, appointment booking) to complete
-  // while playing continuous keyboard sounds to the caller
   useAsyncPattern: true,
-  asyncMaxPollLoops: 25, // ~50 seconds max wait with continuous typing sounds
+  asyncMaxPollLoops: 25,
 });
 connectLexAiStack.addDependency(aiAgentsStack);
-connectLexAiStack.addDependency(analyticsStack);
 connectLexAiStack.addDependency(secretsStack);
-// ConnectLexAiStack is standalone for AI calling (no Chime dependency).
 
-// Query Generator Stack - AI-powered SQL query generation using Bedrock
-const queryGeneratorStack = new QueryGeneratorStack(app, 'TodaysDentalInsightsQueryGeneratorN1', {
+// ========================================
+// NOTIFICATIONS — post-AI-Agents dependency
+// ========================================
+notificationsStack.addDependency(aiAgentsStack);
+
+// ========================================
+// IT TICKET STACK
+// ========================================
+const ITTicketStack = new ItTicketStack(app, 'TodaysDentalInsightsItTicketN1', {
   env,
+  staffClinicInfoTableName: coreStack.staffClinicInfoTable.tableName,
+  apiDomainName: coreStack.customDomain.domainName,
 });
+ITTicketStack.addDependency(coreStack);
 
-// RCS Messaging Stack - Twilio RCS messaging webhooks for all clinics
-// Provides incoming message, fallback, and status callback webhooks
-const rcsStack = new RcsStack(app, 'TodaysDentalInsightsRcsN1', {
-  env,
-  // Twilio credentials are now fetched from GlobalSecrets DynamoDB table at runtime
-  globalSecretsTableName: secretsStack.globalSecretsTable.tableName,
-  clinicSecretsTableName: secretsStack.clinicSecretsTable.tableName,
-  clinicConfigTableName: secretsStack.clinicConfigTable.tableName,
-  secretsEncryptionKeyArn: secretsStack.secretsEncryptionKey.keyArn,
-  // AI Agents integration for auto-replies
-  aiAgentsTableName: aiAgentsStack.agentsTable.tableName,
-  aiAgentsTableArn: aiAgentsStack.agentsTable.tableArn,
-  aiAgentConversationsTableName: aiAgentsStack.conversationsTable.tableName,
-  aiAgentConversationsTableArn: aiAgentsStack.conversationsTable.tableArn,
-});
-rcsStack.addDependency(secretsStack); // Explicit - uses GlobalSecrets for Twilio credentials
-rcsStack.addDependency(aiAgentsStack); // Explicit - reads agents table + writes conversation logs
-
-// Dental Software Stack - RDS MySQL database and S3 for clinic management
-// const dentalSoftwareStack = new DentalSoftwareStack(app, 'TodaysDentalInsightsDentalSoftwareN1', {
-//   env,
-// });
-
-// Clinic Hours service - REMOVED FROM HERE, moved to top after coreStack
-
-// Add stack dependencies
-// Core dependencies
-
-// NOTE: When using Fn.importValue() for AuthorizerFunctionArn, dependencies are NOT implicit
-// Explicit dependencies are required to ensure CoreStack is deployed first
-
-// Service stack dependencies - EXPLICIT because they import AuthorizerFunctionArn
-templatesStack.addDependency(coreStack); // Explicit - imports AuthorizerFunctionArn
-consentFormDataStack.addDependency(coreStack); // Explicit - imports AuthorizerFunctionArn
-queriesStack.addDependency(coreStack); // Explicit - imports AuthorizerFunctionArn
-reportsStack.addDependency(coreStack); // Explicit - imports AuthorizerFunctionArn
-clinicHoursStack.addDependency(coreStack); // Explicit - imports AuthorizerFunctionArn
-clinicPricingStack.addDependency(coreStack); // Explicit - imports AuthorizerFunctionArn
-clinicCostStack.addDependency(coreStack); // Explicit - imports AuthorizerFunctionArn
-clinicBudgetStack.addDependency(coreStack); // Explicit - imports AuthorizerFunctionArn
-// clinicInsuranceStack.addDependency(coreStack); // Explicit - imports AuthorizerFunctionArn - DISABLED
-openDentalStack.addDependency(coreStack); // Explicit - imports AuthorizerFunctionArn
-hrStack.addDependency(coreStack); // Explicit - imports AuthorizerFunctionArn
-hrStack.addDependency(chimeStack); // Explicit - uses Clinics table for timezone lookup
-hrStack.addDependency(pushNotificationsStack); // Explicit - uses push notification Lambda
-
-communicationsStack.addDependency(coreStack); // Explicit - uses JWT secret
-communicationsStack.addDependency(pushNotificationsStack); // Explicit - uses push notification Lambda
-
-// Analytics stack dependencies
-// CRITICAL FIX: Explicit dependency on CoreStack for jwtSecret
-analyticsStack.addDependency(coreStack);
-
-// Cross-service dependencies for services that need data from other services
-notificationsStack.addDependency(coreStack); // Explicit - imports AuthorizerFunctionArn
-notificationsStack.addDependency(templatesStack); // Explicit - uses table name
-notificationsStack.addDependency(aiAgentsStack); // Explicit - imports AiAgents table outputs for SMS AI auto-replies
-adminStack.addDependency(coreStack); // Explicit - imports AuthorizerFunctionArn
-adminStack.addDependency(secretsStack); // Explicit - uses GlobalSecrets for cPanel credentials
-schedulesStack.addDependency(coreStack); // Explicit - imports AuthorizerFunctionArn
-schedulesStack.addDependency(templatesStack); // Explicit - uses table name
-schedulesStack.addDependency(queriesStack); // Explicit - uses table name
-schedulesStack.addDependency(openDentalStack); // Explicit - uses server ID
-// NEW: Schedules stack imports RCS stack exports (RCS templates table + send Lambda ARN)
-schedulesStack.addDependency(rcsStack); // Explicit - imports RCS stack outputs via Fn.importValue
-
-
-
-// Other existing stack dependencies
-callbackStack.addDependency(coreStack); // Explicit - imports AuthorizerFunctionArn
-patientPortalApptTypesStack.addDependency(coreStack); // Explicit - imports AuthorizerFunctionArn
-clinicImagesStack.addDependency(coreStack); // Explicit - imports AuthorizerFunctionArn
-aiAgentsStack.addDependency(coreStack); // Explicit - imports AuthorizerFunctionArn
-queryGeneratorStack.addDependency(coreStack); // Explicit - imports AuthorizerFunctionArn
-rcsStack.addDependency(coreStack); // Explicit - imports AuthorizerFunctionArn
-rcsStack.addDependency(notificationsStack); // Explicit - imports UnsubscribeTableName
-// dentalSoftwareStack.addDependency(coreStack); // Explicit - imports AuthorizerFunctionArn
-// patientPortalStack.addDependency(coreStack); // Note: PatientPortalStack might not import it - verify
-patientPortalStack.addDependency(openDentalStack); // Explicit - uses SFTP resources
-chatbotStack.addDependency(coreStack); // Explicit - imports AuthorizerFunctionArn
-chatbotStack.addDependency(clinicPricingStack); // Explicit - uses table name
-// chatbotStack.addDependency(clinicInsuranceStack); // Explicit - uses table name - DISABLED
-
-// Fluoride Automation Stack - Run automation for adding fluoride treatments every hour
-// const fluorideAutomationStack = new FluorideAutomationStack(app, 'TodaysDentalInsightsFluorideAutomationV1', {
-//  env,
-// });
-// fluorideAutomationStack.addDependency(openDentalStack); // Add dependency on OpenDental stack for SFTP server
-
-// Lease Management Stack - Manages lease documents for all 28 clinics
-// Features: CRUD operations, S3 document storage, Textract OCR extraction
+// ========================================
+// LEASE MANAGEMENT STACK
+// ========================================
 const leaseManagementStack = new LeaseManagementStack(app, 'TodaysDentalInsightsLeaseManagementN1', {
   env,
+  apiDomainName: coreStack.customDomain.domainName,
 });
-leaseManagementStack.addDependency(coreStack); // Explicit - imports AuthorizerFunctionArn
-
-// Insurance Plan Sync Stack - Syncs insurance plan data from OpenDental every 15 minutes
-// Stores comprehensive plan info: maximums, deductibles, coverage percentages, waiting periods, etc.
-const insurancePlanSyncStack = new InsurancePlanSyncStack(app, 'TodaysDentalInsightsInsurancePlanSyncN1', {
-  env,
-  consolidatedTransferServerId: openDentalStack.consolidatedTransferServer.attrServerId,
-  // Pass secrets table names for dynamic SFTP credential retrieval
-  globalSecretsTableName: secretsStack.globalSecretsTable.tableName,
-  clinicSecretsTableName: secretsStack.clinicSecretsTable.tableName,
-  clinicConfigTableName: secretsStack.clinicConfigTable.tableName,
-  secretsEncryptionKeyArn: secretsStack.secretsEncryptionKey.keyArn,
-});
-insurancePlanSyncStack.addDependency(openDentalStack); // Explicit - uses SFTP server ID
-insurancePlanSyncStack.addDependency(secretsStack); // Explicit - uses GlobalSecrets for SFTP password
-
-// Fee Schedule Sync Stack - Syncs fee schedule data from OpenDental every 15 minutes
-// Stores fee amounts for procedure codes across all fee schedules (feesched, fee, procedurecode)
-const feeScheduleSyncStack = new FeeScheduleSyncStack(app, 'TodaysDentalInsightsFeeScheduleSyncN1', {
-  env,
-  consolidatedTransferServerId: openDentalStack.consolidatedTransferServer.attrServerId,
-  // Pass secrets table names for dynamic SFTP credential retrieval
-  globalSecretsTableName: secretsStack.globalSecretsTable.tableName,
-  clinicSecretsTableName: secretsStack.clinicSecretsTable.tableName,
-  clinicConfigTableName: secretsStack.clinicConfigTable.tableName,
-  secretsEncryptionKeyArn: secretsStack.secretsEncryptionKey.keyArn,
-});
-feeScheduleSyncStack.addDependency(openDentalStack); // Explicit - uses SFTP server ID
-feeScheduleSyncStack.addDependency(secretsStack); // Explicit - uses GlobalSecrets for SFTP password
-
-// Email Stack - Clinic-specific email operations (Gmail REST API + IMAP/SMTP)
-// Includes Email Router: scheduled Lambda that polls inboxes, classifies with Bedrock AI,
-// and routes emails to Callbacks table or Comm FavorRequests table
-const emailStack = new EmailStack(app, 'TodaysDentalInsightsEmailN1', {
-  env,
-  // Pass secrets table names for dynamic secret retrieval
-  globalSecretsTableName: secretsStack.globalSecretsTable.tableName,
-  clinicSecretsTableName: secretsStack.clinicSecretsTable.tableName,
-  clinicConfigTableName: secretsStack.clinicConfigTable.tableName,
-  secretsEncryptionKeyArn: secretsStack.secretsEncryptionKey.keyArn,
-  // Email Router cross-stack integration
-  commFavorsTableName: communicationsStack.favorsTable.tableName,
-  commFavorsTableArn: communicationsStack.favorsTable.tableArn,
-  commFilesBucketName: communicationsStack.fileBucket.bucketName,
-  commFilesBucketArn: communicationsStack.fileBucket.bucketArn,
-  callbackTablePrefix: callbackStack.callbackTablePrefix,
-  defaultCallbackTableName: callbackStack.defaultCallbackTableName,
-  defaultCallbackTableArn: callbackStack.defaultCallbackTableArn,
-});
-emailStack.addDependency(coreStack); // Explicit - imports AuthorizerFunctionArn
-emailStack.addDependency(secretsStack); // Explicit - uses GlobalSecrets table for Gmail/cPanel credentials
-emailStack.addDependency(communicationsStack); // Explicit - email router writes to FavorRequests table and S3 bucket
-emailStack.addDependency(callbackStack); // Explicit - email router writes to callback tables
-
-// Accounting Stack - Invoice intake (Accounts Payable) and Bank Reconciliation
-// Integrates with OpenDental for payment data and Odoo for bank transactions
-const accountingStack = new AccountingStack(app, 'TodaysDentalInsightsAccountingN1', {
-  env,
-  staffClinicInfoTableName: coreStack.staffClinicInfoTable.tableName,
-  // Pass secrets table names for dynamic secret retrieval
-  globalSecretsTableName: secretsStack.globalSecretsTable.tableName,
-  clinicConfigTableName: secretsStack.clinicConfigTable.tableName,
-  // ClinicSecrets table for per-clinic OpenDental API credentials
-  clinicSecretsTableName: secretsStack.clinicSecretsTable.tableName,
-  secretsEncryptionKeyArn: secretsStack.secretsEncryptionKey.keyArn,
-});
-accountingStack.addDependency(coreStack); // Explicit - imports AuthorizerFunctionArn
-accountingStack.addDependency(secretsStack); // Explicit - uses GlobalSecrets table for Odoo credentials
-
-// Payment Posting Salary Analytics (Finance workflow)
-// Computes salary earnings by assignee and location using OpenDental SQL queries delivered via SFTP
-const paymentPostingSalaryStack = new PaymentPostingSalaryStack(app, 'TodaysDentalInsightsPaymentPostingSalaryN1', {
-  env,
-  consolidatedTransferServerId: openDentalStack.consolidatedTransferServer.attrServerId,
-  globalSecretsTableName: secretsStack.globalSecretsTable.tableName,
-  clinicSecretsTableName: secretsStack.clinicSecretsTable.tableName,
-  clinicConfigTableName: secretsStack.clinicConfigTable.tableName,
-  secretsEncryptionKeyArn: secretsStack.secretsEncryptionKey.keyArn,
-});
-paymentPostingSalaryStack.addDependency(coreStack); // Explicit - imports AuthorizerFunctionArn + StaffUser table export
-paymentPostingSalaryStack.addDependency(openDentalStack); // Explicit - uses consolidated Transfer server ID
-paymentPostingSalaryStack.addDependency(secretsStack); // Explicit - uses secrets tables for OpenDental creds + SFTP password
-
-// Claims Salary Analytics (Finance workflow)
-// Computes salary earnings for Claims team by assignee and location using OpenDental SQL queries delivered via SFTP
-const claimsSalaryStack = new ClaimsSalaryStack(app, 'TodaysDentalInsightsClaimsSalaryN1', {
-  env,
-  consolidatedTransferServerId: openDentalStack.consolidatedTransferServer.attrServerId,
-  globalSecretsTableName: secretsStack.globalSecretsTable.tableName,
-  clinicSecretsTableName: secretsStack.clinicSecretsTable.tableName,
-  clinicConfigTableName: secretsStack.clinicConfigTable.tableName,
-  secretsEncryptionKeyArn: secretsStack.secretsEncryptionKey.keyArn,
-});
-claimsSalaryStack.addDependency(coreStack); // Explicit - imports AuthorizerFunctionArn + StaffUser table export
-claimsSalaryStack.addDependency(openDentalStack); // Explicit - uses consolidated Transfer server ID
-claimsSalaryStack.addDependency(secretsStack); // Explicit - uses secrets tables for OpenDental creds + SFTP password
-
-// Insurance Automation Stack - Commission tracking and document processing for insurance team
-// Features: Commission tracking, Textract document processing, Note copying between patients
-const insuranceAutomationStack = new InsuranceAutomationStack(app, 'TodaysDentalInsightsInsuranceAutomationN1', {
-  env,
-  consolidatedTransferServerId: openDentalStack.consolidatedTransferServer.attrServerId,
-  staffClinicInfoTableName: coreStack.staffClinicInfoTable.tableName,
-  // Pass secrets table names for dynamic credential retrieval
-  globalSecretsTableName: secretsStack.globalSecretsTable.tableName,
-  clinicSecretsTableName: secretsStack.clinicSecretsTable.tableName,
-  clinicConfigTableName: secretsStack.clinicConfigTable.tableName,
-  secretsEncryptionKeyArn: secretsStack.secretsEncryptionKey.keyArn,
-});
-insuranceAutomationStack.addDependency(coreStack); // Explicit - imports AuthorizerFunctionArn
-insuranceAutomationStack.addDependency(openDentalStack); // Explicit - uses SFTP server ID
-insuranceAutomationStack.addDependency(secretsStack); // Explicit - uses secrets tables
-
-// Push Notifications Stack is instantiated earlier in the file (before ChimeStack and CommStack)
-// See the PUSH NOTIFICATIONS STACK section above
-
-// ========================================
-// ANALYTICS DASHBOARD STACK
-// ========================================
-// Comprehensive daily analytics endpoint that aggregates data from:
-// - GA4 (Google Analytics 4) - Website traffic and behavior
-// - Google Ads - Campaign performance and conversions
-// - Microsoft Clarity - Session recordings and heatmaps
-// - Calls - Inbound, outbound, missed from Chime/Analytics
-// - Patient Portal - Appointment bookings and engagement
-// - AI Agents - Voice AI call handling metrics
-// - Open Dental Production - Revenue and appointment data
-const analyticsDashboardStack = new AnalyticsDashboardStack(app, ANALYTICS_DASHBOARD_STACK_NAME, {
-  env,
-  jwtSecret: coreStack.jwtSecretValue,
-  authorizerFunctionArn: coreStack.authorizerFunction.functionArn,
-  // SFTP server for Open Dental query results delivery
-  consolidatedTransferServerId: openDentalStack.consolidatedTransferServer.attrServerId,
-  // Call Analytics table from AnalyticsStack
-  callAnalyticsTableName: ANALYTICS_TABLE_NAME,
-  callAnalyticsTableArn: `arn:aws:dynamodb:${env.region || 'us-east-1'}:${env.account}:table/${ANALYTICS_TABLE_NAME}`,
-  // AI Agents Metrics table from AiAgentsStack (if available)
-  aiAgentsMetricsTableName: ENABLE_VOICE_AI_ANALYTICS
-    ? cdk.Fn.importValue(`${AI_AGENTS_STACK_NAME}-AiAgentsMetricsTableName`)
-    : undefined,
-  aiAgentsMetricsTableArn: ENABLE_VOICE_AI_ANALYTICS
-    ? cdk.Fn.importValue(`${AI_AGENTS_STACK_NAME}-AiAgentsMetricsTableArn`)
-    : undefined,
-  // Patient Portal Metrics table from PatientPortalStack
-  patientPortalMetricsTableName: patientPortalStack.portalMetricsTableName,
-  patientPortalMetricsTableArn: `arn:aws:dynamodb:${env.region || 'us-east-1'}:${env.account}:table/${patientPortalStack.portalMetricsTableName}`,
-  // Clinic Config table for clinic metadata
-  clinicConfigTableName: secretsStack.clinicConfigTable.tableName,
-  clinicConfigTableArn: secretsStack.clinicConfigTable.tableArn,
-  // Clinic Secrets table for per-clinic API tokens (e.g., Clarity)
-  clinicSecretsTableName: secretsStack.clinicSecretsTable.tableName,
-  clinicSecretsTableArn: secretsStack.clinicSecretsTable.tableArn,
-  // Global Secrets table for API credentials (GA4, Google Ads)
-  globalSecretsTableName: secretsStack.globalSecretsTable.tableName,
-  globalSecretsTableArn: secretsStack.globalSecretsTable.tableArn,
-  // Secrets encryption key for decrypting credentials
-  secretsEncryptionKeyArn: secretsStack.secretsEncryptionKey.keyArn,
-  // Callback tables for callback analytics
-  callbackTablePrefix: callbackStack.callbackTablePrefix,
-  callbackDefaultTableName: callbackStack.defaultCallbackTableName,
-  callbackDefaultTableArn: callbackStack.defaultCallbackTableArn,
-});
-analyticsDashboardStack.addDependency(coreStack); // Explicit - uses JWT secret
-analyticsDashboardStack.addDependency(analyticsStack); // Explicit - uses CallAnalytics table
-analyticsDashboardStack.addDependency(patientPortalStack); // Explicit - uses PatientPortalMetrics table
-analyticsDashboardStack.addDependency(secretsStack); // Explicit - uses GlobalSecrets table
-analyticsDashboardStack.addDependency(openDentalStack); // Explicit - uses consolidated SFTP transfer server
-analyticsDashboardStack.addDependency(callbackStack); // Explicit - uses Callback tables
-
-// CRITICAL FIX: Remove commented-out code that could lead to circular dependencies
-// Note: The proper dependencies are already set above:
-// 1. adminStack.addDependency(chimeStack) - Admin depends on Chime
-// 2. chimeStack.addDependency(coreStack) - Chime depends on Core
-// Do not uncomment the following line as it would create a circular reference:
-// chimeStack.addDependency(adminStack)
+leaseManagementStack.addDependency(coreStack);

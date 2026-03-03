@@ -12,13 +12,18 @@ import * as eventsTargets from 'aws-cdk-lib/aws-events-targets';
 import { Construct } from 'constructs';
 import * as path from 'path';
 
+export interface LeaseManagementStackProps extends cdk.StackProps {
+  /** Custom domain name token from CoreStack — creates implicit dependency so domain exists first */
+  apiDomainName?: string;
+}
+
 export class LeaseManagementStack extends cdk.Stack {
   public readonly leaseTable: dynamodb.Table;
   public readonly leaseDocumentsBucket: s3.Bucket;
   public readonly api: apigateway.RestApi;
   public readonly authorizer: apigateway.RequestAuthorizer;
 
-  constructor(scope: Construct, id: string, props?: cdk.StackProps) {
+  constructor(scope: Construct, id: string, props?: LeaseManagementStackProps) {
     super(scope, id, props);
 
     // S3 Bucket for Lease Documents
@@ -163,7 +168,7 @@ export class LeaseManagementStack extends cdk.Stack {
         LEASE_TABLE_NAME: this.leaseTable.tableName,
         STAFF_USER_TABLE: 'StaffUser',
         APP_NAME: 'TodaysDentalInsights',
-        FROM_EMAIL: 'no-reply@todaysdentalinsights.com',  // Same as HR module
+        FROM_EMAIL: 'no-reply@todaysdentalservices.com',  // Same as HR module
         SES_REGION: 'us-east-1',
       },
       timeout: cdk.Duration.minutes(5),  // 5 minutes for scanning all leases and sending emails
@@ -383,7 +388,7 @@ export class LeaseManagementStack extends cdk.Stack {
     // ========================================
     // Map this API under the existing custom domain as /lease
     new apigateway.CfnBasePathMapping(this, 'LeaseBasePathMapping', {
-      domainName: 'apig.todaysdentalinsights.com',
+      domainName: props?.apiDomainName ?? 'api.todaysdentalservices.com',
       basePath: 'lease',
       restApiId: this.api.restApiId,
       stage: this.api.deploymentStage.stageName,
@@ -394,7 +399,7 @@ export class LeaseManagementStack extends cdk.Stack {
     new cdk.CfnOutput(this, 'LeaseDocumentsBucketOutput', { value: this.leaseDocumentsBucket.bucketName });
     new cdk.CfnOutput(this, 'LeaseApiUrlOutput', { value: this.api.url });
     new cdk.CfnOutput(this, 'LeaseCustomDomainUrl', {
-      value: 'https://apig.todaysdentalinsights.com/lease',
+      value: 'https://api.todaysdentalservices.com/lease',
       description: 'Lease Management API Custom Domain URL',
     });
   }

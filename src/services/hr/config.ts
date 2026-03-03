@@ -92,7 +92,7 @@ export const EMAIL_CONFIG = {
     appName: process.env.APP_NAME || 'TodaysDentalInsights',
 
     // From email address
-    fromEmail: process.env.FROM_EMAIL || 'no-reply@todaysdentalinsights.com',
+    fromEmail: process.env.FROM_EMAIL || 'no-reply@todaysdentalservices.com',
 
     // SES region
     sesRegion: process.env.SES_REGION || 'us-east-1',

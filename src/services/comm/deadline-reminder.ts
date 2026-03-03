@@ -20,7 +20,7 @@ import { CognitoIdentityProviderClient, AdminGetUserCommand } from '@aws-sdk/cli
 // Environment Variables
 const REGION = process.env.AWS_REGION || 'us-east-1';
 const FAVORS_TABLE = process.env.FAVORS_TABLE || '';
-const SES_SOURCE_EMAIL = process.env.SES_SOURCE_EMAIL || 'no-reply@todaysdentalinsights.com';
+const SES_SOURCE_EMAIL = process.env.SES_SOURCE_EMAIL || 'no-reply@todaysdentalservices.com';
 const USER_POOL_ID = process.env.USER_POOL_ID || '';
 const FRONTEND_URL = process.env.FRONTEND_URL || 'https://todaysdentalinsights.com';
 

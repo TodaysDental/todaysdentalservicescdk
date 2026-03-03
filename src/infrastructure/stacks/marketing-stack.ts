@@ -23,6 +23,8 @@ export interface MarketingStackProps extends StackProps {
   secretsEncryptionKeyArn: string;
   /** Images Stack S3 bucket name for clinic images */
   imagesBucketName?: string;
+  /** Custom domain name token from CoreStack — creates implicit dependency so domain exists first */
+  apiDomainName?: string;
 }
 
 export class MarketingStack extends Stack {
@@ -167,57 +169,13 @@ export class MarketingStack extends Stack {
     // ============================================
     // 2. S3 Bucket for Media Storage
     // ============================================
-    this.mediaBucket = new s3.Bucket(this, 'MarketingMediaBucket', {
-      bucketName: 'todaysdentalinsights-marketing-media',
-      removalPolicy: RemovalPolicy.RETAIN,
-      versioned: true,
-      cors: [
-        {
-          allowedMethods: [
-            s3.HttpMethods.GET,
-            s3.HttpMethods.HEAD,
-            s3.HttpMethods.PUT,
-            s3.HttpMethods.POST,
-            s3.HttpMethods.DELETE,
-          ],
-          allowedOrigins: ['*'], // S3 CORS must match the browser Origin header exactly; use '*' to prevent mismatches with clinic domains
-          allowedHeaders: ['*'],
-          exposedHeaders: ['ETag', 'Content-Length', 'Content-Type'],
-          maxAge: 86400,
-        },
-      ],
-      blockPublicAccess: s3.BlockPublicAccess.BLOCK_ACLS,
-      publicReadAccess: true,
-      // Lifecycle rules for media management
-      lifecycleRules: [
-        {
-          id: 'DeleteTempUploads',
-          enabled: true,
-          prefix: 'temp/uploads/',
-          expiration: Duration.days(1),
-        },
-        {
-          id: 'TransitionToStandardIA',
-          enabled: true,
-          transitions: [
-            {
-              storageClass: s3.StorageClass.INFREQUENT_ACCESS,
-              transitionAfter: Duration.days(90),
-            },
-          ],
-        },
-        {
-          id: 'TransitionToGlacier',
-          enabled: true,
-          transitions: [
-            {
-              storageClass: s3.StorageClass.GLACIER,
-              transitionAfter: Duration.days(365),
-            },
-          ],
-        },
-      ],
-    });
+    // Bucket already exists in AWS — import it so CDK can grant IAM permissions
+    // without attempting to re-create it (which would fail with a name conflict).
+    this.mediaBucket = s3.Bucket.fromBucketName(
+      this,
+      'MarketingMediaBucket',
+      'todaysdentalinsights-marketing-media',
+    ) as s3.Bucket;
 
     // ============================================
     // 3. API Gateway
@@ -1065,7 +1023,7 @@ export class MarketingStack extends Stack {
     metaProxyRes.addMethod('ANY', new apigw.LambdaIntegration(adsFn), { authorizer });
 
     // NOTE: Google Ads routes have been moved to GoogleAdsStack
-    // Access via: https://apig.todaysdentalinsights.com/google-ads/
+    // Access via: https://api.todaysdentalservices.com/google-ads/
 
     // ============================================
     // 9. Outputs
@@ -1110,14 +1068,14 @@ export class MarketingStack extends Stack {
     // ============================================
     // Map this API under the existing custom domain as /marketing
     new apigw.CfnBasePathMapping(this, 'MarketingBasePathMapping', {
-      domainName: 'apig.todaysdentalinsights.com',
+      domainName: props.apiDomainName ?? 'api.todaysdentalservices.com',
       basePath: 'marketing',
       restApiId: this.api.restApiId,
       stage: this.api.deploymentStage.stageName,
     });
 
     new CfnOutput(this, 'MarketingCustomApiUrl', {
-      value: 'https://apig.todaysdentalinsights.com/marketing/',
+      value: 'https://api.todaysdentalservices.com/marketing/',
       description: 'Custom domain URL for Marketing API',
       exportName: `${this.stackName}-CustomApiUrl`,
     });

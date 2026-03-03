@@ -37,6 +37,9 @@ function toOrigin(maybeUrl: unknown): string | null {
 const STATIC_ALLOWED_ORIGIN_INPUTS: unknown[] = [
   'https://todaysdentalinsights.com',
   'https://www.todaysdentalinsights.com',
+  // New brand domain — tdscopy project
+  'https://todaysdentalservices.com',
+  'https://www.todaysdentalservices.com',
   // Local development origins (frontend runs on port 3000 via Vite)
   'http://localhost:3000',
   'http://127.0.0.1:3000',
@@ -67,6 +70,9 @@ export async function getAllowedOriginsAsync(): Promise<string[]> {
       'https://www.todaysdentalinsights.com',
       'https://todaysdentalinsights.com/',
       'https://www.todaysdentalinsights.com/',
+      // New brand domain
+      'https://todaysdentalservices.com',
+      'https://www.todaysdentalservices.com',
       // Local development origins
       'http://localhost:3000',
       'http://127.0.0.1:3000',

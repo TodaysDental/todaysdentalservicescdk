@@ -1,0 +1,22 @@
+=== MODEL AVAILABILITY ===
+Response: {
+  "modelId": "anthropic.claude-3-haiku-20240307-v1",
+  "agreementAvailability": {
+    "status": "AVAILABLE"
+  },
+  "authorizationStatus": "AUTHORIZED",
+  "entitlementAvailability": "AVAILABLE",
+  "regionAvailability": "AVAILABLE",
+  "$metadata": {
+    "httpStatusCode": 200,
+    "requestId": "87442986-dbe3-4344-83eb-b954e227072f",
+    "attempts": 1,
+    "totalRetryDelay": 0
+  }
+}
+
+=== DIRECT MODEL INVOCATION ===
+SUCCESS! Status: 200
+
+=== CROSS-REGION us.anthropic.claude-3-haiku ===
+SUCCESS! Status: 200

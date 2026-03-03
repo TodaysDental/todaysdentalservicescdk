@@ -12,7 +12,7 @@ const SHIFTS_TABLE = process.env.SHIFTS_TABLE!;
 const STAFF_INFO_TABLE = process.env.STAFF_CLINIC_INFO_TABLE!;
 const GEOFENCE_CONFIG_PARAM = process.env.GEOFENCE_CONFIG_PARAM || '';
 const APP_NAME = process.env.APP_NAME || 'TodaysDentalInsights';
-const FROM_EMAIL = process.env.FROM_EMAIL || 'no-reply@todaysdentalinsights.com';
+const FROM_EMAIL = process.env.FROM_EMAIL || 'no-reply@todaysdentalservices.com';
 const SES_REGION = process.env.SES_REGION || 'us-east-1';
 
 const ddb = DynamoDBDocumentClient.from(new DynamoDBClient({}));

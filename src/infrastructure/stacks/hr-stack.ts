@@ -235,6 +235,8 @@ export interface HrStackProps extends StackProps {
   deviceTokensTableName?: string;
   deviceTokensTableArn?: string;
   sendPushFunctionArn?: string;
+  /** Custom domain name token from CoreStack — creates implicit dependency so domain exists first */
+  apiDomainName?: string;
 }
 
 export class HrStack extends Stack {
@@ -516,7 +518,7 @@ export class HrStack extends Stack {
         ENABLE_AUDIT_LOGGING: 'true',
         // --- SES ENVIRONMENT VARIABLES ---
         APP_NAME: 'TodaysDentalInsights',
-        FROM_EMAIL: 'no-reply@todaysdentalinsights.com',
+        FROM_EMAIL: 'no-reply@todaysdentalservices.com',
         SES_REGION: 'us-east-1',
         // --- PUSH NOTIFICATIONS ---
         ...(props.deviceTokensTableName && { DEVICE_TOKENS_TABLE: props.deviceTokensTableName }),
@@ -654,7 +656,7 @@ export class HrStack extends Stack {
     // ========================================
 
     new apigw.CfnBasePathMapping(this, 'HrApiBasePathMapping', {
-      domainName: 'apig.todaysdentalinsights.com',
+      domainName: props.apiDomainName ?? 'api.todaysdentalservices.com',
       basePath: 'hr', // This API will be available at /hr
       restApiId: this.api.restApiId,
       stage: this.api.deploymentStage.stageName,
@@ -665,7 +667,7 @@ export class HrStack extends Stack {
     // ========================================
 
     new CfnOutput(this, 'HrApiUrl', {
-      value: 'https://apig.todaysdentalinsights.com/hr/',
+      value: 'https://api.todaysdentalservices.com/hr/',
       description: 'HR Module API Gateway URL',
       exportName: `${Stack.of(this).stackName}-HrApiUrl`,
     });

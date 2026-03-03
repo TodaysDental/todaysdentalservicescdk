@@ -65,6 +65,8 @@ export interface AdminStackProps extends StackProps {
   getOnlineAgentsFnArn?: string;
   // ** NEW: Call Recording **
   getRecordingFnArn?: string;
+  /** Custom domain name token from CoreStack — creates implicit dependency so domain exists first */
+  apiDomainName?: string;
 }
 
 export class AdminStack extends Stack {
@@ -722,7 +724,7 @@ export class AdminStack extends Stack {
 
     // Map to custom domain with service-specific base path
     new apigw.CfnBasePathMapping(this, 'AdminApiBasePathMapping', {
-      domainName: 'apig.todaysdentalinsights.com',
+      domainName: props.apiDomainName ?? 'api.todaysdentalservices.com',
       basePath: 'admin',
       restApiId: this.api.restApiId,
       stage: this.api.deploymentStage.stageName,
@@ -1337,7 +1339,7 @@ export class AdminStack extends Stack {
       });
 
       new CfnOutput(this, 'RecordingsApiUrl', {
-        value: 'https://apig.todaysdentalinsights.com/admin/recordings',
+        value: 'https://api.todaysdentalservices.com/admin/recordings',
         description: 'Recordings API URL',
         exportName: `${Stack.of(this).stackName}-RecordingsApiUrl`
       });
@@ -1348,7 +1350,7 @@ export class AdminStack extends Stack {
     // ========================================
 
     new CfnOutput(this, 'AdminApiUrl', {
-      value: 'https://apig.todaysdentalinsights.com/admin/',
+      value: 'https://api.todaysdentalservices.com/admin/',
       description: 'Admin API Gateway URL',
       exportName: `${Stack.of(this).stackName}-AdminApiUrl`,
     });
@@ -1360,13 +1362,13 @@ export class AdminStack extends Stack {
     });
 
     new CfnOutput(this, 'DirectoryApiUrl', {
-      value: 'https://apig.todaysdentalinsights.com/admin/directory',
+      value: 'https://api.todaysdentalservices.com/admin/directory',
       description: 'User Directory Lookup API URL',
       exportName: `${Stack.of(this).stackName}-DirectoryApiUrl`,
     });
 
     new CfnOutput(this, 'RequestsApiUrl', {
-      value: 'https://apig.todaysdentalinsights.com/admin/requests',
+      value: 'https://api.todaysdentalservices.com/admin/requests',
       description: 'Active Favor Requests List API URL',
       exportName: `${Stack.of(this).stackName}-RequestsApiUrl`,
     });

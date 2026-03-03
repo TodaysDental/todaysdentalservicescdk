@@ -33,6 +33,8 @@ export interface MetaAdsStackProps extends StackProps {
     clinicConfigTableName: string;
     /** KMS key ARN for decrypting secrets */
     secretsEncryptionKeyArn: string;
+    /** Custom domain name token from CoreStack — creates implicit dependency so domain exists first */
+    apiDomainName?: string;
 }
 
 // ============================================
@@ -401,14 +403,14 @@ export class MetaAdsStack extends Stack {
         // ============================================
 
         new apigw.CfnBasePathMapping(this, 'MetaAdsBasePathMapping', {
-            domainName: 'apig.todaysdentalinsights.com',
+            domainName: props.apiDomainName ?? 'api.todaysdentalservices.com',
             basePath: 'meta-ads',
             restApiId: this.api.restApiId,
             stage: this.api.deploymentStage.stageName,
         });
 
         new CfnOutput(this, 'MetaAdsCustomApiUrl', {
-            value: 'https://apig.todaysdentalinsights.com/meta-ads/',
+            value: 'https://api.todaysdentalservices.com/meta-ads/',
             description: 'Custom domain URL for Meta Ads API',
             exportName: `${this.stackName}-CustomApiUrl`,
         });

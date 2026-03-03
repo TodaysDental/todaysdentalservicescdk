@@ -40,6 +40,8 @@ export interface ClinicImagesStackProps extends StackProps {
   clinicConfigTableName?: string;
   /** KMS key ARN for decrypting secrets */
   secretsEncryptionKeyArn?: string;
+  /** Custom domain name token from CoreStack — creates implicit dependency so domain exists first */
+  apiDomainName?: string;
 }
 
 export class ClinicImagesStack extends Stack {
@@ -49,7 +51,7 @@ export class ClinicImagesStack extends Stack {
   public readonly api: apigw.RestApi;
   public readonly authorizer: apigw.RequestAuthorizer;
 
-  constructor(scope: Construct, id: string, props?: ClinicImagesStackProps) {
+  constructor(scope: Construct, id: string, props: ClinicImagesStackProps = {}) {
     super(scope, id, props);
 
     // Tags & alarm helpers
@@ -416,7 +418,7 @@ export class ClinicImagesStack extends Stack {
 
     // Map to custom domain with service-specific base path
     new apigw.CfnBasePathMapping(this, 'ImagesApiBasePathMapping', {
-      domainName: 'apig.todaysdentalinsights.com',
+      domainName: props.apiDomainName ?? 'api.todaysdentalservices.com',
       basePath: 'images',
       restApiId: this.api.restApiId,
       stage: this.api.deploymentStage.stageName,
@@ -426,12 +428,12 @@ export class ClinicImagesStack extends Stack {
     // CLINIC-SPECIFIC SUBDOMAIN ROUTING
     // ========================================
     // This creates CNAME records for each clinic pointing to the API Gateway
-    // Example: images.dentistinnewbritain.com -> apig.todaysdentalinsights.com/images
-    
+    // Example: images.dentistinnewbritain.com -> api.todaysdentalservices.com/images
+
     for (const clinic of clinicsData as any[]) {
       try {
         const clinicDomain = new URL(clinic.websiteLink).hostname;
-        
+
         // Create hosted zone reference (assumes you have hosted zones for each clinic)
         if (clinic.hostedZoneId) {
           const clinicHostedZone = route53.HostedZone.fromHostedZoneAttributes(
@@ -443,11 +445,11 @@ export class ClinicImagesStack extends Stack {
             }
           );
 
-          // Create CNAME record: images.{clinicDomain} -> apig.todaysdentalinsights.com
+          // Create CNAME record: images.{clinicDomain} -> api.todaysdentalservices.com
           new route53.CnameRecord(this, `ImagesCname-${clinic.clinicId}`, {
             zone: clinicHostedZone,
             recordName: 'images',
-            domainName: 'apig.todaysdentalinsights.com',
+            domainName: 'api.todaysdentalservices.com',
             ttl: Duration.minutes(5),
           });
         }
@@ -479,7 +481,7 @@ export class ClinicImagesStack extends Stack {
     });
 
     new CfnOutput(this, 'ImagesApiUrl', {
-      value: 'https://apig.todaysdentalinsights.com/images/',
+      value: 'https://api.todaysdentalservices.com/images/',
       description: 'Clinic Images API Gateway URL',
       exportName: `${Stack.of(this).stackName}-ImagesApiUrl`,
     });

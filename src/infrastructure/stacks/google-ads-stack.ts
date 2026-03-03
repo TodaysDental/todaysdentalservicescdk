@@ -18,6 +18,8 @@ export interface GoogleAdsStackProps extends StackProps {
   clinicConfigTableName: string;
   /** KMS key ARN for decrypting secrets */
   secretsEncryptionKeyArn: string;
+  /** Custom domain name token from CoreStack — creates implicit dependency so domain exists first */
+  apiDomainName?: string;
 }
 
 export class GoogleAdsStack extends Stack {
@@ -619,14 +621,14 @@ export class GoogleAdsStack extends Stack {
     // ============================================
     // Map this API under the existing custom domain as /google-ads
     new apigw.CfnBasePathMapping(this, 'GoogleAdsBasePathMapping', {
-      domainName: 'apig.todaysdentalinsights.com',
+      domainName: props.apiDomainName ?? 'api.todaysdentalservices.com',
       basePath: 'google-ads',
       restApiId: this.api.restApiId,
       stage: this.api.deploymentStage.stageName,
     });
 
     new CfnOutput(this, 'GoogleAdsCustomApiUrl', {
-      value: 'https://apig.todaysdentalinsights.com/google-ads/',
+      value: 'https://api.todaysdentalservices.com/google-ads/',
       description: 'Custom domain URL for Google Ads API',
       exportName: `${this.stackName}-CustomApiUrl`,
     });

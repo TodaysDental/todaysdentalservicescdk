@@ -149,23 +149,14 @@ export interface CherryTransactionQueryOptions {
 
 /**
  * GraphQL query for fetching Cherry loans.
- * Reconstructed from actual Cherry portal network traffic.
+ * 
+ * NOTE: Cherry's fetchLoans field does NOT accept filter arguments like
+ * startDate, endDate, status, sortBy, or sortDirection.
+ * Filtering must be done client-side after fetching all loans.
  */
 const FETCH_LOANS_QUERY = `
-query FetchLoans(
-  $startDate: String
-  $endDate: String
-  $status: [String]
-  $sortBy: String
-  $sortDirection: String
-) {
-  fetchLoans(
-    startDate: $startDate
-    endDate: $endDate
-    status: $status
-    sortBy: $sortBy
-    sortDirection: $sortDirection
-  ) {
+query FetchLoans {
+  fetchLoans {
     success
     total
     contents {
@@ -363,27 +354,18 @@ export class CherryClient {
 
     /**
      * Fetch Cherry loans (financing transactions) for a date range.
-     * Returns the raw loan data from Cherry's GraphQL API.
+     * 
+     * Cherry's fetchLoans query does NOT accept filter arguments.
+     * We fetch ALL loans, then filter client-side by date range and status.
      */
     async getLoans(options: CherryTransactionQueryOptions): Promise<CherryLoan[]> {
         const { dateStart, dateEnd, status } = options;
 
-        console.log(`[CherryGQL] Fetching loans from ${dateStart} to ${dateEnd}`);
-
-        const variables: Record<string, any> = {
-            startDate: dateStart,
-            endDate: dateEnd,
-            sortBy: 'createdAt',
-            sortDirection: 'DESC',
-        };
-
-        if (status) {
-            variables.status = [status.toUpperCase()];
-        }
+        console.log(`[CherryGQL] Fetching all loans, will filter client-side to ${dateStart} → ${dateEnd}`);
 
         const response = await this.executeQuery<CherryFetchLoansResponse>(
             FETCH_LOANS_QUERY,
-            variables
+            {} // No variables — fetchLoans accepts no arguments
         );
 
         if (!response?.data?.fetchLoans?.success) {
@@ -391,14 +373,27 @@ export class CherryClient {
             return [];
         }
 
-        const loans = response.data.fetchLoans.contents || [];
+        const allLoans = response.data.fetchLoans.contents || [];
         const total = response.data.fetchLoans.total;
 
-        console.log(`[CherryGQL] Fetched ${loans.length} of ${total} total loans`);
+        console.log(`[CherryGQL] Fetched ${allLoans.length} of ${total} total loans from Cherry`);
 
-        // Cherry API doesn't support limit/offset pagination
-        // All matching loans are returned in a single response
-        console.log(`[CherryGQL] Fetched ${loans.length} of ${total} total loans (no pagination available)`);
+        // Client-side filtering by date range
+        let loans = allLoans.filter(loan => {
+            // Use fundedAt (when money was deposited) or createdAt as fallback
+            const loanDate = (loan.fundedAt || loan.createdAt || '').substring(0, 10);
+            if (!loanDate) return true; // Include loans without dates
+            return loanDate >= dateStart && loanDate <= dateEnd;
+        });
+
+        console.log(`[CherryGQL] After date filtering (${dateStart} → ${dateEnd}): ${loans.length}/${allLoans.length} loans`);
+
+        // Client-side filtering by status (if requested)
+        if (status) {
+            const upperStatus = status.toUpperCase();
+            loans = loans.filter(loan => loan.status?.toUpperCase() === upperStatus);
+            console.log(`[CherryGQL] After status filtering (${upperStatus}): ${loans.length} loans`);
+        }
 
         return loans;
     }

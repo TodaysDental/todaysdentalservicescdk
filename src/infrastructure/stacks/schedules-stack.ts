@@ -17,7 +17,6 @@ export interface SchedulesStackProps extends StackProps {
   templatesTableName: string;
   queriesTableName: string;
   clinicHoursTableName: string;
-  consolidatedTransferServerId: string;
   /** GlobalSecrets DynamoDB table name for retrieving SFTP credentials */
   globalSecretsTableName?: string;
   /** ClinicSecrets DynamoDB table name for per-clinic credentials */
@@ -38,6 +37,18 @@ export interface SchedulesStackProps extends StackProps {
   connectInstanceId?: string;
   /** Amazon Connect outbound contact flow ID for AI calls */
   outboundContactFlowId?: string;
+  /** Custom domain name token from CoreStack — creates implicit dependency so domain exists first */
+  apiDomainName?: string;
+  /** RCS templates DynamoDB table name (from RcsStack). Optional — RCS integration is skipped when absent. */
+  rcsTemplatesTableName?: string;
+  /** RCS send-message Lambda ARN (from RcsStack). Optional — RCS integration is skipped when absent. */
+  rcsSendMessageFnArn?: string;
+  /** SES configuration set name exported by NotificationsStack. Optional — skipped when absent. */
+  sesConfigurationSetName?: string;
+  /** Email analytics DynamoDB table name exported by NotificationsStack. Optional. */
+  emailAnalyticsTableName?: string;
+  /** Voice call analytics DynamoDB table name exported by NotificationsStack. Optional. */
+  voiceCallAnalyticsTableName?: string;
 }
 
 export class SchedulesStack extends Stack {
@@ -266,12 +277,10 @@ export class SchedulesStack extends Stack {
         TEMPLATES_TABLE: props.templatesTableName,
         QUERIES_TABLE: props.queriesTableName,
         CLINIC_HOURS_TABLE: props.clinicHoursTableName,
-        CONSOLIDATED_SFTP_HOST: props.consolidatedTransferServerId + '.server.transfer.' + Stack.of(this).region + '.amazonaws.com',
-        // SFTP password now retrieved from GlobalSecrets table
         GLOBAL_SECRETS_TABLE: props.globalSecretsTableName || 'TodaysDentalInsights-GlobalSecrets',
         CLINIC_CONFIG_TABLE: props.clinicConfigTableName || 'TodaysDentalInsights-ClinicConfig',
         // Email analytics configuration set (imported from notifications stack)
-        SES_CONFIGURATION_SET_NAME: Fn.importValue('TodaysDentalInsightsNotificationsN1-SESConfigurationSetName'),
+        SES_CONFIGURATION_SET_NAME: props.sesConfigurationSetName || '',
       },
     });
     applyTags(this.schedulerWorkerFn, { Function: 'scheduler-worker' });
@@ -312,8 +321,6 @@ export class SchedulesStack extends Stack {
         TEMPLATES_TABLE: props.templatesTableName,
         QUERIES_TABLE: props.queriesTableName,
         CLINIC_HOURS_TABLE: props.clinicHoursTableName,
-        CONSOLIDATED_SFTP_HOST: props.consolidatedTransferServerId + '.server.transfer.' + Stack.of(this).region + '.amazonaws.com',
-        // SFTP password now retrieved from GlobalSecrets table
         GLOBAL_SECRETS_TABLE: props.globalSecretsTableName || 'TodaysDentalInsights-GlobalSecrets',
         CLINIC_SECRETS_TABLE: props.clinicSecretsTableName || 'TodaysDentalInsights-ClinicSecrets',
         CLINIC_CONFIG_TABLE: props.clinicConfigTableName || 'TodaysDentalInsights-ClinicConfig',
@@ -327,11 +334,11 @@ export class SchedulesStack extends Stack {
         // Email queue for individual email tasks
         EMAIL_QUEUE_URL: emailQueue.queueUrl,
         // Email analytics table for tracking scheduled emails
-        EMAIL_ANALYTICS_TABLE: Fn.importValue('TodaysDentalInsightsNotificationsN1-EmailAnalyticsTableName'),
+        EMAIL_ANALYTICS_TABLE: props.emailAnalyticsTableName || '',
         // Voice call analytics table for tracking outbound CALL campaigns
-        VOICE_CALL_ANALYTICS_TABLE: Fn.importValue('TodaysDentalInsightsNotificationsN1-VoiceCallAnalyticsTableName'),
+        VOICE_CALL_ANALYTICS_TABLE: props.voiceCallAnalyticsTableName || '',
         // RCS API base URL for sending RCS messages (via public API Gateway endpoint)
-        RCS_API_BASE_URL: 'https://apig.todaysdentalinsights.com/rcs',
+        RCS_API_BASE_URL: 'https://api.todaysdentalservices.com/rcs',
         // Amazon Connect for AI outbound calls (AI_CALL notification type)
         CONNECT_INSTANCE_ID: props.connectInstanceId || '',
         OUTBOUND_CONTACT_FLOW_ID: props.outboundContactFlowId || '',
@@ -340,32 +347,26 @@ export class SchedulesStack extends Stack {
     applyTags(this.schedulerQueueConsumerFn, { Function: 'scheduler-consumer' });
 
     // ========================================
+    // ========================================
     // RCS STACK INTEGRATION (Templates + Send)
     // ========================================
-    // For scheduled RCS campaigns we:
-    // - Read templates from the RCS stack DynamoDB table (per-clinic templates)
-    // - Invoke the RCS Send Message Lambda directly (no API Gateway/auth required)
-    const RCS_STACK_NAME = 'TodaysDentalInsightsRcsN1';
-    const rcsTemplatesTableName = Fn.importValue(`${RCS_STACK_NAME}-RcsTemplatesTableName`).toString();
-    const rcsSendMessageFnArn = Fn.importValue(`${RCS_STACK_NAME}-RcsSendMessageFnArn`).toString();
+    // Optional: only wired when RcsStack has been deployed and props are passed in.
+    if (props.rcsTemplatesTableName) {
+      this.schedulerQueueConsumerFn.addEnvironment('RCS_TEMPLATES_TABLE', props.rcsTemplatesTableName);
+      const rcsTemplatesTable = dynamodb.Table.fromTableAttributes(this, 'RcsTemplatesTable', {
+        tableName: props.rcsTemplatesTableName,
+      });
+      rcsTemplatesTable.grantReadData(this.schedulerQueueConsumerFn);
+    }
 
-    // Provide env vars for the queue consumer
-    this.schedulerQueueConsumerFn.addEnvironment('RCS_TEMPLATES_TABLE', rcsTemplatesTableName);
-    this.schedulerQueueConsumerFn.addEnvironment('RCS_SEND_MESSAGE_FUNCTION_ARN', rcsSendMessageFnArn);
-
-    // Grant DynamoDB read to RCS templates table
-    const rcsTemplatesTable = dynamodb.Table.fromTableAttributes(this, 'RcsTemplatesTable', {
-      tableName: rcsTemplatesTableName,
-    });
-    rcsTemplatesTable.grantReadData(this.schedulerQueueConsumerFn);
-
-    // Grant Lambda invoke to the RCS send message function
-    // Use fromFunctionAttributes with sameEnvironment so CDK can add invoke permissions
-    const rcsSendMessageFn = lambda.Function.fromFunctionAttributes(this, 'ImportedRcsSendMessageFn', {
-      functionArn: rcsSendMessageFnArn,
-      sameEnvironment: true,
-    });
-    rcsSendMessageFn.grantInvoke(this.schedulerQueueConsumerFn);
+    if (props.rcsSendMessageFnArn) {
+      this.schedulerQueueConsumerFn.addEnvironment('RCS_SEND_MESSAGE_FUNCTION_ARN', props.rcsSendMessageFnArn);
+      const rcsSendMessageFn = lambda.Function.fromFunctionAttributes(this, 'ImportedRcsSendMessageFn', {
+        functionArn: props.rcsSendMessageFnArn,
+        sameEnvironment: true,
+      });
+      rcsSendMessageFn.grantInvoke(this.schedulerQueueConsumerFn);
+    }
 
     // ========================================
     // CHIME OUTBOUND CALLING INTEGRATION (CALL)
@@ -427,9 +428,9 @@ export class SchedulesStack extends Stack {
       bundling: { format: lambdaNode.OutputFormat.CJS, target: 'node22' },
       environment: {
         // Email analytics configuration set (imported from notifications stack)
-        SES_CONFIGURATION_SET_NAME: Fn.importValue('TodaysDentalInsightsNotificationsN1-SESConfigurationSetName'),
+        SES_CONFIGURATION_SET_NAME: props.sesConfigurationSetName || '',
         // Email analytics table for updating status
-        EMAIL_ANALYTICS_TABLE: Fn.importValue('TodaysDentalInsightsNotificationsN1-EmailAnalyticsTableName'),
+        EMAIL_ANALYTICS_TABLE: props.emailAnalyticsTableName || '',
         // Clinic config table for email branding
         CLINIC_CONFIG_TABLE: props.clinicConfigTableName || 'TodaysDentalInsights-ClinicConfig',
       },
@@ -536,12 +537,14 @@ export class SchedulesStack extends Stack {
     }));
 
     // Grant voice call analytics table access for tracking outbound CALL campaigns
-    this.schedulerQueueConsumerFn.addToRolePolicy(new iam.PolicyStatement({
-      actions: ['dynamodb:PutItem', 'dynamodb:UpdateItem', 'dynamodb:GetItem'],
-      resources: [
-        `arn:aws:dynamodb:${Stack.of(this).region}:${Stack.of(this).account}:table/${Fn.importValue('TodaysDentalInsightsNotificationsN1-VoiceCallAnalyticsTableName')}`,
-      ],
-    }));
+    if (props.voiceCallAnalyticsTableName) {
+      this.schedulerQueueConsumerFn.addToRolePolicy(new iam.PolicyStatement({
+        actions: ['dynamodb:PutItem', 'dynamodb:UpdateItem', 'dynamodb:GetItem'],
+        resources: [
+          `arn:aws:dynamodb:${Stack.of(this).region}:${Stack.of(this).account}:table/${props.voiceCallAnalyticsTableName}`,
+        ],
+      }));
+    }
 
     // Add SQS event source for queue consumer
     this.schedulerQueueConsumerFn.addEventSource(new lambdaEventSources.SqsEventSource(this.schedulerQueue, {
@@ -672,7 +675,7 @@ export class SchedulesStack extends Stack {
 
     // Map to custom domain with service-specific base path
     new apigw.CfnBasePathMapping(this, 'SchedulesApiBasePathMapping', {
-      domainName: 'apig.todaysdentalinsights.com',
+      domainName: props.apiDomainName ?? 'api.todaysdentalservices.com',
       basePath: 'schedules',
       restApiId: this.api.restApiId,
       stage: this.api.deploymentStage.stageName,
@@ -740,7 +743,7 @@ export class SchedulesStack extends Stack {
     new CfnOutput(this, 'SchedulesApiUrl', {
       // NOTE: Custom domain basePath is /schedules and the API resource is also /schedules
       // so the callable base URL is /schedules/schedules
-      value: 'https://apig.todaysdentalinsights.com/schedules/schedules',
+      value: 'https://api.todaysdentalservices.com/schedules/schedules',
       description: 'Schedules API base URL (custom domain + resource path)',
       exportName: `${Stack.of(this).stackName}-SchedulesApiUrl`,
     });

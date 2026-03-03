@@ -49,6 +49,8 @@ export interface PushNotificationsStackProps extends StackProps {
    * Required if the table is encrypted
    */
   secretsEncryptionKeyArn?: string;
+  /** Custom domain name token from CoreStack — creates implicit dependency so domain exists first */
+  apiDomainName?: string;
 }
 
 export class PushNotificationsStack extends Stack {
@@ -305,7 +307,7 @@ export class PushNotificationsStack extends Stack {
     // API ROUTES
     // ========================================
     // Note: Base path mapping uses 'push', so API routes start from root.
-    // External URL: https://apig.todaysdentalinsights.com/push/register
+    // External URL: https://api.todaysdentalservices.com/push/register
     // maps to API Gateway path: /register (base path 'push' is stripped)
 
     // POST /register - Register device token
@@ -377,7 +379,7 @@ export class PushNotificationsStack extends Stack {
 
     // Map to custom domain with service-specific base path
     new apigw.CfnBasePathMapping(this, 'PushApiBasePathMapping', {
-      domainName: 'apig.todaysdentalinsights.com',
+      domainName: props.apiDomainName ?? 'api.todaysdentalservices.com',
       basePath: 'push',
       restApiId: this.pushApi.restApiId,
       stage: this.pushApi.deploymentStage.stageName,
@@ -401,7 +403,7 @@ export class PushNotificationsStack extends Stack {
     // ========================================
 
     new CfnOutput(this, 'PushApiUrl', {
-      value: 'https://apig.todaysdentalinsights.com/push/',
+      value: 'https://api.todaysdentalservices.com/push/',
       description: 'Push Notifications API URL',
       exportName: `${Stack.of(this).stackName}-PushApiUrl`,
     });

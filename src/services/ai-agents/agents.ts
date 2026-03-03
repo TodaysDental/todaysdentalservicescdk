@@ -275,6 +275,49 @@ export type ModelId = (typeof AVAILABLE_MODELS)[number]['id'];
 // Alternative: 'amazon.nova-micro-v1:0' for ultra-low latency (but less capable).
 const DEFAULT_VOICE_MODEL_ID: ModelId = 'us.anthropic.claude-3-5-haiku-20241022-v1:0';
 
+/**
+ * Normalize model IDs to use cross-region inference profiles where required.
+ *
+ * AWS Bedrock requires the 'us.' prefix for newer third-party models (Anthropic Claude 3.5+,
+ * Meta Llama, Cohere, Mistral, DeepSeek). Without the prefix, Bedrock returns a 403
+ * "Access denied when calling Bedrock" because the direct model ID is not available —
+ * only the cross-region inference profile is.
+ *
+ * This function ensures the correct prefix is always used, regardless of how the model ID
+ * was originally stored (e.g., from older agent configurations).
+ */
+export function normalizeModelId(modelId: string): string {
+  // If it already has a region prefix (e.g., 'us.anthropic...'), it's fine
+  if (modelId.startsWith('us.') || modelId.startsWith('eu.') || modelId.startsWith('ap.')) {
+    return modelId;
+  }
+
+  // Amazon models don't need the prefix — they're native to Bedrock
+  if (modelId.startsWith('amazon.')) {
+    return modelId;
+  }
+
+  // AI21 models — older ones don't need prefix, but newer ones might
+  // For safety, only prefix known providers that require it
+  const PROVIDERS_NEEDING_PREFIX = [
+    'anthropic.',
+    'meta.',
+    'cohere.',
+    'mistral.',
+    'deepseek.',
+  ];
+
+  for (const provider of PROVIDERS_NEEDING_PREFIX) {
+    if (modelId.startsWith(provider)) {
+      console.log(`[normalizeModelId] Adding 'us.' prefix to model ID: ${modelId} → us.${modelId}`);
+      return `us.${modelId}`;
+    }
+  }
+
+  // Unknown provider — return as-is
+  return modelId;
+}
+
 // ========================================================================
 // TYPES
 // ========================================================================
@@ -2560,7 +2603,7 @@ async function createAgent(event: APIGatewayProxyEvent, userPerms: UserPermissio
       new CreateAgentCommand({
         agentName: `${body.name.replace(/[^a-zA-Z0-9-_]/g, '-')}-${internalAgentId.slice(0, 8)}`,
         agentResourceRoleArn: BEDROCK_AGENT_ROLE_ARN,
-        foundationModel: modelId,
+        foundationModel: normalizeModelId(modelId),
         instruction: fullInstruction,
         description: body.description || `AI Agent: ${body.name}`,
         idleSessionTTLInSeconds: 1800,
@@ -2783,6 +2826,42 @@ async function prepareAgent(
           hint: 'Check that the ACTION_GROUP_LAMBDA_ARN environment variable is correct',
         }),
       };
+    }
+
+    // AUTO-FIX: Update the agent's foundation model to use the correct inference profile
+    // This fixes existing agents that were created with non-prefixed model IDs
+    // (e.g., 'anthropic.claude-sonnet-4-5-*' → 'us.anthropic.claude-sonnet-4-5-*')
+    const normalizedModelId = normalizeModelId(agent.modelId);
+    if (normalizedModelId !== agent.modelId) {
+      console.log(`[prepareAgent] Fixing model ID: ${agent.modelId} → ${normalizedModelId}`);
+      agent.modelId = normalizedModelId as ModelId;
+
+      const fullInstruction = [
+        '=== CORE INSTRUCTIONS ===',
+        agent.systemPrompt,
+        '',
+        '=== RESTRICTIONS ===',
+        agent.negativePrompt,
+        agent.userPrompt ? '\n=== ADDITIONAL INSTRUCTIONS ===\n' + agent.userPrompt : '',
+      ].join('\n');
+
+      try {
+        await bedrockAgentClient.send(
+          new UpdateAgentCommand({
+            agentId: agent.bedrockAgentId,
+            agentName: `${agent.name.replace(/[^a-zA-Z0-9-_]/g, '-')}-${agent.agentId.slice(0, 8)}`,
+            agentResourceRoleArn: BEDROCK_AGENT_ROLE_ARN,
+            foundationModel: normalizedModelId,
+            instruction: fullInstruction,
+            description: agent.description,
+            idleSessionTTLInSeconds: 1800,
+          })
+        );
+        console.log(`[prepareAgent] Successfully updated agent model to ${normalizedModelId}`);
+      } catch (updateError: any) {
+        console.error('[prepareAgent] Failed to update agent model:', updateError);
+        // Continue with prepare — the old model might still work
+      }
     }
 
     // Prepare the agent
@@ -3038,7 +3117,7 @@ async function updateAgent(
           agentId: agent.bedrockAgentId,
           agentName: `${agent.name.replace(/[^a-zA-Z0-9-_]/g, '-')}-${agent.agentId.slice(0, 8)}`,
           agentResourceRoleArn: BEDROCK_AGENT_ROLE_ARN,
-          foundationModel: agent.modelId,
+          foundationModel: normalizeModelId(agent.modelId),
           instruction: fullInstruction,
           description: agent.description,
           idleSessionTTLInSeconds: 1800,

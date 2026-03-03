@@ -18,7 +18,7 @@ const ddb = DynamoDBDocumentClient.from(ddbClient);
 const ses = new SESv2Client({ region: process.env.SES_REGION || 'us-east-1' });
 
 const STAFF_USER_TABLE = process.env.STAFF_USER_TABLE || 'StaffUser';
-const FROM_EMAIL = process.env.FROM_EMAIL || 'no-reply@todaysdentalinsights.com';
+const FROM_EMAIL = process.env.FROM_EMAIL || 'no-reply@todaysdentalservices.com';
 
 // Helper to get dynamic CORS headers based on request origin
 function getCorsHeaders(event: APIGatewayProxyEvent) {

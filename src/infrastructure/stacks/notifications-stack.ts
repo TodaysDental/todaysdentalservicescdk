@@ -25,6 +25,16 @@ export interface NotificationsStackProps extends StackProps {
   smaIdMapParameterName?: string;
   /** Chime SDK media region to use for Meetings/Voice (default: us-east-1) */
   chimeMediaRegion?: string;
+  /** Custom domain name token from CoreStack — creates implicit dependency so domain exists first */
+  apiDomainName?: string;
+  /** AI Agents table name from AiAgentsStack — optional, SMS auto-reply falls back to empty */
+  aiAgentsTableName?: string;
+  /** AI Agents table ARN from AiAgentsStack — optional, for IAM grants */
+  aiAgentsTableArn?: string;
+  /** Conversations table name from AiAgentsStack — optional */
+  aiConversationsTableName?: string;
+  /** Conversations table ARN from AiAgentsStack — optional, for IAM grants */
+  aiConversationsTableArn?: string;
 }
 
 export class NotificationsStack extends Stack {
@@ -570,7 +580,7 @@ export class NotificationsStack extends Stack {
         VOICE_CALL_ANALYTICS_TABLE: this.voiceCallAnalyticsTable.tableName,
         UNSUBSCRIBE_TABLE: this.unsubscribeTable.tableName,
         SES_CONFIGURATION_SET_NAME: this.sesConfigurationSet.configurationSetName,
-        UNSUBSCRIBE_BASE_URL: 'https://apig.todaysdentalinsights.com/notifications',
+        UNSUBSCRIBE_BASE_URL: 'https://api.todaysdentalservices.com/notifications',
         // Secrets tables for dynamic clinic configuration retrieval
         GLOBAL_SECRETS_TABLE: props.globalSecretsTableName || 'TodaysDentalInsights-GlobalSecrets',
         CLINIC_CONFIG_TABLE: props.clinicConfigTableName || 'TodaysDentalInsights-ClinicConfig',
@@ -684,12 +694,12 @@ export class NotificationsStack extends Stack {
     // ========================================
 
     // Import AI Agents stack outputs for agent resolution + conversation logging.
-    // NOTE: Infra adds an explicit dependency on AiAgentsStack for deployment order.
-    const AI_AGENTS_STACK_NAME = 'TodaysDentalInsightsAiAgentsN1';
-    const aiAgentsTableName = Fn.importValue(`${AI_AGENTS_STACK_NAME}-AiAgentsTableName`);
-    const aiAgentsTableArn = Fn.importValue(`${AI_AGENTS_STACK_NAME}-AiAgentsTableArn`);
-    const conversationsTableName = Fn.importValue(`${AI_AGENTS_STACK_NAME}-ConversationsTableName`);
-    const conversationsTableArn = Fn.importValue(`${AI_AGENTS_STACK_NAME}-ConversationsTableArn`);
+    // Use props when passed from infra.ts; fall back to empty strings so NotificationsStack
+    // can deploy independently on first run (before AiAgentsStack exists).
+    const aiAgentsTableName = props.aiAgentsTableName || '';
+    const aiAgentsTableArn = props.aiAgentsTableArn || '';
+    const conversationsTableName = props.aiConversationsTableName || '';
+    const conversationsTableArn = props.aiConversationsTableArn || '';
 
     const clinicConfigTableName = props.clinicConfigTableName || 'TodaysDentalInsights-ClinicConfig';
 
@@ -817,12 +827,17 @@ export class NotificationsStack extends Stack {
       }));
     }
 
-    // AI Agents tables permissions (resolve agent config + write conversation logs)
-    const importedAiAgentsTable = dynamodb.Table.fromTableArn(this, 'ImportedAiAgentsTableForSms', aiAgentsTableArn);
-    importedAiAgentsTable.grantReadData(this.smsAutoReplyFn);
+    // AI Agents tables permissions — only grant when ARNs are provided.
+    // Tables are optional until AiAgentsStack is deployed; fall back gracefully.
+    if (aiAgentsTableArn) {
+      const importedAiAgentsTable = dynamodb.Table.fromTableArn(this, 'ImportedAiAgentsTableForSms', aiAgentsTableArn);
+      importedAiAgentsTable.grantReadData(this.smsAutoReplyFn);
+    }
 
-    const importedConversationsTable = dynamodb.Table.fromTableArn(this, 'ImportedAiConversationsTableForSms', conversationsTableArn);
-    importedConversationsTable.grantWriteData(this.smsAutoReplyFn);
+    if (conversationsTableArn) {
+      const importedConversationsTable = dynamodb.Table.fromTableArn(this, 'ImportedAiConversationsTableForSms', conversationsTableArn);
+      importedConversationsTable.grantWriteData(this.smsAutoReplyFn);
+    }
 
     // Protected API: configure per-clinic SMS AI auto-reply settings
     this.smsAutoReplyConfigFn = new lambdaNode.NodejsFunction(this, 'SmsAutoReplyConfigFn', {
@@ -839,7 +854,11 @@ export class NotificationsStack extends Stack {
     });
     applyTags(this.smsAutoReplyConfigFn, { Function: 'sms-auto-reply-config' });
     this.smsMessagesTable.grantReadWriteData(this.smsAutoReplyConfigFn);
-    importedAiAgentsTable.grantReadData(this.smsAutoReplyConfigFn);
+    // Grant AI Agents table read access to smsAutoReplyConfigFn (defined here, after Lambda is assigned)
+    if (aiAgentsTableArn) {
+      const importedAiAgentsTableForConfig = dynamodb.Table.fromTableArn(this, 'ImportedAiAgentsTableForSmsConfig', aiAgentsTableArn);
+      importedAiAgentsTableForConfig.grantReadData(this.smsAutoReplyConfigFn);
+    }
 
     // ========================================
     // SMS CONVERSATIONS + MANUAL REPLY
@@ -1490,7 +1509,7 @@ export class NotificationsStack extends Stack {
 
     // Map to custom domain with service-specific base path
     new apigw.CfnBasePathMapping(this, 'NotificationsApiBasePathMapping', {
-      domainName: 'apig.todaysdentalinsights.com',
+      domainName: 'api.todaysdentalservices.com',
       basePath: 'notifications',
       restApiId: this.notificationsApi.restApiId,
       stage: this.notificationsApi.deploymentStage.stageName,
@@ -1501,7 +1520,7 @@ export class NotificationsStack extends Stack {
     // ========================================
 
     new CfnOutput(this, 'NotificationsApiUrl', {
-      value: 'https://apig.todaysdentalinsights.com/notifications/',
+      value: 'https://api.todaysdentalservices.com/notifications/',
       description: 'Notifications API Gateway URL',
       exportName: `${Stack.of(this).stackName}-NotificationsApiUrl`,
     });
@@ -1561,7 +1580,7 @@ export class NotificationsStack extends Stack {
     });
 
     new CfnOutput(this, 'EmailAnalyticsApiEndpoint', {
-      value: 'https://apig.todaysdentalinsights.com/notifications/email-analytics/',
+      value: 'https://api.todaysdentalservices.com/notifications/email-analytics/',
       description: 'Email Analytics API Endpoint',
       exportName: `${Stack.of(this).stackName}-EmailAnalyticsApiEndpoint`,
     });
@@ -1573,19 +1592,19 @@ export class NotificationsStack extends Stack {
     });
 
     new CfnOutput(this, 'UnsubscribeApiEndpoint', {
-      value: 'https://apig.todaysdentalinsights.com/notifications/unsubscribe/',
+      value: 'https://api.todaysdentalservices.com/notifications/unsubscribe/',
       description: 'Unsubscribe API Endpoint (public)',
       exportName: `${Stack.of(this).stackName}-UnsubscribeApiEndpoint`,
     });
 
     new CfnOutput(this, 'PreferencesApiEndpoint', {
-      value: 'https://apig.todaysdentalinsights.com/notifications/preferences',
+      value: 'https://api.todaysdentalservices.com/notifications/preferences',
       description: 'Communication Preferences API Endpoint (authenticated)',
       exportName: `${Stack.of(this).stackName}-PreferencesApiEndpoint`,
     });
 
     new CfnOutput(this, 'EmailAiApiEndpoint', {
-      value: 'https://apig.todaysdentalinsights.com/notifications/email/ai/',
+      value: 'https://api.todaysdentalservices.com/notifications/email/ai/',
       description: 'Email AI Content Generation API Endpoint (authenticated)',
       exportName: `${Stack.of(this).stackName}-EmailAiApiEndpoint`,
     });
@@ -1597,13 +1616,13 @@ export class NotificationsStack extends Stack {
     });
 
     new CfnOutput(this, 'CallAnalyticsApiEndpoint', {
-      value: 'https://apig.todaysdentalinsights.com/notifications/call-analytics/',
+      value: 'https://api.todaysdentalservices.com/notifications/call-analytics/',
       description: 'Voice Call Analytics API Endpoint (authenticated)',
       exportName: `${Stack.of(this).stackName}-CallAnalyticsApiEndpoint`,
     });
 
     new CfnOutput(this, 'SmsAnalyticsApiEndpoint', {
-      value: 'https://apig.todaysdentalinsights.com/notifications/sms-analytics/',
+      value: 'https://api.todaysdentalservices.com/notifications/sms-analytics/',
       description: 'SMS Analytics API Endpoint (authenticated)',
       exportName: `${Stack.of(this).stackName}-SmsAnalyticsApiEndpoint`,
     });
@@ -1615,7 +1634,7 @@ export class NotificationsStack extends Stack {
     });
 
     new CfnOutput(this, 'SmsAiAutoReplyConfigEndpoint', {
-      value: 'https://apig.todaysdentalinsights.com/notifications/sms/{clinicId}/ai/auto-reply',
+      value: 'https://api.todaysdentalservices.com/notifications/sms/{clinicId}/ai/auto-reply',
       description: 'SMS AI Auto-Reply Config API Endpoint (authenticated)',
       exportName: `${Stack.of(this).stackName}-SmsAiAutoReplyConfigEndpoint`,
     });

@@ -5,7 +5,6 @@
     "@aws-cdk/aws-apigateway:usagePlanKeyOrderInsensitiveId": true,
     "@aws-cdk/aws-lambda:recognizeVersionProps": true,
     "@aws-cdk/aws-logs:enableDualWritingToOds": true,
-    "@aws-cdk/core:bootstrapQualifier": "tdi3",
-    "connectInstanceId": "e265b644-3dad-4490-b7c4-27036090c5f1"
+    "connectInstanceId": "147f641d-ae2f-4d9f-8126-5ac2ff0c26f4"
   }
 }

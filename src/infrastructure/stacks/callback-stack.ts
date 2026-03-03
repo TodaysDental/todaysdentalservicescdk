@@ -11,6 +11,15 @@ import { getCdkCorsConfig, getCorsErrorHeaders } from '../../shared/utils/cors';
 
 export interface CallbackStackProps extends StackProps {
   // Authorizer imported via CloudFormation export
+  /** Custom domain name token from CoreStack — creates implicit dependency so domain exists first */
+  apiDomainName?: string;
+
+  /**
+   * KMS Key ARN used to encrypt secrets tables (ClinicConfig).
+   * Required for the Callback Lambda to read the KMS-encrypted ClinicConfig table
+   * during dynamic CORS origin validation.
+   */
+  secretsEncryptionKeyArn?: string;
 }
 
 export class CallbackStack extends Stack {
@@ -194,6 +203,15 @@ export class CallbackStack extends Stack {
       ],
     }));
 
+    // Grant KMS decrypt access for the ClinicConfig table (encrypted with SecretsStack KMS key)
+    // Without this, the Lambda gets AccessDeniedException: kms:Decrypt when scanning the table
+    if (props.secretsEncryptionKeyArn) {
+      callbackLambda.addToRolePolicy(new iam.PolicyStatement({
+        actions: ['kms:Decrypt', 'kms:DescribeKey'],
+        resources: [props.secretsEncryptionKeyArn],
+      }));
+    }
+
     // ===========================================
     // INDEPENDENT API GATEWAY FOR CALLBACKS
     // ===========================================
@@ -367,7 +385,7 @@ export class CallbackStack extends Stack {
 
     // Map this API under the existing custom domain as /callback
     new apigw.CfnBasePathMapping(this, 'CallbackBasePathMapping', {
-      domainName: 'apig.todaysdentalinsights.com',
+      domainName: props.apiDomainName ?? 'api.todaysdentalservices.com',
       basePath: 'callback',
       restApiId: callbackApi.restApiId,
       stage: callbackApi.deploymentStage.stageName,

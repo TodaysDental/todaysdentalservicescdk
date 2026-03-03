@@ -11,6 +11,8 @@ import { getCdkCorsConfig, getCorsErrorHeaders } from '../../shared/utils/cors';
 
 export interface TemplatesStackProps extends StackProps {
   // No longer passing the function - will import via CloudFormation export
+  /** Custom domain name token from CoreStack — creates implicit dependency so domain exists first */
+  apiDomainName?: string;
 }
 
 export class TemplatesStack extends Stack {
@@ -93,7 +95,7 @@ export class TemplatesStack extends Stack {
     // ========================================
 
     const corsConfig = getCdkCorsConfig();
-    
+
     this.api = new apigw.RestApi(this, 'TemplatesApi', {
       restApiName: 'TemplatesApi',
       description: 'Templates service API',
@@ -111,19 +113,19 @@ export class TemplatesStack extends Stack {
     });
 
     const corsErrorHeaders = getCorsErrorHeaders();
-    
+
     new apigw.GatewayResponse(this, 'GatewayResponseDefault4XX', {
       restApi: this.api,
       type: apigw.ResponseType.DEFAULT_4XX,
       responseHeaders: corsErrorHeaders,
     });
-    
+
     new apigw.GatewayResponse(this, 'GatewayResponseDefault5XX', {
       restApi: this.api,
       type: apigw.ResponseType.DEFAULT_5XX,
       responseHeaders: corsErrorHeaders,
     });
-    
+
     new apigw.GatewayResponse(this, 'GatewayResponseUnauthorized', {
       restApi: this.api,
       type: apigw.ResponseType.UNAUTHORIZED,
@@ -132,14 +134,14 @@ export class TemplatesStack extends Stack {
 
     // Import the authorizer function ARN from CoreStack's export
     const authorizerFunctionArn = Fn.importValue('AuthorizerFunctionArnN1');
-    
+
     // Create a reference to the authorizer function
     const authorizerFn = lambda.Function.fromFunctionArn(
       this,
       'ImportedAuthorizerFn',
       authorizerFunctionArn
     );
-    
+
     // Create authorizer for this stack's API
     this.authorizer = new apigw.RequestAuthorizer(this, 'TemplatesAuthorizer', {
       handler: authorizerFn,
@@ -210,7 +212,7 @@ export class TemplatesStack extends Stack {
 
     // Map to custom domain with service-specific base path
     new apigw.CfnBasePathMapping(this, 'TemplatesApiBasePathMapping', {
-      domainName: 'apig.todaysdentalinsights.com',
+      domainName: props.apiDomainName ?? 'api.todaysdentalservices.com',
       basePath: 'templates',
       restApiId: this.api.restApiId,
       stage: this.api.deploymentStage.stageName,
@@ -231,7 +233,7 @@ export class TemplatesStack extends Stack {
     new CfnOutput(this, 'TemplatesApiUrl', {
       // NOTE: Custom domain basePath is /templates and the API resource is also /templates
       // so the callable base URL is /templates/templates
-      value: 'https://apig.todaysdentalinsights.com/templates/templates',
+      value: 'https://api.todaysdentalservices.com/templates/templates',
       description: 'Templates API base URL (custom domain + resource path)',
       exportName: `${Stack.of(this).stackName}-TemplatesApiUrl`,
     });

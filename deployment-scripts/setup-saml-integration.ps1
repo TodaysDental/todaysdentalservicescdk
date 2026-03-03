@@ -81,7 +81,7 @@ function Test-Prerequisites {
     # Check Connect instance
     $connectInstanceId = $env:CONNECT_INSTANCE_ID
     if (-not $connectInstanceId) {
-        $connectInstanceId = "e265b644-3dad-4490-b7c4-27036090c5f1"
+        $connectInstanceId = "147f641d-ae2f-4d9f-8126-5ac2ff0c26f4"
     }
 
     try {

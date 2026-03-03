@@ -37,7 +37,7 @@ const ddb = DynamoDBDocumentClient.from(new DynamoDBClient({}));
 const LEASE_TABLE_NAME = process.env.LEASE_TABLE_NAME!;
 const STAFF_USER_TABLE = process.env.STAFF_USER_TABLE || 'StaffUser';
 const APP_NAME = process.env.APP_NAME || 'TodaysDentalInsights';
-const FROM_EMAIL = process.env.FROM_EMAIL || 'no-reply@todaysdentalinsights.com';
+const FROM_EMAIL = process.env.FROM_EMAIL || 'no-reply@todaysdentalservices.com';
 const SES_REGION = process.env.SES_REGION || 'us-east-1';
 
 // SES Client with explicit region (matching HR module)
@@ -196,7 +196,7 @@ function generateAlertKey(
  */
 async function wasAlertSentToday(alertKey: string): Promise<boolean> {
   const today = new Date().toISOString().split('T')[0];
-  
+
   try {
     const { Items } = await ddb.send(new QueryCommand({
       TableName: LEASE_TABLE_NAME,
@@ -207,7 +207,7 @@ async function wasAlertSentToday(alertKey: string): Promise<boolean> {
       },
       Limit: 1,
     }));
-    
+
     return (Items?.length || 0) > 0;
   } catch (error: any) {
     console.error('Error checking alert history:', error.message);
@@ -226,7 +226,7 @@ async function markAlertSent(
 ): Promise<void> {
   const now = new Date().toISOString();
   const today = now.split('T')[0];
-  
+
   try {
     await ddb.send(new PutCommand({
       TableName: LEASE_TABLE_NAME,
@@ -339,7 +339,7 @@ async function findAlertsToSend(): Promise<LeaseAlertItem[]> {
         if (reminderDays === null) continue;
 
         const daysToEvent = daysUntil(event.date);
-        
+
         // Send alert if today matches the reminder setting
         if (daysToEvent === reminderDays) {
           alertsToSend.push({
@@ -459,10 +459,10 @@ function getAlertTypeLabel(alertType: string): string {
  */
 function getAlertMessage(alert: LeaseAlertItem): string {
   const { alertType, daysUntil, eventTitle } = alert;
-  
+
   const timePhrase = daysUntil === 0 ? 'today' :
     daysUntil === 1 ? 'tomorrow' :
-    `in ${daysUntil} days`;
+      `in ${daysUntil} days`;
 
   switch (alertType) {
     case 'lease_end':

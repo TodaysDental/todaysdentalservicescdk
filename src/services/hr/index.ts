@@ -24,7 +24,7 @@
 
 // // SES Environment Variables
 // const APP_NAME = process.env.APP_NAME || 'TodaysDentalInsights';
-// const FROM_EMAIL = process.env.FROM_EMAIL || 'no-reply@todaysdentalinsights.com';
+// const FROM_EMAIL = process.env.FROM_EMAIL || 'no-reply@todaysdentalservices.com';
 // const SES_REGION = process.env.SES_REGION || 'us-east-1';
 
 // // Timezone cache to avoid repeated DynamoDB lookups
@@ -1315,7 +1315,7 @@ const ADMIN_CALENDAR_TABLE = process.env.ADMIN_CALENDAR_TABLE || 'AdminCalendarE
 
 // SES Environment Variables
 const APP_NAME = process.env.APP_NAME || 'TodaysDentalInsights';
-const FROM_EMAIL = process.env.FROM_EMAIL || 'no-reply@todaysdentalinsights.com';
+const FROM_EMAIL = process.env.FROM_EMAIL || 'no-reply@todaysdentalservices.com';
 const SES_REGION = process.env.SES_REGION || 'us-east-1';
 
 // Timezone cache to avoid repeated DynamoDB lookups

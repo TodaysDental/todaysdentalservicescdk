@@ -14,6 +14,9 @@ import * as sqs from 'aws-cdk-lib/aws-sqs';
 import * as lambdaEventSources from 'aws-cdk-lib/aws-lambda-event-sources';
 import * as events from 'aws-cdk-lib/aws-events';
 import * as targets from 'aws-cdk-lib/aws-events-targets';
+import * as certificatemanager from 'aws-cdk-lib/aws-certificatemanager';
+import * as route53 from 'aws-cdk-lib/aws-route53';
+import * as route53targets from 'aws-cdk-lib/aws-route53-targets';
 import { getCdkCorsConfig, getCorsErrorHeaders } from '../../shared/utils/cors';
 
 /**
@@ -46,23 +49,38 @@ export interface AiAgentsStackProps extends StackProps {
    */
   clinicHoursTableArn: string;
 
-  clinicPricingTableName?: string;
-  clinicInsuranceTableName?: string;
-
-  // ========================================
-  // PATIENT PORTAL APPT TYPES INTEGRATION (from PatientPortalApptTypesStack)
-  // ========================================
   /**
-   * Appointment types table name from PatientPortalApptTypesStack.
-   * Used by Action Group Lambda to look up appointment types when booking.
-   * Table schema: clinicId (PK), label (SK)
+   * Appointment types table name — kept for backward compatibility,
+   * no longer used by the action group handler.
+   * @deprecated
    */
   apptTypesTableName?: string;
 
   /**
-   * Appointment types table ARN for IAM permissions.
+   * Appointment types table ARN — kept for backward compatibility.
+   * @deprecated
    */
   apptTypesTableArn?: string;
+
+  // ========================================
+  // CALLBACK TABLES (from CallbackStack)
+  // ========================================
+  /**
+   * Prefix for clinic-specific callback tables.
+   * e.g. 'todaysdentalinsights-callback-'
+   * Action group Lambda writes appointment requests here.
+   */
+  callbackTablePrefix?: string;
+
+  /**
+   * Default callback table name used when no clinic-specific table exists.
+   */
+  defaultCallbackTableName?: string;
+
+  /**
+   * Default callback table ARN for IAM permissions.
+   */
+  defaultCallbackTableArn?: string;
 
   // ========================================
   // CHIME STACK INTEGRATION (REQUIRED)
@@ -232,22 +250,33 @@ export interface AiAgentsStackProps extends StackProps {
   // WEBSOCKET DOMAIN (from ChatbotStack)
   // ========================================
   /**
-   * WebSocket domain name from ChatbotStack (ws.todaysdentalinsights.com).
-   * REQUIRED for adding the /ai-agents API mapping to the shared domain.
+   * WebSocket domain name — ws.todaysdentalservices.com
+   * AiAgentsStack CREATES this domain (no longer imported from ChatbotStack).
    */
   webSocketDomainName: string;
 
   /**
-   * Regional domain name for the WebSocket domain (d-xxx.execute-api.region.amazonaws.com).
-   * REQUIRED for importing the domain as an L2 construct.
+   * Route53 hosted zone ID for ws.todaysdentalservices.com.
+   * Used to create the apex A record and auto-validate the ACM certificate.
    */
-  webSocketRegionalDomainName: string;
+  wsHostedZoneId: string;
 
   /**
-   * Regional hosted zone ID for the WebSocket domain.
-   * REQUIRED for importing the domain as an L2 construct.
+   * Regional domain name of the existing WebSocket API Gateway domain
+   * (d-xxx.execute-api.region.amazonaws.com). Only needed if importing
+   * a pre-existing domain. Not used when creating the domain here.
+   * @deprecated — kept for backward compat, no longer read
    */
-  webSocketRegionalHostedZoneId: string;
+  webSocketRegionalDomainName?: string;
+
+  /**
+   * AWS execute-api regional hosted zone ID (e.g. Z1UJRXOUMOOFQ8 for us-east-1).
+   * Used internally by ApiGatewayv2 DomainName for alias target resolution.
+   * @deprecated — kept for backward compat, no longer read directly
+   */
+  webSocketRegionalHostedZoneId?: string;
+  /** Custom domain name token from CoreStack — creates implicit dependency so domain exists first */
+  apiDomainName?: string;
 }
 
 export class AiAgentsStack extends Stack {
@@ -352,19 +381,8 @@ export class AiAgentsStack extends Stack {
       );
     }
 
-    if (!props.webSocketRegionalDomainName) {
-      throw new Error(
-        '[AiAgentsStack] CONFIGURATION ERROR: webSocketRegionalDomainName is REQUIRED. ' +
-        'This is the regional domain name (d-xxx.execute-api.region.amazonaws.com) for importing the WebSocket domain.'
-      );
-    }
-
-    if (!props.webSocketRegionalHostedZoneId) {
-      throw new Error(
-        '[AiAgentsStack] CONFIGURATION ERROR: webSocketRegionalHostedZoneId is REQUIRED. ' +
-        'This is the regional hosted zone ID for importing the WebSocket domain.'
-      );
-    }
+    // webSocketRegionalDomainName and webSocketRegionalHostedZoneId are @deprecated optional props.
+    // This stack creates its own WebSocket API Gateway domain — no import needed.
 
     // Tags & alarm helpers
     const baseTags: Record<string, string> = {
@@ -884,18 +902,29 @@ export class AiAgentsStack extends Stack {
     //    - Jamba Instruct (ai21.jamba-instruct-*)
     //    - Jamba 1.5 (ai21.jamba-1-5-*)
     // ========================================
+    // COMPREHENSIVE Bedrock permissions for the agent role.
+    // The agent needs bedrock:InvokeModel on BOTH foundation model ARNs
+    // AND cross-region inference profile ARNs (for us.anthropic.*, us.meta.*, etc.).
+    // Using bedrock:* to avoid AccessDeniedException from missing granular actions.
     this.bedrockAgentRole.addToPolicy(new iam.PolicyStatement({
       effect: iam.Effect.ALLOW,
       actions: [
-        'bedrock:InvokeModel',
-        'bedrock:InvokeModelWithResponseStream', // Streaming support
+        'bedrock:*',  // All Bedrock actions — agent needs InvokeModel, GetInferenceProfile, etc.
       ],
-      resources: [
-        // Wildcard for all foundation models (covers current and future models)
-        'arn:aws:bedrock:*::foundation-model/*',
-        // Cross-region inference profiles (us.anthropic.*, us.meta.*, etc.)
-        `arn:aws:bedrock:${this.region}:${this.account}:inference-profile/*`,
+      resources: ['*'],
+    }));
+
+    // AWS Marketplace permissions — required for Bedrock's auto-subscription
+    // to third-party models (Anthropic, Meta, Cohere, Mistral, etc.).
+    // Without these, the first invocation of a 3P model may fail with AccessDeniedException.
+    this.bedrockAgentRole.addToPolicy(new iam.PolicyStatement({
+      effect: iam.Effect.ALLOW,
+      actions: [
+        'aws-marketplace:Subscribe',
+        'aws-marketplace:Unsubscribe',
+        'aws-marketplace:ViewSubscriptions',
       ],
+      resources: ['*'],
     }));
 
     // ========================================
@@ -912,116 +941,49 @@ export class AiAgentsStack extends Stack {
     // ========================================
     // ACTION GROUP LAMBDA
     // ========================================
-
-    // This Lambda handles all OpenDental tool calls from the Bedrock Agent
+    // Handles all Bedrock Agent tool calls.
+    // All appointment actions write Callback records — no OpenDental API calls.
     this.actionGroupFn = new lambdaNode.NodejsFunction(this, 'ActionGroupFn', {
       entry: path.join(__dirname, '..', '..', 'services', 'ai-agents', 'action-group-handler.ts'),
       handler: 'handler',
       runtime: lambda.Runtime.NODEJS_22_X,
-      memorySize: 10240,
-      timeout: Duration.minutes(2), // Tool calls may take time
+      memorySize: 512,   // Callback writes only — no heavy OpenDental HTTP calls
+      timeout: Duration.seconds(30),
       bundling: { format: lambdaNode.OutputFormat.CJS, target: 'node22' },
       environment: {
         AGENTS_TABLE: this.agentsTable.tableName,
-        // SECURITY FIX: Clinic credentials loaded from SSM at runtime, not bundled
+        // Clinics table (ChimeStack) for getClinicInfo tool
         CLINICS_TABLE: props.clinicsTableName,
-        // Clinic secrets table for fallback credential lookup (from SecretsStack)
-        CLINIC_SECRETS_TABLE: 'TodaysDentalInsights-ClinicSecrets',
-        // ARCHITECTURE FIX: Distributed circuit breaker table
-        CIRCUIT_BREAKER_TABLE: this.circuitBreakerTable.tableName,
-        // Insurance plans table for coverage lookup (synced from OpenDental every 15 mins)
-        INSURANCE_PLANS_TABLE: 'TodaysDentalInsightsInsurancePlanSyncN1-InsurancePlans',
-        // Fee schedules table for fee lookup (synced from OpenDental every 15 mins)
-        FEE_SCHEDULES_TABLE: 'TodaysDentalInsightsFeeScheduleSyncN1-FeeSchedules',
-        // Appointment types table for booking appointments (from PatientPortalApptTypesStack)
-        APPT_TYPES_TABLE: props.apptTypesTableName || 'TodaysDentalInsightsPatientPortalApptTypesN1-ApptTypes',
-        // AI Agents Metrics table for tracking scheduling outcomes (booked, used, cancelled, rescheduled)
-        AI_AGENTS_METRICS_TABLE: this.aiAgentsMetricsTable.tableName,
-        // Callback table configuration for failed appointment bookings and patient searches
-        CALLBACK_TABLE_PREFIX: 'todaysdentalinsights-callback-',
-        DEFAULT_CALLBACK_TABLE: 'TodaysDentalInsightsCallbackN1-CallbackRequests',
+        // Callback tables — appointment requests are written here for staff follow-up
+        CALLBACK_TABLE_PREFIX: props.callbackTablePrefix || 'todaysdentalinsights-callback-',
+        DEFAULT_CALLBACK_TABLE: props.defaultCallbackTableName || 'TodaysDentalInsightsCallbackN1-CallbackRequests',
       },
     });
     applyTags(this.actionGroupFn, { Function: 'action-group' });
 
     this.agentsTable.grantReadData(this.actionGroupFn);
-    this.circuitBreakerTable.grantReadWriteData(this.actionGroupFn);
-    // Grant write access to metrics table for tracking scheduling outcomes
-    this.aiAgentsMetricsTable.grantReadWriteData(this.actionGroupFn);
 
-    // Grant read access to Clinics table for clinic metadata
-    // Use explicit ARN from props if available, otherwise construct from table name
+    // Grant read access to Clinics table for getClinicInfo tool
     const clinicsTableArnForActionGroup = props.clinicsTableArn ||
       `arn:aws:dynamodb:${this.region}:${this.account}:table/${props.clinicsTableName}`;
-
     this.actionGroupFn.addToRolePolicy(new iam.PolicyStatement({
       effect: iam.Effect.ALLOW,
       actions: ['dynamodb:GetItem'],
       resources: [clinicsTableArnForActionGroup],
     }));
 
-    // Grant read access to ClinicSecrets table for fallback credential lookup
-    // This table is managed by SecretsStack and stores per-clinic OpenDental API credentials
-    const clinicSecretsTableArn = `arn:aws:dynamodb:${this.region}:${this.account}:table/TodaysDentalInsights-ClinicSecrets`;
-    this.actionGroupFn.addToRolePolicy(new iam.PolicyStatement({
-      effect: iam.Effect.ALLOW,
-      actions: ['dynamodb:GetItem'],
-      resources: [clinicSecretsTableArn],
-    }));
-
-    // Grant KMS decryption for the SecretsStack encryption key (required for KMS-encrypted DynamoDB tables)
-    if (props.secretsEncryptionKeyArn) {
-      this.actionGroupFn.addToRolePolicy(new iam.PolicyStatement({
-        effect: iam.Effect.ALLOW,
-        actions: ['kms:Decrypt', 'kms:DescribeKey'],
-        resources: [props.secretsEncryptionKeyArn],
-      }));
-    }
-
-    // Grant read access to Insurance Plans table for coverage lookup
-    // This table is synced every 15 mins from OpenDental by InsurancePlanSyncStack
-    const insurancePlansTableArn = `arn:aws:dynamodb:${this.region}:${this.account}:table/TodaysDentalInsightsInsurancePlanSyncN1-InsurancePlans`;
-    this.actionGroupFn.addToRolePolicy(new iam.PolicyStatement({
-      effect: iam.Effect.ALLOW,
-      actions: ['dynamodb:GetItem', 'dynamodb:Query', 'dynamodb:Scan'],
-      resources: [
-        insurancePlansTableArn,
-        `${insurancePlansTableArn}/index/*`, // Include GSIs for efficient lookups
-      ],
-    }));
-
-    // Grant read access to Fee Schedules table for fee lookup
-    // This table is synced every 15 mins from OpenDental by FeeScheduleSyncStack
-    const feeSchedulesTableArn = `arn:aws:dynamodb:${this.region}:${this.account}:table/TodaysDentalInsightsFeeScheduleSyncN1-FeeSchedules`;
-    this.actionGroupFn.addToRolePolicy(new iam.PolicyStatement({
-      effect: iam.Effect.ALLOW,
-      actions: ['dynamodb:GetItem', 'dynamodb:Query', 'dynamodb:Scan'],
-      resources: [
-        feeSchedulesTableArn,
-        `${feeSchedulesTableArn}/index/*`, // Include GSIs for efficient lookups
-      ],
-    }));
-
-    // Grant read access to Appointment Types table for booking appointments
-    // This table is managed by PatientPortalApptTypesStack with schema: clinicId (PK), label (SK)
-    const apptTypesTableArn = props.apptTypesTableArn ||
-      `arn:aws:dynamodb:${this.region}:${this.account}:table/TodaysDentalInsightsPatientPortalApptTypesN1-ApptTypes`;
-    this.actionGroupFn.addToRolePolicy(new iam.PolicyStatement({
-      effect: iam.Effect.ALLOW,
-      actions: ['dynamodb:GetItem', 'dynamodb:Query'],
-      resources: [apptTypesTableArn],
-    }));
-
-    // Grant write access to Callback tables for saving failed appointment bookings as callbacks
-    // This enables clinic staff to follow up with patients when AI scheduling fails
+    // Grant write access to Callback tables (clinic-specific + default fallback)
+    // All appointment requests, reschedules, cancellations, and general callbacks go here
+    const defaultCallbackTableArn = props.defaultCallbackTableArn ||
+      `arn:aws:dynamodb:${this.region}:${this.account}:table/${props.defaultCallbackTableName || 'TodaysDentalInsightsCallbackN1-CallbackRequests'}`;
     this.actionGroupFn.addToRolePolicy(new iam.PolicyStatement({
       effect: iam.Effect.ALLOW,
       actions: ['dynamodb:PutItem'],
       resources: [
-        // Clinic-specific callback tables
+        // Clinic-specific callback tables (prefix match)
         `arn:aws:dynamodb:${this.region}:${this.account}:table/todaysdentalinsights-callback-*`,
         // Default callback table as fallback
-        `arn:aws:dynamodb:${this.region}:${this.account}:table/TodaysDentalInsightsCallbackN1-CallbackRequests`,
+        defaultCallbackTableArn,
       ],
     }));
 
@@ -1073,12 +1035,11 @@ export class AiAgentsStack extends Stack {
     // Grant read access to agents table for clinic config lookup
     this.agentsTable.grantReadData(this.insuranceTextractFn);
 
-    // Grant read access to ClinicSecrets table for OpenDental credentials
-    // (insurance-textract-handler uses shared `secrets-helper` which calls DynamoDB GetItem)
+    // Grant read access to ClinicSecrets table for credential lookup by insurance textract handler
     this.insuranceTextractFn.addToRolePolicy(new iam.PolicyStatement({
       effect: iam.Effect.ALLOW,
       actions: ['dynamodb:GetItem'],
-      resources: [clinicSecretsTableArn],
+      resources: [`arn:aws:dynamodb:${this.region}:${this.account}:table/TodaysDentalInsights-ClinicSecrets`],
     }));
 
     // Optional: allow decrypt if Secrets stack uses a CMK and downstream code needs it
@@ -1198,6 +1159,24 @@ export class AiAgentsStack extends Stack {
         'bedrock:DeleteAgentActionGroup',
         'bedrock:GetAgentActionGroup',
         'bedrock:ListAgentActionGroups',
+        // Model access management
+        'bedrock:GetFoundationModel',
+        'bedrock:ListFoundationModels',
+        'bedrock:GetInferenceProfile',
+        'bedrock:ListInferenceProfiles',
+        'bedrock:PutUseCaseForModelAccess',        // Anthropic FTU form
+        'bedrock:GetFoundationModelAvailability',  // Check model availability
+      ],
+      resources: ['*'],
+    }));
+
+    // AWS Marketplace permissions for auto-subscription to 3P models
+    this.agentsFn.addToRolePolicy(new iam.PolicyStatement({
+      effect: iam.Effect.ALLOW,
+      actions: [
+        'aws-marketplace:Subscribe',
+        'aws-marketplace:Unsubscribe',
+        'aws-marketplace:ViewSubscriptions',
       ],
       resources: ['*'],
     }));
@@ -1228,6 +1207,8 @@ export class AiAgentsStack extends Stack {
         SESSIONS_TABLE: this.sessionsTable.tableName,
         // Conversation history logging
         CONVERSATIONS_TABLE: this.conversationsTable.tableName,
+        // Clinics table (ChimeStack) — required by getClinicName/getClinicTimezone helpers
+        CLINICS_TABLE: props.clinicsTableName,
       },
     });
     applyTags(this.invokeAgentFn, { Function: 'invoke-agent' });
@@ -1236,13 +1217,16 @@ export class AiAgentsStack extends Stack {
     this.sessionsTable.grantReadWriteData(this.invokeAgentFn);
     this.conversationsTable.grantWriteData(this.invokeAgentFn);
 
-    // Bedrock Agent invocation permissions
+    // Bedrock permissions for invoke-agent handler
+    // Grants ALL bedrock-agent-runtime actions plus direct model invocation.
     this.invokeAgentFn.addToRolePolicy(new iam.PolicyStatement({
       effect: iam.Effect.ALLOW,
       actions: [
-        'bedrock:InvokeAgent',
-        'bedrock:GetAgent',
-        'bedrock:GetAgentAlias',
+        'bedrock-agent-runtime:*',       // All agent runtime actions (InvokeAgent, GetAgentMemory, etc.)
+        'bedrock:InvokeModel',            // Direct model invocation (fallback)
+        'bedrock:InvokeModelWithResponseStream',
+        'bedrock:GetFoundationModel',
+        'bedrock:GetInferenceProfile',
       ],
       resources: ['*'],
     }));
@@ -1325,13 +1309,16 @@ export class AiAgentsStack extends Stack {
       }));
     }
 
-    // Bedrock Agent invocation for Voice AI
+    // Bedrock permissions for Voice AI handler
+    // Grants ALL bedrock-agent-runtime actions plus direct model invocation.
     this.voiceAiFn.addToRolePolicy(new iam.PolicyStatement({
       effect: iam.Effect.ALLOW,
       actions: [
-        'bedrock:InvokeAgent',
-        'bedrock:GetAgent',
-        'bedrock:GetAgentAlias',
+        'bedrock-agent-runtime:*',       // All agent runtime actions
+        'bedrock:InvokeModel',            // Direct model invocation
+        'bedrock:InvokeModelWithResponseStream',
+        'bedrock:GetFoundationModel',
+        'bedrock:GetInferenceProfile',
       ],
       resources: ['*'],
     }));
@@ -1564,8 +1551,8 @@ export class AiAgentsStack extends Stack {
     transcriptionHandlerFn.addToRolePolicy(new iam.PolicyStatement({
       effect: iam.Effect.ALLOW,
       actions: [
-        'bedrock:InvokeAgent',
-        'bedrock:GetAgent',
+        'bedrock-agent-runtime:InvokeAgent',
+        'bedrock-agent-runtime:GetAgentMemory',
       ],
       resources: ['*'],
     }));
@@ -1739,9 +1726,8 @@ export class AiAgentsStack extends Stack {
     this.outboundExecutorFn.addToRolePolicy(new iam.PolicyStatement({
       effect: iam.Effect.ALLOW,
       actions: [
-        'bedrock:InvokeAgent',
-        'bedrock:GetAgent',
-        'bedrock:GetAgentAlias',
+        'bedrock-agent-runtime:InvokeAgent',
+        'bedrock-agent-runtime:GetAgentMemory',
       ],
       resources: ['*'],
     }));
@@ -1931,6 +1917,8 @@ export class AiAgentsStack extends Stack {
         CONNECTIONS_TABLE: this.connectionsTable.tableName,
         // Conversation history logging
         CONVERSATIONS_TABLE: this.conversationsTable.tableName,
+        // Clinics table (ChimeStack) — required by getClinicName/getClinicTimezone helpers
+        CLINICS_TABLE: props.clinicsTableName,
       },
     });
     applyTags(this.wsMessageFn, { Function: 'ws-message' });
@@ -1939,13 +1927,28 @@ export class AiAgentsStack extends Stack {
     this.connectionsTable.grantReadWriteData(this.wsMessageFn);
     this.conversationsTable.grantWriteData(this.wsMessageFn);
 
-    // Bedrock Agent invocation for WebSocket
+    // Grant read access to Clinics table for getClinicName/getClinicTimezone helpers
+    const clinicsTableArnForWsMessage = props.clinicsTableArn ||
+      `arn:aws:dynamodb:${this.region}:${this.account}:table/${props.clinicsTableName}`;
+    this.wsMessageFn.addToRolePolicy(new iam.PolicyStatement({
+      effect: iam.Effect.ALLOW,
+      actions: ['dynamodb:GetItem'],
+      resources: [clinicsTableArnForWsMessage],
+    }));
+
+    // Bedrock permissions for WebSocket message handler
+    // Grants ALL bedrock + bedrock-agent-runtime actions.
+    // AWS requires BOTH bedrock:InvokeAgent (resource-level on agent alias ARN)
+    // AND bedrock-agent-runtime:InvokeAgent (API-level) for agent invocation.
     this.wsMessageFn.addToRolePolicy(new iam.PolicyStatement({
       effect: iam.Effect.ALLOW,
       actions: [
-        'bedrock:InvokeAgent',
-        'bedrock:GetAgent',
-        'bedrock:GetAgentAlias',
+        'bedrock:InvokeAgent',            // Resource-level agent invocation permission
+        'bedrock:InvokeModel',            // Direct model invocation (fallback)
+        'bedrock:InvokeModelWithResponseStream',
+        'bedrock:GetFoundationModel',
+        'bedrock:GetInferenceProfile',
+        'bedrock-agent-runtime:*',        // All agent runtime actions (InvokeAgent, GetAgentMemory, etc.)
       ],
       resources: ['*'],
     }));
@@ -2196,25 +2199,50 @@ export class AiAgentsStack extends Stack {
       autoDeploy: true,
     });
 
-    // Map AI Agents WebSocket to /ai-agents path on existing ws.todaysdentalinsights.com domain
-    // CRITICAL FIX: Import the domain from ChatbotStack and use L2 ApiMapping construct
-    // This ensures proper stage reference handling (CfnApiMapping has stage reference issues)
-    const importedWsDomain = apigwv2.DomainName.fromDomainNameAttributes(this, 'ImportedWebSocketDomain', {
-      name: props.webSocketDomainName,
-      regionalDomainName: props.webSocketRegionalDomainName,
-      regionalHostedZoneId: props.webSocketRegionalHostedZoneId,
+    // ========================================
+    // WEBSOCKET CUSTOM DOMAIN + ROUTE53
+    // ========================================
+    // AiAgentsStack owns the ws.todaysdentalservices.com domain (ChatbotStack was removed).
+
+    // Import the Route53 zone for ws.todaysdentalservices.com first — needed for cert validation
+    const wsHostedZone = route53.HostedZone.fromHostedZoneAttributes(this, 'WsHostedZone', {
+      hostedZoneId: props.wsHostedZoneId,
+      zoneName: props.webSocketDomainName,
     });
 
-    // CRITICAL FIX: Use CfnApiMapping (L1) with explicit stage ID to avoid "Invalid stage identifier" errors
-    // The L2 ApiMapping sometimes has timing issues where CloudFormation validates the stage before it exists
+    // CDK auto-creates a FREE ACM certificate and validates it via Route53 DNS.
+    // No manual action needed — CloudFormation handles everything during `cdk deploy`.
+    const wsCertificate = new certificatemanager.Certificate(this, 'WsCertificate', {
+      domainName: props.webSocketDomainName,   // ws.todaysdentalservices.com
+      validation: certificatemanager.CertificateValidation.fromDns(wsHostedZone),
+    });
+
+    const wsDomainName = new apigwv2.DomainName(this, 'WsDomainName', {
+      domainName: props.webSocketDomainName,
+      certificate: wsCertificate,
+    });
+
+    // Route53 apex A record — ws.todaysdentalservices.com (zone IS the full domain)
+    new route53.ARecord(this, 'WsDomainAliasRecord', {
+      zone: wsHostedZone,
+      // No recordName — apex A record at zone root
+      target: route53.RecordTarget.fromAlias(
+        new route53targets.ApiGatewayv2DomainProperties(
+          wsDomainName.regionalDomainName,
+          wsDomainName.regionalHostedZoneId,
+        ),
+      ),
+    });
+
+    // Map AI Agents WebSocket to /ai-agents path on ws.todaysdentalservices.com
     const wsApiMapping = new apigwv2.CfnApiMapping(this, 'AiAgentsWebSocketMapping', {
       apiId: this.websocketApi.apiId,
-      domainName: importedWsDomain.name,
+      domainName: wsDomainName.name,
       stage: websocketStage.stageName,
       apiMappingKey: 'ai-agents',
     });
 
-    // Explicit dependency ensures the stage is fully created before the mapping
+    // Explicit dependency ensures stage is fully created before the mapping
     wsApiMapping.addDependency(websocketStage.node.defaultChild as apigwv2.CfnStage);
 
     // ========================================
@@ -2222,7 +2250,7 @@ export class AiAgentsStack extends Stack {
     // ========================================
 
     new apigw.CfnBasePathMapping(this, 'AiAgentsApiBasePathMapping', {
-      domainName: 'apig.todaysdentalinsights.com',
+      domainName: props.apiDomainName ?? 'api.todaysdentalservices.com',
       basePath: 'ai-agents',
       restApiId: this.api.restApiId,
       stage: this.api.deploymentStage.stageName,
@@ -2255,12 +2283,12 @@ export class AiAgentsStack extends Stack {
     });
 
     new CfnOutput(this, 'AiAgentsApiUrl', {
-      value: 'https://apig.todaysdentalinsights.com/ai-agents/',
+      value: 'https://api.todaysdentalservices.com/ai-agents/',
       exportName: `${Stack.of(this).stackName}-AiAgentsApiUrl`,
     });
 
     new CfnOutput(this, 'AiAgentsWebSocketUrl', {
-      value: 'wss://ws.todaysdentalinsights.com/ai-agents',
+      value: 'wss://ws.todaysdentalservices.com/ai-agents',
       description: 'WebSocket URL for public AI Agent chat with thinking stream',
       exportName: `${Stack.of(this).stackName}-AiAgentsWebSocketUrl`,
     });

@@ -21,7 +21,7 @@ export class CoreStack extends Stack {
   public readonly authorizerFunction: lambdaNode.NodejsFunction; // Export the Lambda function
   public readonly jwtSecretValue: string;
   public readonly customDomain: apigw.DomainName; // Export the custom domain
-  
+
   constructor(scope: Construct, id: string, props?: StackProps) {
     super(scope, id, props);
 
@@ -153,7 +153,7 @@ export class CoreStack extends Stack {
 
     // Grant authorizer read access to token blacklist table
     this.tokenBlacklistTable.grantReadData(this.authorizerFunction);
-    
+
     // Grant authorizer read access to StaffUser table (to fetch clinicRoles)
     this.staffUserTable.grantReadData(this.authorizerFunction);
 
@@ -181,25 +181,25 @@ export class CoreStack extends Stack {
     // Other stacks create their own authorizers from authorizerFunction
 
     const corsErrorHeaders = getCorsErrorHeaders();
-    
+
     new apigw.GatewayResponse(this, 'GatewayResponseDefault4XX', {
       restApi: this.authApi,
       type: apigw.ResponseType.DEFAULT_4XX,
       responseHeaders: corsErrorHeaders,
     });
-    
+
     new apigw.GatewayResponse(this, 'GatewayResponseDefault5XX', {
       restApi: this.authApi,
       type: apigw.ResponseType.DEFAULT_5XX,
       responseHeaders: corsErrorHeaders,
     });
-    
+
     new apigw.GatewayResponse(this, 'GatewayResponseUnauthorized', {
       restApi: this.authApi,
       type: apigw.ResponseType.UNAUTHORIZED,
       responseHeaders: corsErrorHeaders,
     });
-    
+
     new apigw.GatewayResponse(this, 'GatewayResponseAccessDenied', {
       restApi: this.authApi,
       type: apigw.ResponseType.ACCESS_DENIED,
@@ -221,7 +221,7 @@ export class CoreStack extends Stack {
       environment: {
         STAFF_USER_TABLE: this.staffUserTable.tableName,
         CORS_ORIGIN: 'https://todaysdentalinsights.com',
-        FROM_EMAIL: 'no-reply@todaysdentalinsights.com',
+        FROM_EMAIL: 'no-reply@todaysdentalservices.com',
         SES_REGION: 'us-east-1',
         APP_NAME: 'TodaysDentalInsights',
       },
@@ -339,18 +339,28 @@ export class CoreStack extends Stack {
     // ========================================
     // CUSTOM DOMAIN SETUP
     // ========================================
-    
-    // Certificate for apig.todaysdentalinsights.com
-    const certificateArn = 'arn:aws:acm:us-east-1:851620242036:certificate/8df14189-a210-4222-bd3f-0ff2cfc0e157';
-    const certificate = certificatemanager.Certificate.fromCertificateArn(
-      this,
-      'ApiGatewayCertificate',
-      certificateArn
-    );
+
+    // Import the Route53 hosted zone for api.todaysdentalservices.com
+    // (zone IS the full domain — apex, not a subdomain of a parent zone)
+    const hostedZone = route53.HostedZone.fromHostedZoneAttributes(this, 'HostedZone', {
+      hostedZoneId: 'Z01706382YE2HSU5ZCHQ2',
+      zoneName: 'api.todaysdentalservices.com',
+    });
+
+    // CDK auto-creates a FREE ACM certificate and validates it via Route53 DNS.
+    // During `cdk deploy` CloudFormation will:
+    //   1. Request the cert from ACM
+    //   2. Add the CNAME validation record to the hosted zone above
+    //   3. Wait for ACM to confirm validation (1-3 min)
+    //   4. Continue deploying the rest of the stack
+    const certificate = new certificatemanager.Certificate(this, 'ApiCertificate', {
+      domainName: 'api.todaysdentalservices.com',
+      validation: certificatemanager.CertificateValidation.fromDns(hostedZone),
+    });
 
     // Create the custom domain for API Gateway REST APIs
     const customDomain = new apigw.DomainName(this, 'ApiGatewayDomain', {
-      domainName: 'apig.todaysdentalinsights.com',
+      domainName: 'api.todaysdentalservices.com',
       certificate: certificate,
       endpointType: apigw.EndpointType.REGIONAL,
       securityPolicy: apigw.SecurityPolicy.TLS_1_2,
@@ -359,16 +369,10 @@ export class CoreStack extends Stack {
     // Store the custom domain as a class property
     this.customDomain = customDomain;
 
-    // Create Route53 A record to point to the custom domain
-    // Using direct hosted zone ID instead of lookup to avoid CloudFormation validation issues
-    const hostedZone = route53.HostedZone.fromHostedZoneAttributes(this, 'HostedZone', {
-      hostedZoneId: 'Z0782155122P6UMFMK24C',
-      zoneName: 'todaysdentalinsights.com',
-    });
-
+    // Route53 apex A record pointing api.todaysdentalservices.com → API Gateway
     new route53.ARecord(this, 'ApiGatewayAliasRecord', {
       zone: hostedZone,
-      recordName: 'apig',
+      // No recordName — apex A record at zone root
       target: route53.RecordTarget.fromAlias(
         new route53targets.ApiGatewayDomain(customDomain)
       ),
@@ -378,41 +382,45 @@ export class CoreStack extends Stack {
     // OUTPUTS
     // ========================================
 
-    // Map Auth API to custom domain under /auth path
+    // Map Auth API to custom domain under /auth path.
+    // IMPORTANT: Use customDomain.domainName (the CDK object reference) NOT a hardcoded
+    // string. The object reference creates an implicit CloudFormation dependency, ensuring
+    // the ApiGateway::DomainName resource is fully created before this BasePathMapping
+    // attempts to attach to it. A hardcoded string has no dependency and causes a 404.
     new apigw.CfnBasePathMapping(this, 'AuthApiBasePathMapping', {
-      domainName: 'apig.todaysdentalinsights.com',
+      domainName: customDomain.domainName,
       basePath: 'auth',
       restApiId: this.authApi.restApiId,
       stage: this.authApi.deploymentStage.stageName,
     });
 
     // Output the Auth API URL with custom domain
-    new CfnOutput(this, 'AuthApiUrl', { 
-      value: 'https://apig.todaysdentalinsights.com/auth/',
+    new CfnOutput(this, 'AuthApiUrl', {
+      value: 'https://api.todaysdentalservices.com/auth/',
       description: 'Auth API endpoint URL'
     });
-    new CfnOutput(this, 'StaffUserTableName', { 
+    new CfnOutput(this, 'StaffUserTableName', {
       value: this.staffUserTable.tableName,
       exportName: 'CoreStack-StaffUserTableName',
       description: 'StaffUser DynamoDB Table Name'
     });
     new CfnOutput(this, 'StaffClinicInfoTableName', { value: this.staffClinicInfoTable.tableName });
     // Export the authorizer function ARN for cross-stack reference
-    new CfnOutput(this, 'AuthorizerFunctionArn', { 
+    new CfnOutput(this, 'AuthorizerFunctionArn', {
       value: this.authorizerFunction.functionArn,
       exportName: 'AuthorizerFunctionArnN1',
       description: 'Custom Lambda Authorizer Function ARN'
     });
-    
+
     // Export the authorizer function name for cross-stack reference
-    new CfnOutput(this, 'AuthorizerFunctionName', { 
+    new CfnOutput(this, 'AuthorizerFunctionName', {
       value: this.authorizerFunction.functionName,
       exportName: 'AuthorizerFunctionNameN1',
       description: 'Custom Lambda Authorizer Function Name'
     });
     // Custom domain outputs
     new CfnOutput(this, 'ApiDomainName', {
-      value: 'apig.todaysdentalinsights.com',
+      value: 'api.todaysdentalservices.com',
       exportName: `${Stack.of(this).stackName}-ApiDomainName`,
       description: 'Custom domain name for API Gateway'
     });
@@ -425,6 +433,6 @@ export class CoreStack extends Stack {
       exportName: `${Stack.of(this).stackName}-CertificateArn`,
       description: 'Certificate ARN for API custom domain'
     });
-  
+
   }
 }

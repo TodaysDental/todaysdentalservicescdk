@@ -17,15 +17,8 @@ import { DynamoDBDocumentClient, PutCommand, UpdateCommand, GetCommand, QueryCom
 import { unmarshall } from '@aws-sdk/util-dynamodb';
 import { getDynamoDBClient } from '../shared/utils/dynamodb-manager';
 import { checkAndMarkProcessed, getDedupTableName, shouldProcessAnalytics } from '../shared/utils/analytics-deduplication';
-import { getCircuitBreaker } from '../shared/utils/circuit-breaker';
 import { trackEnhancedCallMetrics } from '../shared/utils/enhanced-agent-metrics';
-import {
-    searchPatientByPhone,
-    getPatientByPatNum,
-    createCommlog,
-    extractPatNumFromCallData,
-    generateCallSummary,
-} from '../../shared/utils/opendental-api';
+// OpenDental integration removed — patient enrichment is no longer performed.
 
 const ddb = getDynamoDBClient();
 // Use consistent environment variable naming
@@ -38,13 +31,7 @@ if (!ANALYTICS_TABLE) {
 // CRITICAL FIX: Use unified deduplication strategy
 const DEDUP_TABLE = getDedupTableName(ANALYTICS_TABLE);
 
-// CRITICAL FIX: Circuit breaker for OpenDental API to prevent cascading failures
-const openDentalCircuitBreaker = getCircuitBreaker('OpenDentalAPI', {
-    failureThreshold: 5,      // Open circuit after 5 failures
-    successThreshold: 3,      // Need 3 successes to close
-    timeout: 120000,          // Wait 2 minutes before retry
-    monitoringPeriod: 300000  // Track failures over 5 minutes
-});
+// OpenDental circuit breaker removed — no longer calling OpenDental APIs.
 
 interface CallAnalytics {
     callId: string;
@@ -75,28 +62,6 @@ interface CallAnalytics {
     // Source info
     phoneNumber?: string;
     direction: 'inbound' | 'outbound';
-
-    // Patient data (from OpenDental)
-    patientData?: {
-        PatNum: number;
-        LName: string;
-        FName: string;
-        Birthdate?: string;
-        Email?: string;
-        WirelessPhone?: string;
-        HmPhone?: string;
-        WkPhone?: string;
-        Address?: string;
-        City?: string;
-        State?: string;
-        Zip?: string;
-        PreferContactMethod?: string;
-        EstBalance?: number;
-        BalTotal?: number;
-    };
-
-    // Commlog tracking
-    commlogNum?: number;
 
     // Processing info
     processedAt: string;
@@ -293,10 +258,7 @@ async function processStreamRecord(
         }
     }
 
-    // Create commlog in OpenDental if patient data is available
-    if (stored && analytics.patientData) {
-        await createCallCommlog(analytics);
-    }
+    // OpenDental commlog creation removed — createCallCommlog is a no-op stub.
 
     return stored ? 'PROCESSED' : 'DUPLICATE';
 }
@@ -600,148 +562,22 @@ function parseTimestamp(value: any): number | null {
 }
 
 /**
- * Enrich analytics with patient data from OpenDental
- * CRITICAL FIX: Uses circuit breaker to prevent cascading failures
+ * Patient enrichment — OpenDental removed.
+ * This is now a no-op; kept as a stub so call-sites compile.
  */
 async function enrichWithPatientData(
-    analytics: CallAnalytics,
-    callData: any
+    _analytics: CallAnalytics,
+    _callData: any
 ): Promise<void> {
-    try {
-        if (!analytics.clinicId) {
-            console.log('[AnalyticsStream] No clinicId, skipping patient data enrichment');
-            return;
-        }
-
-        // Check circuit breaker state before attempting OpenDental calls
-        const circuitState = openDentalCircuitBreaker.getState();
-        if (circuitState.state === 'OPEN') {
-            console.warn('[AnalyticsStream] OpenDental circuit breaker is OPEN, skipping patient enrichment');
-            return;
-        }
-
-        // First, try to get PatNum from call metadata
-        let patNum = extractPatNumFromCallData(callData);
-
-        // If no PatNum but we have a phone number, search for patient
-        if (!patNum && analytics.phoneNumber) {
-            console.log(`[AnalyticsStream] Searching for patient by phone: ${analytics.phoneNumber}`);
-            try {
-                const patient = await openDentalCircuitBreaker.execute(() =>
-                    searchPatientByPhone(analytics.phoneNumber!, analytics.clinicId)
-                );
-                if (patient?.PatNum) {
-                    patNum = patient.PatNum;
-                    console.log(`[AnalyticsStream] Found patient PatNum: ${patNum}`);
-                }
-            } catch (err: any) {
-                console.warn('[AnalyticsStream] Error searching patient by phone:', err.message);
-                // Circuit breaker will track this failure
-            }
-        }
-
-        // If we have a PatNum, fetch full patient details
-        if (patNum) {
-            console.log(`[AnalyticsStream] Fetching patient details for PatNum: ${patNum}`);
-            try {
-                const patientDetails = await openDentalCircuitBreaker.execute(() =>
-                    getPatientByPatNum(patNum!, analytics.clinicId)
-                );
-
-                // Store relevant patient data
-                analytics.patientData = {
-                    PatNum: patientDetails.PatNum,
-                    LName: patientDetails.LName,
-                    FName: patientDetails.FName,
-                    Birthdate: patientDetails.Birthdate,
-                    Email: patientDetails.Email,
-                    WirelessPhone: patientDetails.WirelessPhone,
-                    HmPhone: patientDetails.HmPhone,
-                    WkPhone: patientDetails.WkPhone,
-                    Address: patientDetails.Address,
-                    City: patientDetails.City,
-                    State: patientDetails.State,
-                    Zip: patientDetails.Zip,
-                    PreferContactMethod: patientDetails.PreferContactMethod,
-                    EstBalance: patientDetails.EstBalance,
-                    BalTotal: patientDetails.BalTotal,
-                };
-
-                console.log(`[AnalyticsStream] Patient data enriched: ${patientDetails.FName} ${patientDetails.LName}`);
-            } catch (err: any) {
-                console.error(`[AnalyticsStream] Error fetching patient details:`, err.message);
-                // Circuit breaker will track this failure
-            }
-        } else {
-            console.log('[AnalyticsStream] No PatNum available, skipping patient data enrichment');
-        }
-    } catch (error: any) {
-        console.error('[AnalyticsStream] Error in enrichWithPatientData:', error);
-        // Don't throw - continue processing without patient data
-    }
+    // OpenDental integration removed — no patient data enrichment.
 }
 
 /**
- * Create a commlog entry in OpenDental for the call
- * CRITICAL FIX: Uses circuit breaker to prevent cascading failures
+ * Commlog creation — OpenDental removed.
+ * This is now a no-op; kept as a stub so call-sites compile.
  */
-async function createCallCommlog(analytics: CallAnalytics): Promise<void> {
-    try {
-        if (!analytics.patientData?.PatNum || !analytics.clinicId) {
-            console.log('[AnalyticsStream] Missing PatNum or clinicId, skipping commlog creation');
-            return;
-        }
-
-        // Check circuit breaker before attempting commlog creation
-        const circuitState = openDentalCircuitBreaker.getState();
-        if (circuitState.state === 'OPEN') {
-            console.warn('[AnalyticsStream] OpenDental circuit breaker is OPEN, skipping commlog creation');
-            return;
-        }
-
-        const note = generateCallSummary(analytics, analytics.patientData);
-
-        // Determine commType based on call characteristics
-        let commType = 'Misc';
-        if (analytics.wasCallback) {
-            commType = 'ApptRelated';
-        }
-
-        const commlog = await openDentalCircuitBreaker.execute(() =>
-            createCommlog(
-                analytics.patientData!.PatNum,
-                note,
-                analytics.clinicId,
-                {
-                    commType,
-                    mode: 'Phone',
-                    sentOrReceived: analytics.direction === 'inbound' ? 'Received' : 'Sent',
-                    commDateTime: analytics.timestampIso,
-                }
-            )
-        );
-
-        analytics.commlogNum = commlog.CommlogNum;
-        console.log(`[AnalyticsStream] Commlog created: ${commlog.CommlogNum} for patient ${analytics.patientData.PatNum}`);
-
-        // Update the analytics record with the commlog number
-        if (ANALYTICS_TABLE) {
-            await ddb.send(new UpdateCommand({
-                TableName: ANALYTICS_TABLE,
-                Key: {
-                    callId: analytics.callId,
-                    timestamp: analytics.timestamp,
-                },
-                UpdateExpression: 'SET commlogNum = :commlogNum',
-                ExpressionAttributeValues: {
-                    ':commlogNum': commlog.CommlogNum,
-                },
-            }));
-        }
-    } catch (error: any) {
-        console.error('[AnalyticsStream] Error creating commlog:', error);
-        // Don't throw - the analytics are already stored
-    }
+async function createCallCommlog(_analytics: CallAnalytics): Promise<void> {
+    // OpenDental integration removed — no commlog creation.
 }
 
 /**

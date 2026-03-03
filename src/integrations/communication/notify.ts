@@ -105,7 +105,7 @@ async function getClinicName(clinicId: string): Promise<string> {
 
 // Unsubscribe configuration
 const UNSUBSCRIBE_TABLE = process.env.UNSUBSCRIBE_TABLE || '';
-const UNSUBSCRIBE_BASE_URL = process.env.UNSUBSCRIBE_BASE_URL || 'https://apig.todaysdentalinsights.com/notifications';
+const UNSUBSCRIBE_BASE_URL = process.env.UNSUBSCRIBE_BASE_URL || 'https://api.todaysdentalservices.com/notifications';
 
 // Dynamic CORS helper
 const getCorsHeaders = (event: APIGatewayProxyEvent) => buildCorsHeaders({}, event.headers?.origin);

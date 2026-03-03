@@ -61,7 +61,7 @@ export const env = {
     get USER_PREFERENCES_TABLE() { return process.env.USER_PREFERENCES_TABLE || ''; },
     get FILE_BUCKET_NAME() { return process.env.FILE_BUCKET_NAME || ''; },
     get NOTIFICATIONS_TOPIC_ARN() { return process.env.NOTIFICATIONS_TOPIC_ARN || process.env.NOTICES_TOPIC_ARN || ''; },
-    get SES_SOURCE_EMAIL() { return process.env.SES_SOURCE_EMAIL || 'no-reply@todaysdentalinsights.com'; },
+    get SES_SOURCE_EMAIL() { return process.env.SES_SOURCE_EMAIL || 'no-reply@todaysdentalservices.com'; },
     get USER_POOL_ID() { return process.env.USER_POOL_ID || ''; },
     get DEVICE_TOKENS_TABLE() { return process.env.DEVICE_TOKENS_TABLE || ''; },
     get SEND_PUSH_FUNCTION_ARN() { return process.env.SEND_PUSH_FUNCTION_ARN || ''; },
