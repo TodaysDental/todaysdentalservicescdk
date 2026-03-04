@@ -42,6 +42,7 @@ const STATIC_ALLOWED_ORIGIN_INPUTS: unknown[] = [
   'https://www.todaysdentalservices.com',
   // Clinic-specific domains
   'https://dentistryatkewgardens.com',
+  'https://dr.shamtoub.todaysdentalservices.com',
   // Local development origins (frontend runs on port 3000 or 5173 via Vite)
   'http://localhost:3000',
   'http://localhost:5173',
@@ -79,6 +80,7 @@ export async function getAllowedOriginsAsync(): Promise<string[]> {
       'https://www.todaysdentalservices.com',
       // Clinic-specific domains
       'https://dentistryatkewgardens.com',
+      'https://dr.shamtoub.todaysdentalservices.com',
       // Local development origins
       'http://localhost:3000',
       'http://localhost:5173',

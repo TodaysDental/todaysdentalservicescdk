@@ -1,143 +1,135 @@
 [
     {
-        "clinicId":  "dentistryatkewgardens",
-        "microsoftClarityProjectId":  "",
-        "ga4PropertyId":  "",
-        "odooCompanyId":  0,
-        "clinicAddress":  "80-45 Kew Gardens Rd, Kew Gardens, NY 11415, USA",
-        "clinicCity":  "Brooklyn",
-        "clinicEmail":  "info@dentistryatkewgardens.com",
-        "clinicFax":  "718-262-2005",
-        "clinicName":  "Dentistry at Kew Gardens",
-        "clinicPhone":  "718-257-0300",
-        "clinicState":  "New York",
-        "timezone":  "America/New_York",
-        "clinicZipCode":  "11415",
-        "logoUrl":  "https://dentistryatkewgardens.com/logo.png",
-        "mapsUrl":  "https://maps.app.goo.gl/kewgardens",
-        "scheduleUrl":  "https://dentistryatkewgardens.com/#/contact",
-        "websiteLink":  "https://dentistryatkewgardens.com",
-        "wwwUrl":  "https://www.dentistryatkewgardens.com",
-        "phoneNumber":  "+13473049023",
-        "aiPhoneNumber":  "+17187171823",
-        "sesIdentityArn":  "arn:aws:ses:us-east-1:851620242036:identity/dentistryatkewgardens.com",
-        "smsOriginationArn":  "arn:aws:sms-voice:us-east-1:851620242036:phone-number/phone-dd4a4366965c409097eba6c48614b6e2",
-        "sftpFolderPath":  "dentistryatkewgardens",
-        "hostedZoneId":  "",
-        "email":  {
-                      "gmail":  {
-                                    "imapHost":  "imap.gmail.com",
-                                    "imapPort":  993,
-                                    "smtpHost":  "smtp.gmail.com",
-                                    "smtpPort":  587,
-                                    "smtpUser":  "dentistryatkewgardens@gmail.com",
-                                    "fromEmail":  "dentistryatkewgardens@gmail.com",
-                                    "fromName":  "Dentistry at Kew Gardens"
-                                },
-                      "domain":  {
-                                     "imapHost":  "mail.dentistryatkewgardens.com",
-                                     "imapPort":  993,
-                                     "smtpHost":  "mail.dentistryatkewgardens.com",
-                                     "smtpPort":  465,
-                                     "smtpUser":  "info@dentistryatkewgardens.com",
-                                     "fromEmail":  "info@dentistryatkewgardens.com",
-                                     "fromName":  "Dentistry at Kew Gardens"
-                                 }
-                  },
-        "ayrshare":  {
-                         "enabled":  false,
-                         "connectedPlatforms":  [
-
-                                                ],
-                         "facebook":  {
-                                          "connected":  false,
-                                          "pageId":  "",
-                                          "pageName":  "Dentistry at Kew Gardens"
-                                      }
-                     },
-        "googleAds":  {
-                          "enabled":  false,
-                          "customerId":  ""
-                      },
-        "geofence":  {
-                         "enabled":  true,
-                         "latitude":  40.7093,
-                         "longitude":  -73.8291,
-                         "radiusMeters":  150,
-                         "wifiSSIDs":  [
-
-                                       ],
-                         "lateThresholdMinutes":  10
-                     }
+        "clinicId": "dentistryatkewgardens",
+        "microsoftClarityProjectId": "",
+        "ga4PropertyId": "",
+        "odooCompanyId": 0,
+        "clinicAddress": "80-45 Kew Gardens Rd, Kew Gardens, NY 11415, USA",
+        "clinicCity": "Brooklyn",
+        "clinicEmail": "info@dentistryatkewgardens.com",
+        "clinicFax": "718-262-2005",
+        "clinicName": "Dentistry at Kew Gardens",
+        "clinicPhone": "718-257-0300",
+        "clinicState": "New York",
+        "timezone": "America/New_York",
+        "clinicZipCode": "11415",
+        "logoUrl": "https://dentistryatkewgardens.com/logo.png",
+        "mapsUrl": "https://maps.app.goo.gl/kewgardens",
+        "scheduleUrl": "https://dentistryatkewgardens.com/#/contact",
+        "websiteLink": "https://dentistryatkewgardens.com",
+        "wwwUrl": "https://www.dentistryatkewgardens.com",
+        "phoneNumber": "+13473049023",
+        "aiPhoneNumber": "+17187171823",
+        "sesIdentityArn": "arn:aws:ses:us-east-1:851620242036:identity/dentistryatkewgardens.com",
+        "smsOriginationArn": "arn:aws:sms-voice:us-east-1:851620242036:phone-number/phone-dd4a4366965c409097eba6c48614b6e2",
+        "sftpFolderPath": "dentistryatkewgardens",
+        "hostedZoneId": "",
+        "email": {
+            "gmail": {
+                "imapHost": "imap.gmail.com",
+                "imapPort": 993,
+                "smtpHost": "smtp.gmail.com",
+                "smtpPort": 587,
+                "smtpUser": "dentistryatkewgardens@gmail.com",
+                "fromEmail": "dentistryatkewgardens@gmail.com",
+                "fromName": "Dentistry at Kew Gardens"
+            },
+            "domain": {
+                "imapHost": "mail.dentistryatkewgardens.com",
+                "imapPort": 993,
+                "smtpHost": "mail.dentistryatkewgardens.com",
+                "smtpPort": 465,
+                "smtpUser": "info@dentistryatkewgardens.com",
+                "fromEmail": "info@dentistryatkewgardens.com",
+                "fromName": "Dentistry at Kew Gardens"
+            }
+        },
+        "ayrshare": {
+            "enabled": false,
+            "connectedPlatforms": [],
+            "facebook": {
+                "connected": false,
+                "pageId": "",
+                "pageName": "Dentistry at Kew Gardens"
+            }
+        },
+        "googleAds": {
+            "enabled": false,
+            "customerId": ""
+        },
+        "geofence": {
+            "enabled": true,
+            "latitude": 40.7093,
+            "longitude": -73.8291,
+            "radiusMeters": 150,
+            "wifiSSIDs": [],
+            "lateThresholdMinutes": 10
+        }
     },
     {
-        "clinicId":  "canarsiefamilydentistry",
-        "microsoftClarityProjectId":  "",
-        "ga4PropertyId":  "",
-        "odooCompanyId":  0,
-"clinicAddress":  "9413 Flatlands Ave.,Ste 102 W ,Brooklyn, NY 11236, USA",
-        "clinicEmail":  "dentxdental@outlook.com",
-        "clinicFax":  "602-861-3704",
-        "clinicName":  "DentX Dental",
-        "clinicPhone":  "718-257-0300",
-        "clinicState":  "New York",
-        "timezone":  "America/Phoenix",
-        "clinicZipCode":  "11236",
-        "logoUrl":  "https://canarisiefamilydentistry.com/",
-        "mapsUrl":  "https://maps.app.goo.gl/dentxdental",
-        "scheduleUrl":  "https://k2.getweave.com/769a21fe-3742-4856-a1a0-8c286fc897a5/request-appointment?source=WEBSITE",
-        "websiteLink":  "https://canarsiefamilydentistry.com",
-        "wwwUrl":  "https://www.canarsiefamilydentistry.com",
-        "phoneNumber":  "+13473049170",
-        "aiPhoneNumber":  "+17187171833",
-        "sesIdentityArn":  "",
-        "smsOriginationArn":  "",
-        "sftpFolderPath":  "dentxdental",
-        "hostedZoneId":  "",
-        "email":  {
-                      "gmail":  {
-                                    "imapHost":  "imap.gmail.com",
-                                    "imapPort":  993,
-                                    "smtpHost":  "smtp.gmail.com",
-                                    "smtpPort":  587,
-                                    "smtpUser":  "dentxdental@gmail.com",
-                                    "fromEmail":  "dentxdental@gmail.com",
-                                    "fromName":  "DentX Dental"
-                                },
-                      "domain":  {
-                                     "imapHost":  "mail.dentxdental.com",
-                                     "imapPort":  993,
-                                     "smtpHost":  "mail.dentxdental.com",
-                                     "smtpPort":  465,
-                                     "smtpUser":  "dentxdental@outlook.com",
-                                     "fromEmail":  "dentxdental@outlook.com",
-                                     "fromName":  "DentX Dental"
-                                 }
-                  },
-        "ayrshare":  {
-                         "enabled":  false,
-                         "connectedPlatforms":  [
-
-                                                ],
-                         "facebook":  {
-                                          "connected":  false,
-                                          "pageId":  "",
-                                          "pageName":  "DentX Dental"
-                                      }
-                     },
-        "googleAds":  {
-                          "enabled":  false,
-                          "customerId":  ""
-                      },
-        "geofence":  {
-                         "enabled":  true,
-                         "latitude":  33.5265,
-                         "longitude":  -112.0916,
-                         "radiusMeters":  150,
-                         "wifiSSIDs":  [
-
-                                       ],
-                         "lateThresholdMinutes":  10
-                     }
+        "clinicId": "canarsiefamilydentistry",
+        "microsoftClarityProjectId": "",
+        "ga4PropertyId": "",
+        "odooCompanyId": 0,
+        "clinicAddress": "9413 Flatlands Ave.,Ste 102 W ,Brooklyn, NY 11236, USA",
+        "clinicEmail": "dentxdental@outlook.com",
+        "clinicFax": "602-861-3704",
+        "clinicName": "canarsie family dentistry",
+        "clinicPhone": "718-257-0300",
+        "clinicState": "New York",
+        "timezone": "America/New_York",
+        "clinicZipCode": "11236",
+        "logoUrl": "https://canarisiefamilydentistry.com/",
+        "mapsUrl": "",
+        "scheduleUrl": "https://canarsiefamilydentistry.com/#/contact",
+        "websiteLink": "https://canarsiefamilydentistry.com",
+        "wwwUrl": "https://www.canarsiefamilydentistry.com",
+        "phoneNumber": "+17182570300",
+        "aiPhoneNumber": "",
+        "sesIdentityArn": "",
+        "smsOriginationArn": "",
+        "sftpFolderPath": "",
+        "hostedZoneId": "",
+        "email": {
+            "gmail": {
+                "imapHost": "imap.gmail.com",
+                "imapPort": 993,
+                "smtpHost": "smtp.gmail.com",
+                "smtpPort": 587,
+                "smtpUser": "",
+                "fromEmail": "",
+                "fromName": ""
+            },
+            "domain": {
+                "imapHost": "",
+                "imapPort": 993,
+                "smtpHost": "",
+                "smtpPort": 465,
+                "smtpUser": "",
+                "fromEmail": "",
+                "fromName": ""
+            }
+        },
+        "ayrshare": {
+            "enabled": false,
+            "connectedPlatforms": [],
+            "facebook": {
+                "connected": false,
+                "pageId": "",
+                "pageName": ""
+            }
+        },
+        "googleAds": {
+            "enabled": false,
+            "customerId": ""
+        },
+        "geofence": {
+            "enabled": true,
+            "latitude": 40.6377,
+            "longitude": -73.9315,
+            "radiusMeters": 150,
+            "wifiSSIDs": [],
+            "lateThresholdMinutes": 10
+        }
     }
 ]

@@ -323,6 +323,8 @@ const chimeStack = new ChimeStack(app, CHIME_STACK_NAME, {
   staffUserTableName: coreStack.staffUserTable.tableName,
 });
 chimeStack.addDependency(pushNotificationsStack);
+chimeStack.addDependency(notificationsStack);
+chimeStack.addDependency(notificationsStack); // ChimeStack uses Fn.importValue for VoiceCallAnalyticsTableName
 
 // ========================================
 // ADMIN STACK

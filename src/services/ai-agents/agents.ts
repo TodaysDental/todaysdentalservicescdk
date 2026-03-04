@@ -393,8 +393,10 @@ const OPENAPI_SCHEMA = {
         operationId: 'requestAppointment',
         summary: 'Request a new appointment',
         description:
-          'Collect patient name, phone, reason, and preferred date/time, then call this tool to create a callback record. ' +
-          'Clinic staff will follow up to confirm the appointment in the dental management system.',
+          'IMPORTANT: Before calling this tool, you MUST ask the patient for their full name, phone number, and reason for the visit. ' +
+          'Do NOT call this tool until you have collected at least the name, phone, and reason from the patient. ' +
+          'Collect each piece of information one at a time in separate messages. ' +
+          'After collecting all required info, call this tool to create a callback record for clinic staff to follow up.',
         requestBody: {
           required: true,
           content: {
@@ -426,7 +428,9 @@ const OPENAPI_SCHEMA = {
         operationId: 'rescheduleAppointment',
         summary: 'Request to reschedule an existing appointment',
         description:
-          'Collect patient name, phone, and new preferred date/time. ' +
+          'IMPORTANT: Before calling this tool, you MUST ask the patient for their full name and phone number. ' +
+          'Do NOT call this tool without at least the name and phone. ' +
+          'Collect each piece of information one at a time. ' +
           'Creates a callback record so clinic staff can update the appointment.',
         requestBody: {
           required: true,
@@ -460,7 +464,9 @@ const OPENAPI_SCHEMA = {
         operationId: 'cancelAppointment',
         summary: 'Request to cancel an existing appointment',
         description:
-          'Collect patient name, phone, and appointment details. ' +
+          'IMPORTANT: Before calling this tool, you MUST ask the patient for their full name and phone number. ' +
+          'Do NOT call this tool without at least the name and phone. ' +
+          'Collect each piece of information one at a time. ' +
           'Creates a callback record so clinic staff can cancel the appointment.',
         requestBody: {
           required: true,
@@ -492,8 +498,9 @@ const OPENAPI_SCHEMA = {
         operationId: 'getClinicInfo',
         summary: 'Get clinic information',
         description:
-          'Returns clinic details: address, phone, email, website, hours, services, and directions. ' +
-          'No patient identification required. Use for questions about location, contact info, or general clinic information.',
+          'Returns clinic details: name, phone, address, email, website, Google Maps directions URL, online booking URL, and timezone. ' +
+          'Use this tool when the patient asks about location, contact info, how to find us, website, or how to book online. ' +
+          'No patient identification required — call this tool immediately when asked about clinic details.',
         requestBody: {
           required: false,
           content: {
@@ -519,9 +526,10 @@ const OPENAPI_SCHEMA = {
         operationId: 'requestCallback',
         summary: 'Request a callback from clinic staff',
         description:
-          'For any request that is not an appointment booking, rescheduling, or cancellation. ' +
-          'Examples: insurance inquiries, billing questions, medical records, referrals, general questions. ' +
-          'Collect patient name and phone, then create a callback record for staff.',
+          'IMPORTANT: Before calling this tool, you MUST ask the patient for their full name, phone number, and the reason for the callback. ' +
+          'Do NOT call this tool without at least the name, phone, and reason. ' +
+          'Collect each piece of information one at a time. ' +
+          'For any request that is not an appointment booking, rescheduling, or cancellation.',
         requestBody: {
           required: true,
           content: {

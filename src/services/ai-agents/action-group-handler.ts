@@ -219,7 +219,6 @@ async function handleRequestAppointment(
 ): Promise<ActionGroupResponse> {
   const {
     clinicId,
-    patientName,
     patientPhone,
     patientEmail,
     preferredDate,
@@ -228,28 +227,45 @@ async function handleRequestAppointment(
     isNewPatient,
   } = params;
 
-  if (!clinicId || !patientName) {
-    // Try to use userName from session attributes as fallback
-    const fallbackName = patientName || params.userName || 'Unknown';
-    if (!clinicId) {
-      return buildResponse(event, 400, {
-        success: false,
-        message: 'Missing required field: clinicId is required.',
-      });
-    }
-    // Use fallback name and continue
-    params.patientName = fallbackName;
+  if (!clinicId) {
+    return buildResponse(event, 400, {
+      success: false,
+      message: 'Missing required field: clinicId is required.',
+    });
+  }
+
+  // CRITICAL FIX: Reject requests with missing patient info.
+  // When the AI eagerly calls this tool with empty fields, return a message
+  // that instructs it to go back and ask the user for the info.
+  const effectiveName = params.patientName || params.userName;
+  const effectivePhone = patientPhone || params.callerPhone;
+  const effectiveReason = appointmentReason || params.Reason || params.reason;
+
+  const missingFields: string[] = [];
+  if (!effectiveName || effectiveName === 'Website Visitor' || effectiveName === 'Unknown') {
+    missingFields.push('patient\'s full name');
+  }
+  if (!effectivePhone) {
+    missingFields.push('phone number');
+  }
+  if (!effectiveReason) {
+    missingFields.push('reason for the visit');
+  }
+
+  if (missingFields.length > 0) {
+    console.log(`[requestAppointment] Missing fields, instructing agent to collect: ${missingFields.join(', ')}`);
+    return buildResponse(event, 200, {
+      success: false,
+      message:
+        `Cannot create appointment request yet — missing required information: ${missingFields.join(', ')}. ` +
+        `Please ask the patient for each missing piece of information one at a time, then call this tool again with all the details filled in.`,
+    });
   }
 
   const now = new Date().toISOString();
   const requestId = uuidv4();
 
-  // Map old schema field names to our expected names
-  const effectiveName = params.patientName || patientName || params.userName || 'Unknown';
-  const effectivePhone = patientPhone || params.callerPhone || 'Not provided';
-  const effectiveReason = appointmentReason || params.Reason || params.reason || 'General visit';
   const effectiveDate = preferredDate || params.Date || params.date || null;
-
   const preferredSlot =
     [effectiveDate, preferredTime].filter(Boolean).join(' at ') ||
     'No preference provided';
@@ -315,8 +331,28 @@ async function handleRescheduleAppointment(
       message: 'Missing required field: clinicId.',
     });
   }
-  const effectiveName = patientName || params.userName || 'Unknown';
-  const effectivePhone = patientPhone || 'Not provided';
+
+  // Validate required patient info before saving
+  const effectiveName = patientName || params.userName;
+  const effectivePhone = patientPhone || params.callerPhone;
+
+  const missingFields: string[] = [];
+  if (!effectiveName || effectiveName === 'Website Visitor' || effectiveName === 'Unknown') {
+    missingFields.push('patient\'s full name');
+  }
+  if (!effectivePhone) {
+    missingFields.push('phone number');
+  }
+
+  if (missingFields.length > 0) {
+    console.log(`[rescheduleAppointment] Missing fields: ${missingFields.join(', ')}`);
+    return buildResponse(event, 200, {
+      success: false,
+      message:
+        `Cannot create reschedule request yet — missing: ${missingFields.join(', ')}. ` +
+        `Please ask the patient for each missing piece of information one at a time, then call this tool again.`,
+    });
+  }
 
   const now = new Date().toISOString();
   const requestId = uuidv4();
@@ -345,7 +381,7 @@ async function handleRescheduleAppointment(
     success: true,
     requestId,
     message:
-      `Your reschedule request has been received. A team member will call you at ${patientPhone} to confirm the new appointment time.`,
+      `Your reschedule request has been received. A team member will call you at ${effectivePhone} to confirm the new appointment time.`,
   });
 }
 
@@ -371,8 +407,28 @@ async function handleCancelAppointment(
       message: 'Missing required field: clinicId.',
     });
   }
-  const effectiveName = patientName || params.userName || 'Unknown';
-  const effectivePhone = patientPhone || 'Not provided';
+
+  // Validate required patient info before saving
+  const effectiveName = patientName || params.userName;
+  const effectivePhone = patientPhone || params.callerPhone;
+
+  const missingFields: string[] = [];
+  if (!effectiveName || effectiveName === 'Website Visitor' || effectiveName === 'Unknown') {
+    missingFields.push('patient\'s full name');
+  }
+  if (!effectivePhone) {
+    missingFields.push('phone number');
+  }
+
+  if (missingFields.length > 0) {
+    console.log(`[cancelAppointment] Missing fields: ${missingFields.join(', ')}`);
+    return buildResponse(event, 200, {
+      success: false,
+      message:
+        `Cannot create cancellation request yet — missing: ${missingFields.join(', ')}. ` +
+        `Please ask the patient for each missing piece of information one at a time, then call this tool again.`,
+    });
+  }
 
   const now = new Date().toISOString();
   const requestId = uuidv4();
@@ -407,7 +463,7 @@ async function handleCancelAppointment(
 /**
  * getClinicInfo
  *
- * Returns publicly available clinic information: address, phone, hours.
+ * Returns publicly available clinic information: address, phone, website, etc.
  * This reads from the ChimeStack Clinics DynamoDB table — no external API call.
  *
  * Parameters:
@@ -435,18 +491,31 @@ async function handleGetClinicInfo(
     });
   }
 
+  // Build a comprehensive clinic info object from all available fields.
+  // Field names vary between clinics — try all known variants.
+  const clinicInfo: Record<string, unknown> = {
+    clinicId: clinic.clinicId,
+    name: clinic.clinicName || clinic.name || clinicId,
+    phone: clinic.clinicPhone || clinic.phoneNumber || 'Please call for our phone number',
+    address: clinic.clinicAddress || clinic.address || 'Please call for our address',
+    city: clinic.clinicCity || undefined,
+    state: clinic.clinicState || undefined,
+    zipCode: clinic.clinicZipCode || undefined,
+    email: clinic.clinicEmail || clinic.email || undefined,
+    website: clinic.websiteLink || clinic.website || undefined,
+    directionsUrl: clinic.mapsUrl || undefined,
+    bookingUrl: clinic.scheduleUrl || undefined,
+    timezone: clinic.timezone || 'America/New_York',
+  };
+
+  // Remove undefined fields for cleaner responses
+  Object.keys(clinicInfo).forEach(key => {
+    if (clinicInfo[key] === undefined) delete clinicInfo[key];
+  });
+
   return buildResponse(event, 200, {
     success: true,
-    clinic: {
-      clinicId: clinic.clinicId,
-      name: clinic.clinicName || clinic.name,
-      phone: clinic.phoneNumber || clinic.clinicPhone,
-      address: clinic.address || clinic.clinicAddress,
-      email: clinic.email || clinic.clinicEmail,
-      hours: clinic.hours || clinic.officeHours || 'Please call for hours',
-      services: clinic.services || [],
-      timezone: clinic.timezone || 'America/New_York',
-    },
+    clinic: clinicInfo,
   });
 }
 
@@ -481,9 +550,31 @@ async function handleRequestCallback(
     });
   }
 
-  const effectiveName = patientName || params.userName || 'Unknown';
-  const effectivePhone = patientPhone || 'Not provided';
-  const effectiveMessage = message || reason || 'General inquiry';
+  // Validate required patient info before saving
+  const effectiveName = patientName || params.userName;
+  const effectivePhone = patientPhone || params.callerPhone;
+  const effectiveMessage = message || reason;
+
+  const missingFields: string[] = [];
+  if (!effectiveName || effectiveName === 'Website Visitor' || effectiveName === 'Unknown') {
+    missingFields.push('patient\'s full name');
+  }
+  if (!effectivePhone) {
+    missingFields.push('phone number');
+  }
+  if (!effectiveMessage) {
+    missingFields.push('reason for the callback');
+  }
+
+  if (missingFields.length > 0) {
+    console.log(`[requestCallback] Missing fields: ${missingFields.join(', ')}`);
+    return buildResponse(event, 200, {
+      success: false,
+      message:
+        `Cannot create callback request yet — missing: ${missingFields.join(', ')}. ` +
+        `Please ask the patient for each missing piece of information one at a time, then call this tool again.`,
+    });
+  }
 
   const now = new Date().toISOString();
   const requestId = uuidv4();
