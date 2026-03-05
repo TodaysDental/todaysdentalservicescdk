@@ -172,6 +172,10 @@ const CALL_QUEUE_TABLE_NAME = `${CHIME_STACK_NAME}-CallQueueV2`;
 const AGENT_PRESENCE_TABLE_NAME = `${CHIME_STACK_NAME}-AgentPresence`;
 const AGENT_PERFORMANCE_TABLE_NAME = `${CHIME_STACK_NAME}-AgentPerformance`;
 
+// AiAgentsStack table names - defined as constants to pass to ChimeStack
+// CRITICAL: These must match the actual table names created in AiAgentsStack
+const AI_AGENTS_VOICE_CONFIG_TABLE_NAME = `${AI_AGENTS_STACK_NAME}-VoiceAgentConfig`;
+
 // ========================================
 // CORE STACK — JWT auth & shared tables
 // ========================================
@@ -313,9 +317,7 @@ const chimeStack = new ChimeStack(app, CHIME_STACK_NAME, {
   connectCallRecordingsKmsKeyArn: CONNECT_CALL_RECORDINGS_KMS_KEY_ARN,
   enableAfterHoursAi: ENABLE_AFTER_HOURS_AI,
   clinicHoursTableName: `TodaysDentalInsightsClinicHoursN1-ClinicHours`,
-  voiceConfigTableName: ENABLE_AFTER_HOURS_AI
-    ? cdk.Fn.importValue(`${AI_AGENTS_STACK_NAME}-VoiceConfigTableName`)
-    : undefined,
+  voiceConfigTableName: ENABLE_AFTER_HOURS_AI ? AI_AGENTS_VOICE_CONFIG_TABLE_NAME : undefined,
   // Push Notifications — direct references (no circular dep; Chime doesn't feed back into Push)
   deviceTokensTableName: pushNotificationsStack.deviceTokensTable.tableName,
   deviceTokensTableArn: pushNotificationsStack.deviceTokensTable.tableArn,
@@ -324,7 +326,6 @@ const chimeStack = new ChimeStack(app, CHIME_STACK_NAME, {
 });
 chimeStack.addDependency(pushNotificationsStack);
 chimeStack.addDependency(notificationsStack);
-chimeStack.addDependency(notificationsStack); // ChimeStack uses Fn.importValue for VoiceCallAnalyticsTableName
 
 // ========================================
 // ADMIN STACK
@@ -410,6 +411,10 @@ clinicImagesStack.addDependency(secretsStack);
 // ========================================
 // AI AGENTS STACK
 // ========================================
+// NOTE: Chime props are passed as hardcoded constants (not chimeStack.xxx) to break a
+// synth-time cyclic dependency: AiAgents→Chime→Notifications→AiAgents.
+// ChimeStack reads VoiceConfigTableName from AI_AGENTS_VOICE_CONFIG_TABLE_NAME constant
+// at synth time, so aiAgentsStack must deploy first.
 const ENABLE_VOICE_AI_ANALYTICS = process.env.ENABLE_VOICE_AI_ANALYTICS === 'true';
 const ANALYTICS_TABLE_NAME = 'TodaysDentalInsightsAnalyticsN1-CallAnalyticsN1';
 
@@ -417,9 +422,7 @@ const aiAgentsStack = new AiAgentsStack(app, AI_AGENTS_STACK_NAME, {
   env,
   clinicHoursTableName: `TodaysDentalInsightsClinicHoursN1-ClinicHours`,
   clinicHoursTableArn: `arn:aws:dynamodb:${env.region || 'us-east-1'}:${env.account}:table/TodaysDentalInsightsClinicHoursN1-ClinicHours`,
-  // Chime props passed as hardcoded constants (not chimeStack.xxx) to break the synth-time
-  // circular: ChimeStack reads VoiceConfigTableName from AiAgentsStack via Fn.importValue
-  // at deploy-time, so aiAgentsStack must deploy first and cannot synth-depend on chimeStack.
+  // Chime props as hardcoded constants (must match actual ChimeStack table names)
   clinicsTableName: `${CHIME_STACK_NAME}-Clinics`,
   clinicsTableArn: `arn:aws:dynamodb:${env.region || 'us-east-1'}:${env.account}:table/${CHIME_STACK_NAME}-Clinics`,
   smaIdMapParameterName: `/${CHIME_STACK_NAME}/SmaIdMap`,
@@ -436,7 +439,7 @@ const aiAgentsStack = new AiAgentsStack(app, AI_AGENTS_STACK_NAME, {
   sharedRecordingsBucketName: `${CHIME_STACK_NAME.toLowerCase()}-recordings-${env.account}`,
   sharedRecordingsBucketArn: `arn:aws:s3:::${CHIME_STACK_NAME.toLowerCase()}-recordings-${env.account}`,
   webSocketDomainName: 'ws.todaysdentalservices.com',
-  wsHostedZoneId: 'Z0739065CXDA7H4CVUFQ',    // Route53 zone for ws.todaysdentalservices.com
+  wsHostedZoneId: 'Z0739065CXDA7H4CVUFQ',
   connectInstanceId: '147f641d-ae2f-4d9f-8126-5ac2ff0c26f4',
   outboundContactFlowId: '9a66f56c-0d7d-41ad-9447-dda3cf1699ee',
   // Callback tables (from CallbackStack) for the action group Lambda
@@ -447,9 +450,8 @@ const aiAgentsStack = new AiAgentsStack(app, AI_AGENTS_STACK_NAME, {
 });
 aiAgentsStack.addDependency(coreStack);
 aiAgentsStack.addDependency(secretsStack);
-// AiAgentsStack must deploy BEFORE ChimeStack because ChimeStack reads
-// Fn.importValue(`${AI_AGENTS_STACK_NAME}-VoiceConfigTableName`) at deploy time.
-// No synth-time dependency between the two stacks.
+// AiAgentsStack must deploy BEFORE ChimeStack because ChimeStack uses
+// AI_AGENTS_VOICE_CONFIG_TABLE_NAME (constant, but the table must exist first).
 chimeStack.addDependency(aiAgentsStack);
 
 // ========================================

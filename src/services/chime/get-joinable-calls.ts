@@ -130,83 +130,80 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
     const now = Date.now();
 
     // Fetch calls for each clinic
-    for (const clinicId of clinicIdsToQuery) {
-      try {
+    const settled = await Promise.allSettled(
+      clinicIdsToQuery.map(async (clinicId) => {
         const { Items: calls } = await ddb.send(new QueryCommand({
           TableName: CALL_QUEUE_TABLE_NAME,
           KeyConditionExpression: 'clinicId = :clinicId',
-          ExpressionAttributeValues: {
-            ':clinicId': clinicId
-          }
+          ExpressionAttributeValues: { ':clinicId': clinicId }
         }));
+        return { clinicId, calls: calls || [] };
+      })
+    );
 
-        if (!calls || calls.length === 0) continue;
+    for (const [idx, s] of settled.entries()) {
+      if (s.status === 'rejected') {
+        console.error(`[get-joinable-calls] Error fetching calls for clinic ${clinicIdsToQuery[idx]}:`, s.reason);
+        continue;
+      }
 
-        for (const call of calls) {
-          // Add to queued calls list
-          if (includeQueued && call.status === 'queued') {
-            const waitTime = call.queuedAt ? Math.floor((now - call.queuedAt) / 1000) : 0;
+      for (const call of s.value.calls) {
+        if (includeQueued && call.status === 'queued') {
+          const waitTime = call.queuedAt ? Math.floor((now - call.queuedAt) / 1000) : 0;
 
-            // Compute composite priority score (higher = more urgent)
-            const PRIORITY_WEIGHTS: Record<string, number> = { high: 1000, normal: 100, low: 10 };
-            let priorityScore = PRIORITY_WEIGHTS[call.priority || 'normal'] || 100;
-            if (call.isVip) priorityScore += 500;
-            if (call.isCallback) priorityScore += 300;
-            priorityScore += Math.min(waitTime, 600) * 2; // starvation prevention — max +1200 after 10 min
-            if (waitTime > 900) priorityScore += 1000; // emergency boost at 15 min
+          const PRIORITY_WEIGHTS: Record<string, number> = { high: 1000, normal: 100, low: 10 };
+          let priorityScore = PRIORITY_WEIGHTS[call.priority || 'normal'] || 100;
+          if (call.isVip) priorityScore += 500;
+          if (call.isCallback) priorityScore += 300;
+          priorityScore += Math.min(waitTime, 600) * 2;
+          if (waitTime > 900) priorityScore += 1000;
 
-            queuedCalls.push({
-              callId: call.callId,
-              clinicId: call.clinicId,
-              phoneNumber: call.phoneNumber || 'Unknown',
-              status: call.status,
-              priority: call.priority || 'normal',
-              priorityScore,
-              isVip: call.isVip || false,
-              isCallback: call.isCallback || false,
-              queuedAt: call.queuedAt,
-              queuePosition: call.queuePosition,
-              waitTime,
-              customerName: call.customerName,
-              reason: call.reason
-            });
-          }
-
-          // Add to active calls list (for supervisors)
-          if (includeActive && ['connected', 'on-hold', 'ringing'].includes(call.status)) {
-            const duration = call.connectedAt ? Math.floor((now - call.connectedAt) / 1000) : 0;
-
-            // Get agent name if possible
-            let agentName;
-            if (call.assignedAgentId) {
-              try {
-                const { Item: agent } = await ddb.send(new GetCommand({
-                  TableName: AGENT_PRESENCE_TABLE_NAME,
-                  Key: { agentId: call.assignedAgentId }
-                }));
-                agentName = agent?.name || agent?.agentId;
-              } catch (err) {
-                console.warn(`[get-joinable-calls] Could not fetch agent name for ${call.assignedAgentId}`);
-              }
-            }
-
-            activeCalls.push({
-              callId: call.callId,
-              clinicId: call.clinicId,
-              phoneNumber: call.phoneNumber || 'Unknown',
-              status: call.status,
-              assignedAgentId: call.assignedAgentId,
-              agentName,
-              connectedAt: call.connectedAt,
-              duration,
-              isOnHold: call.status === 'on-hold',
-              supervisors: call.supervisors || []
-            });
-          }
+          queuedCalls.push({
+            callId: call.callId,
+            clinicId: call.clinicId,
+            phoneNumber: call.phoneNumber || 'Unknown',
+            status: call.status,
+            priority: call.priority || 'normal',
+            priorityScore,
+            isVip: call.isVip || false,
+            isCallback: call.isCallback || false,
+            queuedAt: call.queuedAt,
+            queuePosition: call.queuePosition,
+            waitTime,
+            customerName: call.customerName,
+            reason: call.reason
+          });
         }
-      } catch (clinicErr) {
-        console.error(`[get-joinable-calls] Error fetching calls for clinic ${clinicId}:`, clinicErr);
-        // Continue with other clinics
+
+        if (includeActive && ['connected', 'on-hold', 'ringing'].includes(call.status)) {
+          const duration = call.connectedAt ? Math.floor((now - call.connectedAt) / 1000) : 0;
+
+          let agentName;
+          if (call.assignedAgentId) {
+            try {
+              const { Item: agent } = await ddb.send(new GetCommand({
+                TableName: AGENT_PRESENCE_TABLE_NAME,
+                Key: { agentId: call.assignedAgentId }
+              }));
+              agentName = agent?.name || agent?.agentId;
+            } catch (err) {
+              console.warn(`[get-joinable-calls] Could not fetch agent name for ${call.assignedAgentId}`);
+            }
+          }
+
+          activeCalls.push({
+            callId: call.callId,
+            clinicId: call.clinicId,
+            phoneNumber: call.phoneNumber || 'Unknown',
+            status: call.status,
+            assignedAgentId: call.assignedAgentId,
+            agentName,
+            connectedAt: call.connectedAt,
+            duration,
+            isOnHold: call.status === 'on-hold',
+            supervisors: call.supervisors || []
+          });
+        }
       }
     }
 

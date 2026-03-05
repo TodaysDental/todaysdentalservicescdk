@@ -228,7 +228,7 @@ interface CallAnalytics {
 
   // Analytics fields
   transcriptSummary?: string;
-  toolsUsed?: string[];       // Which tools were called
+  toolsUsed?: string[];       // Which OpenDental tools were called
   appointmentBooked?: boolean;
   overallSentiment?: 'POSITIVE' | 'NEUTRAL' | 'NEGATIVE' | 'MIXED';  // Aligned with Comprehend
 
@@ -1073,40 +1073,52 @@ function sanitizeForVoice(text: string): string {
     }
   );
 
-  // --- 3. Strip AWS-style <<...>> delimiters (e.g. <<question_mark>>, <<less_than>>) ---
-  out = out.replace(/<<[^>]*>>/g, '');
-  out = out.replace(/<[^>]+>/g, '');       // HTML / XML tags
+  // --- 3. Strip section headers like "=== TITLE ===" or "=== TITLE" ---
+  out = out.replace(/^={2,}\s*[^=\n]*={0,}\s*$/gm, '');
+  out = out.replace(/={2,}/g, '');
 
-  // --- 4. Strip Markdown formatting ---
-  // Headers  (### Title)
-  out = out.replace(/^#{1,6}\s+/gm, '');
-  // Bold / italic  (**text**, *text*, __text__, _text_)
-  out = out.replace(/(\*{1,3}|_{1,3})([^*_]+?)\1/g, '$2');
-  // Inline code  (`code`)
-  out = out.replace(/`([^`]+)`/g, '$1');
-  // Code blocks  (``` ... ```)
-  out = out.replace(/```[\s\S]*?```/g, '');
-  // Horizontal rules
+  // --- 4. Strip AWS-style <<...>> delimiters (e.g. <<question_mark>>, <<less_than>>) ---
+  out = out.replace(/<<[^>]*>>/g, '');
+  out = out.replace(/<[^>]+>/g, '');
+
+  // --- 5. Strip all emojis and Unicode pictographs ---
+  out = out.replace(/[\u{1F300}-\u{1F9FF}\u{2600}-\u{26FF}\u{2700}-\u{27BF}\u{FE00}-\u{FE0F}\u{1FA00}-\u{1FA9F}\u{200D}]/gu, '');
+
+  // --- 6. Strip decorative line separators (───, ═══, ----, ****) ---
+  out = out.replace(/[─━═]{2,}/g, '');
   out = out.replace(/^[-*_]{3,}\s*$/gm, '');
-  // Bullet / numbered list markers  (• - * or 1.)
+
+  // --- 7. Strip arrows and special punctuation that TTS reads literally ---
+  out = out.replace(/→/g, ', ');
+  out = out.replace(/←/g, ', ');
+  out = out.replace(/⚠️?/g, '');
+  out = out.replace(/✓/g, '');
+  out = out.replace(/✅/g, '');
+  out = out.replace(/❌/g, '');
+
+  // --- 8. Strip Markdown formatting ---
+  out = out.replace(/^#{1,6}\s+/gm, '');
+  out = out.replace(/(\*{1,3}|_{1,3})([^*_]+?)\1/g, '$2');
+  out = out.replace(/`([^`]+)`/g, '$1');
+  out = out.replace(/```[\s\S]*?```/g, '');
   out = out.replace(/^\s*([•\-\*]|\d+\.?)\s+/gm, '');
-  // Blockquotes
   out = out.replace(/^>\s*/gm, '');
-  // Links  [text](url)
   out = out.replace(/\[([^\]]+)\]\([^)]+\)/g, '$1');
-  // Escaped characters  \* \_ etc.
   out = out.replace(/\\([\*_`#~|>])/g, '$1');
-  // Remaining literal asterisks / underscores used as decoration
   out = out.replace(/[\*_]{2,}/g, '');
-  // Table separators  | --- |
   out = out.replace(/\|[-:| ]+\|/g, '');
-  // Table pipe characters
   out = out.replace(/\|/g, ' ');
 
-  // --- 5. Clean up whitespace ---
-  out = out.replace(/[ \t]{2,}/g, ' ');   // collapse multiple spaces
-  out = out.replace(/\n{3,}/g, '\n\n');   // collapse multiple blank lines
-  out = out.replace(/^\s+|\s+$/gm, '');   // trim each line
+  // --- 9. Strip CDT/procedure codes that shouldn't be spoken (e.g. "D0150", "(D1110)") ---
+  out = out.replace(/\(?D\d{4}\)?/g, '');
+
+  // --- 10. Strip "GROUP #:" and similar technical labels ---
+  out = out.replace(/GROUP\s*#:\s*/gi, 'Group number ');
+
+  // --- 11. Clean up whitespace ---
+  out = out.replace(/[ \t]{2,}/g, ' ');
+  out = out.replace(/\n{3,}/g, '\n\n');
+  out = out.replace(/^\s+|\s+$/gm, '');
   out = out.trim();
 
   return out;
@@ -1168,7 +1180,6 @@ async function invokeAiAgentWithStreaming(
     callerNumber: session.callerNumber,
     isVoiceCall: 'true',
     inputMode: 'Speech',
-    // Current date information for accurate scheduling (timezone-aware)
     todayDate: dateContext.today,
     todayFormatted: todayFormatted,
     dayName: dateContext.dayName,
@@ -1180,6 +1191,7 @@ async function invokeAiAgentWithStreaming(
 
   const promptSessionAttributes: Record<string, string> = {
     clinicName,
+    callerPhoneNumber: session.callerNumber || '',
     currentDate: `Today is ${dateContext.dayName}, ${todayFormatted} (${dateContext.today}). Current time: ${dateContext.currentTime} (${dateContext.timezone})`,
     dateContext: `When scheduling appointments, use ${dateContext.today} as today's date. Tomorrow is ${dateContext.tomorrowDate}. Next week dates: ${JSON.stringify(dateContext.nextWeekDates)}`,
   };
@@ -1398,7 +1410,6 @@ async function invokeAiAgent(
   const thinking: string[] = [];
   let fullResponse = '';
 
-  // Get timezone-aware date context + clinic display name for accurate scheduling & natural greetings
   const [clinicTimezone, clinicName] = await Promise.all([
     getClinicTimezone(session.clinicId),
     getClinicName(session.clinicId),
@@ -1413,7 +1424,6 @@ async function invokeAiAgent(
     callerNumber: session.callerNumber,
     isVoiceCall: 'true',
     inputMode: 'Speech',
-    // Current date information for accurate scheduling (timezone-aware)
     todayDate: dateContext.today,
     todayFormatted: todayFormatted,
     dayName: dateContext.dayName,
@@ -1425,6 +1435,7 @@ async function invokeAiAgent(
 
   const promptSessionAttributes: Record<string, string> = {
     clinicName,
+    callerPhoneNumber: session.callerNumber || '',
     currentDate: `Today is ${dateContext.dayName}, ${todayFormatted} (${dateContext.today}). Current time: ${dateContext.currentTime} (${dateContext.timezone})`,
     dateContext: `When scheduling appointments, use ${dateContext.today} as today's date. Tomorrow is ${dateContext.tomorrowDate}. Next week dates: ${JSON.stringify(dateContext.nextWeekDates)}`,
   };

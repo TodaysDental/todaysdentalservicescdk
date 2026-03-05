@@ -319,24 +319,23 @@ export class ChimeStack extends Stack {
         },
       }));
 
-    // DynamoDB BatchWriteItem supports max 25 items per request, so we need to chunk
-    // For initial seeding, we'll use multiple AwsCustomResource calls but with a
-    // dedicated role to avoid the policy size limit
-    const seedClinicsRole = new iam.Role(this, 'SeedClinicsRole', {
+    // Shared role for ALL custom resources in this stack (DynamoDB seeding, Chime provisioning, etc)
+    // Using a single shared role ensures the singleton AwsCustomResource Lambda provider
+    // always has all necessary permissions.
+    const customResourceRole = new iam.Role(this, 'ChimeCustomResourceRole', {
       assumedBy: new iam.ServicePrincipal('lambda.amazonaws.com'),
+      description: 'Shared role for Chime stack custom resources',
       managedPolicies: [
         iam.ManagedPolicy.fromAwsManagedPolicyName('service-role/AWSLambdaBasicExecutionRole'),
       ],
     });
 
-    // Grant write access to the clinics table
-    this.clinicsTable.grantWriteData(seedClinicsRole);
+    // Grant write access to the clinics table for seeding
+    this.clinicsTable.grantWriteData(customResourceRole);
 
-    // TEMPORARY FIX: Grant Chime VoiceConnector streaming permissions to SeedClinicsRole.
-    // Old AwsCustomResource constructs (VCStreaming, AiSipRule, AiVCStreaming) were created
-    // with this role. CloudFormation needs these permissions to delete the orphaned resources
-    // during stack updates. Can be removed once the old resources are fully cleaned up.
-    seedClinicsRole.addToPolicy(new iam.PolicyStatement({
+    // TEMPORARY FIX: Grant Chime VoiceConnector streaming permissions to the shared role.
+    // CloudFormation needs these permissions to delete old/orphaned resources during stack updates.
+    customResourceRole.addToPolicy(new iam.PolicyStatement({
       effect: iam.Effect.ALLOW,
       actions: [
         'chime:DeleteVoiceConnectorStreamingConfiguration',
@@ -345,7 +344,6 @@ export class ChimeStack extends Stack {
         'chime-sdk-voice:DeleteVoiceConnectorStreamingConfiguration',
         'chime-sdk-voice:GetVoiceConnectorStreamingConfiguration',
         'chime-sdk-voice:PutVoiceConnectorStreamingConfiguration',
-        // Also needed for cleanup of old SipRule/SipMediaApplication resources
         'chime:DeleteSipRule',
         'chime:GetSipRule',
         'chime:DeleteSipMediaApplication',
@@ -354,7 +352,6 @@ export class ChimeStack extends Stack {
         'chime-sdk-voice:GetSipRule',
         'chime-sdk-voice:DeleteSipMediaApplication',
         'chime-sdk-voice:GetSipMediaApplication',
-        // MediaInsights pipeline configuration cleanup
         'chime:DeleteMediaInsightsPipelineConfiguration',
         'chime:GetMediaInsightsPipelineConfiguration',
         'chimesdkmediapipelines:DeleteMediaInsightsPipelineConfiguration',
@@ -394,7 +391,7 @@ export class ChimeStack extends Stack {
           },
           physicalResourceId: customResources.PhysicalResourceId.of(`SeedClinicsBatch${index}-v3`),
         },
-        role: seedClinicsRole,
+        role: customResourceRole,
         policy: customResources.AwsCustomResourcePolicy.fromSdkCalls({
           resources: customResources.AwsCustomResourcePolicy.ANY_RESOURCE,
         }),
@@ -793,13 +790,8 @@ export class ChimeStack extends Stack {
       });
     }
 
-    const chimeCustomResourceRole = new iam.Role(this, 'ChimeVoiceCustomResourceRole', {
-      assumedBy: new iam.ServicePrincipal('lambda.amazonaws.com'),
-      description: 'Shared role for Chime Voice custom resources',
-      managedPolicies: [
-        iam.ManagedPolicy.fromAwsManagedPolicyName('service-role/AWSLambdaBasicExecutionRole'),
-      ],
-    });
+    // Use the shared custom resource role defined earlier
+    const chimeCustomResourceRole = customResourceRole;
 
     chimeCustomResourceRole.addToPolicy(new iam.PolicyStatement({
       effect: iam.Effect.ALLOW,

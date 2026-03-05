@@ -1,17 +1,8 @@
 /**
  * WebSocket Connect Handler for AI Agents
- *
+ * 
  * Handles new WebSocket connections for public AI agent chat.
- *
- * IMPORTANT: API Gateway WebSocket consumes the HTTP Upgrade `Origin` header
- * during the handshake and does NOT forward it to the Lambda $connect handler.
- * Therefore origin validation must be skipped when no origin is present —
- * this is normal, not a sign of a non-browser client.
- *
- * Security is provided by:
- *  - TLS termination at API Gateway
- *  - Per-agent `isWebsiteEnabled` + `clinicId` checks below
- *  - Rate limiting in the message handler
+ * No authentication required - uses CORS for security.
  */
 
 import { APIGatewayProxyEvent } from 'aws-lambda';
@@ -50,28 +41,31 @@ export const handler = async (event: WebSocketConnectEvent) => {
   const origin = event.headers?.origin || event.headers?.Origin || '';
 
   // Validate origin (CORS check)
-  //
-  // NOTE: API Gateway WebSocket uses the Origin header during the HTTP Upgrade
-  // handshake but does NOT forward it to the Lambda $connect invocation.
-  // So `origin` will almost always be an empty string for legitimate browser
-  // connections.  We only validate the origin when one IS present (e.g. in
-  // local SAM testing where the header can be injected manually).
-  if (origin) {
-    const isAllowedOrigin = ALLOWED_ORIGINS_LIST.some(allowed =>
-      origin === allowed ||
-      origin.startsWith(allowed.replace(/\/$/, ''))
-    );
+  // SECURITY FIX: Empty origin should be rejected in production
+  // Empty origin occurs with non-browser clients (scripts, cURL, etc.)
+  // Only allow empty origin in development for testing
+  const isDevelopment = process.env.NODE_ENV === 'development' || 
+                        process.env.AWS_SAM_LOCAL === 'true';
+  
+  if (!origin && !isDevelopment) {
+    console.warn('Connection rejected - empty origin (non-browser client)');
+    return {
+      statusCode: 403,
+      body: JSON.stringify({ error: 'WebSocket connections require a valid origin header' }),
+    };
+  }
+  
+  const isAllowedOrigin = origin === '' || ALLOWED_ORIGINS_LIST.some(allowed => 
+    origin === allowed || 
+    origin.startsWith(allowed.replace(/\/$/, ''))
+  );
 
-    if (!isAllowedOrigin) {
-      console.warn('Connection rejected - invalid origin:', origin);
-      return {
-        statusCode: 403,
-        body: JSON.stringify({ error: 'Origin not allowed' }),
-      };
-    }
-  } else {
-    // No origin header — expected for API Gateway WebSocket $connect invocations.
-    console.log('No origin header (normal for API GW WebSocket $connect) — skipping origin check');
+  if (!isAllowedOrigin) {
+    console.warn('Connection rejected - invalid origin:', origin);
+    return {
+      statusCode: 403,
+      body: JSON.stringify({ error: 'Origin not allowed' }),
+    };
   }
 
   // Extract query parameters

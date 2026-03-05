@@ -62,12 +62,12 @@ async function getCachedAgent(agentId: string): Promise<AiAgent | null> {
   if (cached && Date.now() - cached.timestamp < AGENT_CACHE_TTL_MS) {
     return cached.agent;
   }
-
+  
   const response = await docClient.send(new GetCommand({
     TableName: AGENTS_TABLE,
     Key: { agentId },
   }));
-
+  
   const agent = response.Item as AiAgent | undefined;
   if (agent) {
     agentCache.set(agentId, { agent, timestamp: Date.now() });
@@ -87,7 +87,7 @@ async function logMessage(
   message: Omit<ConversationMessage, 'ttl'>
 ): Promise<void> {
   const ttl = Math.floor(Date.now() / 1000) + (90 * 24 * 60 * 60); // 90 days
-
+  
   try {
     await docClient.send(new PutCommand({
       TableName: CONVERSATIONS_TABLE,
@@ -148,35 +148,35 @@ async function checkRateLimit(connectionId: string): Promise<{ allowed: boolean;
   const now = Date.now();
   const windowStart = Math.floor(now / RATE_LIMIT.MESSAGE_WINDOW_MS) * RATE_LIMIT.MESSAGE_WINDOW_MS;
   const ttl = Math.floor(now / 1000) + RATE_LIMIT_TTL_SECONDS;
-
+  
   try {
     // Get current connection with rate limit info
     const response = await docClient.send(new GetCommand({
       TableName: CONNECTIONS_TABLE,
       Key: { connectionId },
     }));
-
+    
     const connection = response.Item;
     if (!connection) {
       return { allowed: false, reason: 'Connection not found. Please reconnect.' };
     }
-
+    
     // Check if we're in a new window
     const storedWindowStart = connection.rateLimitWindowStart || 0;
     const isNewWindow = windowStart > storedWindowStart;
-
+    
     // Get current count (reset if new window)
     const currentCount = isNewWindow ? 0 : (connection.rateLimitCount || 0);
-
+    
     // Check limit
     if (currentCount >= RATE_LIMIT.MAX_MESSAGES_PER_MINUTE) {
       const timeLeft = Math.ceil((storedWindowStart + RATE_LIMIT.MESSAGE_WINDOW_MS - now) / 1000);
-      return {
-        allowed: false,
-        reason: `Rate limit exceeded. Please wait ${Math.max(1, timeLeft)} seconds before sending more messages.`
+      return { 
+        allowed: false, 
+        reason: `Rate limit exceeded. Please wait ${Math.max(1, timeLeft)} seconds before sending more messages.` 
       };
     }
-
+    
     // Check session message limit
     const sessionMessageCount = connection.sessionMessageCount || 0;
     if (sessionMessageCount >= RATE_LIMIT.MAX_SESSION_MESSAGES) {
@@ -185,7 +185,7 @@ async function checkRateLimit(connectionId: string): Promise<{ allowed: boolean;
         reason: 'Session message limit reached. Please start a new session by reconnecting.',
       };
     }
-
+    
     // Increment counter atomically
     // FIX: Only include :windowStart in ExpressionAttributeValues when isNewWindow is true
     // DynamoDB throws ValidationException for unused expression attribute values
@@ -194,21 +194,21 @@ async function checkRateLimit(connectionId: string): Promise<{ allowed: boolean;
       ':zero': 0,
       ':ttl': ttl,
     };
-
+    
     if (isNewWindow) {
       expressionAttributeValues[':windowStart'] = windowStart;
     }
-
+    
     await docClient.send(new UpdateCommand({
       TableName: CONNECTIONS_TABLE,
       Key: { connectionId },
-      UpdateExpression: isNewWindow
+      UpdateExpression: isNewWindow 
         ? 'SET rateLimitCount = :one, rateLimitWindowStart = :windowStart, sessionMessageCount = if_not_exists(sessionMessageCount, :zero) + :one, #ttl = :ttl'
         : 'SET rateLimitCount = rateLimitCount + :one, sessionMessageCount = if_not_exists(sessionMessageCount, :zero) + :one, #ttl = :ttl',
       ExpressionAttributeNames: { '#ttl': 'ttl' },
       ExpressionAttributeValues: expressionAttributeValues,
     }));
-
+    
     return { allowed: true };
   } catch (error) {
     console.error('[RateLimit] Error checking rate limit:', error);
@@ -227,13 +227,13 @@ function createApiGatewayClient(event: WebSocketMessageEvent): ApiGatewayManagem
   const stage = event.requestContext.stage;
   const apiId = event.requestContext.apiId;
   const region = process.env.AWS_REGION || 'us-east-1';
-
+  
   // FIX: When using custom domains with path mapping, the @connections endpoint
   // must use the execute-api URL format, not the custom domain.
-  // Custom domain: ws.todaysdentalservices.com/ai-agents -> doesn't work for @connections
+  // Custom domain: ws.todaysdentalinsights.com/ai-agents -> doesn't work for @connections
   // Execute-api: {api-id}.execute-api.{region}.amazonaws.com/{stage} -> works
   let endpoint: string;
-
+  
   if (domain.includes('execute-api.amazonaws.com')) {
     // Direct execute-api URL (no custom domain)
     endpoint = `https://${domain}/${stage}`;
@@ -242,7 +242,7 @@ function createApiGatewayClient(event: WebSocketMessageEvent): ApiGatewayManagem
     endpoint = `https://${apiId}.execute-api.${region}.amazonaws.com/${stage}`;
     console.log(`[WsMessage] Using execute-api endpoint for @connections: ${endpoint}`);
   }
-
+  
   return new ApiGatewayManagementApiClient({ endpoint });
 }
 
@@ -281,7 +281,7 @@ export const handler = async (event: WebSocketMessageEvent) => {
   try {
     // Parse message
     const body: WebSocketMessage = JSON.parse(event.body || '{}');
-
+    
     if (!body.message) {
       await sendToClient(apiClient, connectionId, {
         type: 'error',
@@ -365,11 +365,11 @@ export const handler = async (event: WebSocketMessageEvent) => {
     // NEVER accept client-provided sessionIds - always use server-generated ones
     // This prevents session hijacking where attacker guesses another user's sessionId
     let sessionId: string;
-
+    
     if (connectionInfo.sessionId) {
       // Reuse existing session for this connection
       sessionId = connectionInfo.sessionId;
-
+      
       // SECURITY: If client provided a different sessionId, log and ignore it
       if (body.sessionId && body.sessionId !== connectionInfo.sessionId) {
         console.warn(`[WebSocket] Client ${connectionId} attempted to use sessionId ${body.sessionId} but is bound to ${connectionInfo.sessionId}`);
@@ -379,7 +379,7 @@ export const handler = async (event: WebSocketMessageEvent) => {
       // Create new session bound to this connection
       // Include connectionId prefix to ensure uniqueness per connection
       sessionId = `ws-${connectionId.slice(0, 8)}-${uuidv4()}`;
-
+      
       // Store session binding in connection record atomically
       try {
         await docClient.send(new UpdateCommand({
@@ -443,7 +443,7 @@ export const handler = async (event: WebSocketMessageEvent) => {
     const userMessageTimestamp = Date.now();
     const visitorId = sessionAttributes.userId;
     const visitorName = sessionAttributes.userName;
-
+    
     // Fire and forget - don't await to not slow down the response
     logMessage({
       sessionId,
@@ -473,15 +473,6 @@ export const handler = async (event: WebSocketMessageEvent) => {
     const enableTrace = (body as any).enableTrace === true;
 
     // Invoke Bedrock Agent
-    console.log('[WsMessage] Invoking Bedrock Agent:', {
-      bedrockAgentId: agent.bedrockAgentId,
-      bedrockAgentAliasId: agent.bedrockAgentAliasId,
-      modelId: agent.modelId,
-      agentName: agent.name,
-      sessionId,
-      enableTrace,
-    });
-
     const invokeCommand = new InvokeAgentCommand({
       agentId: agent.bedrockAgentId,
       agentAliasId: agent.bedrockAgentAliasId,
@@ -498,7 +489,7 @@ export const handler = async (event: WebSocketMessageEvent) => {
 
     // Stream response and trace events
     let fullResponse = '';
-
+    
     // PERFORMANCE: Batch trace events to avoid serializing WebSocket sends
     const pendingTraceEvents: StreamEvent[] = [];
     let lastTraceSendTime = Date.now();
@@ -507,7 +498,7 @@ export const handler = async (event: WebSocketMessageEvent) => {
     if (bedrockResponse.completion) {
       for await (const event of bedrockResponse.completion) {
         const now = Date.now();
-
+        
         // Handle trace events (thinking) - only if trace enabled
         if (enableTrace && event.trace?.trace) {
           const trace = event.trace.trace;
@@ -561,7 +552,7 @@ export const handler = async (event: WebSocketMessageEvent) => {
             if (orch.observation?.actionGroupInvocationOutput) {
               const result = orch.observation.actionGroupInvocationOutput;
               let resultContent = 'Tool completed';
-
+              
               try {
                 const parsed = JSON.parse(result.text || '{}');
                 if (parsed.status === 'SUCCESS') {
@@ -602,7 +593,7 @@ export const handler = async (event: WebSocketMessageEvent) => {
               });
             }
           }
-
+          
           // Periodically flush trace events
           if (pendingTraceEvents.length > 0 && now - lastTraceSendTime > TRACE_BATCH_INTERVAL_MS) {
             for (const traceEvent of pendingTraceEvents) {
@@ -618,44 +609,25 @@ export const handler = async (event: WebSocketMessageEvent) => {
           const chunk = new TextDecoder().decode(event.chunk.bytes);
           fullResponse += chunk;
 
-          // Filter out internal Bedrock tool invocation XML that users should never see
-          // e.g. <invoke><tool_name>POST::requestAppointment</tool_name><parameters>...</parameters></invoke>
-          let cleanChunk = chunk
-            .replace(/<invoke>[\s\S]*?<\/invoke>/g, '')
-            .replace(/<function_calls>[\s\S]*?<\/function_calls>/g, '')
-            .replace(/<tool_use>[\s\S]*?<\/tool_use>/g, '')
-            .replace(/<invoke>[\s\S]*$/g, '')  // partial opening tag at end of chunk
-            .trim();
-
-          // Only send non-empty chunks after filtering
-          if (cleanChunk) {
-            sendToClient(apiClient, connectionId, {
-              type: 'chunk',
-              content: cleanChunk,
-              timestamp: new Date().toISOString(),
-            }); // Fire and forget for speed
-          }
+          // Send chunk immediately for real-time streaming
+          sendToClient(apiClient, connectionId, {
+            type: 'chunk',
+            content: chunk,
+            timestamp: new Date().toISOString(),
+          }); // Fire and forget for speed
         }
       }
     }
-
+    
     // Flush any remaining trace events
     for (const traceEvent of pendingTraceEvents) {
       sendToClient(apiClient, connectionId, traceEvent);
     }
 
-    // Clean tool invocation XML from full response before completion
-    const cleanResponse = fullResponse
-      .replace(/<invoke>[\s\S]*?<\/invoke>/g, '')
-      .replace(/<function_calls>[\s\S]*?<\/function_calls>/g, '')
-      .replace(/<tool_use>[\s\S]*?<\/tool_use>/g, '')
-      .replace(/<invoke>[\s\S]*$/g, '')
-      .trim();
-
     // Send completion event
     await sendToClient(apiClient, connectionId, {
       type: 'complete',
-      content: cleanResponse || 'No response from agent',
+      content: fullResponse || 'No response from agent',
       sessionId,
       timestamp: new Date().toISOString(),
     });
@@ -691,10 +663,10 @@ export const handler = async (event: WebSocketMessageEvent) => {
 
     // Provide user-friendly error messages for known error types
     let userMessage = 'An error occurred processing your request. Please try again.';
-
+    
     if (error.name === 'DependencyFailedException') {
       // This error occurs when the Bedrock Agent's action group Lambda fails
-      // Common causes: timeout, API issues, or configuration problems
+      // Common causes: timeout, OpenDental API issues, or configuration problems
       console.error('[WebSocket] DependencyFailedException - Action group Lambda may have failed');
       userMessage = 'I had trouble looking that up. Could you please try again? If the problem persists, please contact the office directly.';
     } else if (error.name === 'ThrottlingException') {
@@ -704,17 +676,6 @@ export const handler = async (event: WebSocketMessageEvent) => {
     } else if (error.name === 'ValidationException') {
       userMessage = 'There was an issue with your request. Please try rephrasing your question.';
     } else if (error.name === 'AccessDeniedException') {
-      // DIAGNOSTIC: Log detailed info to help identify which IAM permission is missing
-      console.error('[WebSocket] AccessDeniedException details:', {
-        errorMessage: error.message,
-        errorCode: error.$metadata?.httpStatusCode,
-        region: process.env.AWS_REGION,
-        // These are useful for checking if the correct agent is being invoked
-        hint: 'Check: (1) Lambda role has bedrock-agent-runtime:InvokeAgent, ' +
-          '(2) Bedrock model access is enabled in console, ' +
-          '(3) Agent bedrockAgentRole has bedrock:InvokeModel on the foundation model ARN, ' +
-          '(4) Cross-region inference profile exists if using us.* model IDs',
-      });
       userMessage = 'Access denied. Please contact the office for assistance.';
     }
 

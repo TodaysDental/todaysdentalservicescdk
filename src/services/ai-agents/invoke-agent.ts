@@ -2,7 +2,7 @@
  * Invoke Agent Handler - Uses Bedrock Agent Runtime
  * 
  * Invokes a prepared Bedrock Agent with session management.
- * The agent uses Action Groups to call dental assistant tools.
+ * The agent uses Action Groups to call OpenDental tools.
  */
 
 import { DynamoDBClient } from '@aws-sdk/client-dynamodb';
@@ -174,60 +174,40 @@ async function checkPublicRateLimit(
   const rateLimitKey = `ratelimit:${clinicId}:${visitorId || sourceIp || 'unknown'}`;
   
   try {
-    // FIX: Use atomic UpdateCommand to prevent race conditions.
-    // The old get-then-put pattern allowed concurrent requests to read stale
-    // counts and bypass the rate limit. Now we atomically increment and check.
-    const result = await docClient.send(new UpdateCommand({
+    // Try to get existing rate limit record
+    const response = await docClient.send(new GetCommand({
       TableName: RATE_LIMIT_TABLE,
       Key: { sessionId: rateLimitKey },
-      UpdateExpression: 
-        'SET requestCount = if_not_exists(requestCount, :zero) + :one, ' +
-        'windowStart = if_not_exists(windowStart, :windowStart), ' +
-        'clinicId = :clinicId, visitorId = :visitorId, sourceIp = :sourceIp, ' +
-        '#ttl = :ttl, isRateLimitRecord = :true',
-      ExpressionAttributeNames: { '#ttl': 'ttl' },
-      ExpressionAttributeValues: {
-        ':zero': 0,
-        ':one': 1,
-        ':windowStart': windowStart,
-        ':clinicId': clinicId,
-        ':visitorId': visitorId,
-        ':sourceIp': sourceIp || 'unknown',
-        ':ttl': ttl,
-        ':true': true,
-      },
-      ReturnValues: 'ALL_NEW',
     }));
-
-    const updatedRecord = result.Attributes;
-    const storedWindowStart = updatedRecord?.windowStart || windowStart;
     
-    // If the window has expired, reset the counter for a fresh window
-    if (windowStart > storedWindowStart) {
-      await docClient.send(new UpdateCommand({
-        TableName: RATE_LIMIT_TABLE,
-        Key: { sessionId: rateLimitKey },
-        UpdateExpression: 'SET requestCount = :one, windowStart = :windowStart, #ttl = :ttl',
-        ExpressionAttributeNames: { '#ttl': 'ttl' },
-        ExpressionAttributeValues: {
-          ':one': 1,
-          ':windowStart': windowStart,
-          ':ttl': ttl,
-        },
-      }));
-      return { allowed: true };
-    }
+    const record = response.Item;
+    const storedWindowStart = record?.windowStart || 0;
+    const isNewWindow = windowStart > storedWindowStart;
+    const currentCount = isNewWindow ? 0 : (record?.requestCount || 0);
     
-    const currentCount = updatedRecord?.requestCount || 1;
-    
-    // Check if over limit (after incrementing)
-    if (currentCount > PUBLIC_RATE_LIMIT.MAX_REQUESTS_PER_MINUTE) {
+    // Check if over limit
+    if (currentCount >= PUBLIC_RATE_LIMIT.MAX_REQUESTS_PER_MINUTE) {
       const timeLeft = Math.ceil((storedWindowStart + PUBLIC_RATE_LIMIT.WINDOW_MS - now) / 1000);
       return { 
         allowed: false, 
         reason: `Rate limit exceeded. Please wait ${Math.max(1, timeLeft)} seconds before making more requests.` 
       };
     }
+    
+    // Increment counter atomically
+    await docClient.send(new PutCommand({
+      TableName: RATE_LIMIT_TABLE,
+      Item: {
+        sessionId: rateLimitKey,
+        windowStart: isNewWindow ? windowStart : storedWindowStart,
+        requestCount: currentCount + 1,
+        clinicId,
+        visitorId,
+        sourceIp,
+        ttl,
+        isRateLimitRecord: true, // Flag to distinguish from session records
+      },
+    }));
     
     return { allowed: true };
   } catch (error) {
@@ -781,7 +761,7 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
 
     if (error.name === 'DependencyFailedException') {
       // This error occurs when the Bedrock Agent's action group Lambda fails
-      // Common causes: timeout, API issues, or configuration problems
+      // Common causes: timeout, OpenDental API issues, or configuration problems
       console.error('[InvokeAgent] DependencyFailedException - Action group Lambda may have failed');
       return {
         statusCode: 502,

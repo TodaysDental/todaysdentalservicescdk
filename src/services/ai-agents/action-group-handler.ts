@@ -254,11 +254,23 @@ async function handleRequestAppointment(
 
   if (missingFields.length > 0) {
     console.log(`[requestAppointment] Missing fields, instructing agent to collect: ${missingFields.join(', ')}`);
+    // Build a list of what is already confirmed so the agent does NOT re-ask for it
+    const alreadyHave: string[] = [];
+    if (effectiveName && effectiveName !== 'Website Visitor' && effectiveName !== 'Unknown') {
+      alreadyHave.push(`name="${effectiveName}"`);
+    }
+    if (effectivePhone) alreadyHave.push(`phone="${effectivePhone}"`);
+    if (effectiveReason) alreadyHave.push(`reason="${effectiveReason}"`);
+    const haveClause = alreadyHave.length > 0
+      ? ` You already have: ${alreadyHave.join(', ')} — do NOT ask for these again.`
+      : '';
     return buildResponse(event, 200, {
       success: false,
       message:
-        `Cannot create appointment request yet — missing required information: ${missingFields.join(', ')}. ` +
-        `Please ask the patient for each missing piece of information one at a time, then call this tool again with all the details filled in.`,
+        `Still need: ${missingFields.join(', ')}.${haveClause} ` +
+        `Ask the patient ONLY for the missing item(s) listed above, one at a time. ` +
+        `Do NOT restart the booking flow or re-ask for information already collected. ` +
+        `Once you have the missing info, call requestAppointment again with all details.`,
     });
   }
 

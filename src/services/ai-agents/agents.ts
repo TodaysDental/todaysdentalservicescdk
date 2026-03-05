@@ -393,10 +393,13 @@ const OPENAPI_SCHEMA = {
         operationId: 'requestAppointment',
         summary: 'Request a new appointment',
         description:
-          'IMPORTANT: Before calling this tool, you MUST ask the patient for their full name, phone number, and reason for the visit. ' +
-          'Do NOT call this tool until you have collected at least the name, phone, and reason from the patient. ' +
-          'Collect each piece of information one at a time in separate messages. ' +
-          'After collecting all required info, call this tool to create a callback record for clinic staff to follow up.',
+          'CRITICAL RULES — follow these exactly: ' +
+          '1) You MUST collect the patient full name FIRST by asking for it and waiting for their response. ' +
+          '2) You MUST collect a phone number SECOND by asking for it and waiting for their response. ' +
+          '3) Only AFTER you have both name AND phone, ask for reason and preferred date/time. ' +
+          '4) If reason is not provided, use General checkup. ' +
+          '5) Do NOT call this tool until you have at minimum the patient name and phone number. ' +
+          '6) If name is Website Visitor or Unknown, do NOT call this tool — ask for the real name first.',
         requestBody: {
           required: true,
           content: {
@@ -404,14 +407,14 @@ const OPENAPI_SCHEMA = {
               schema: {
                 type: 'object',
                 properties: {
-                  patientName: { type: 'string', description: 'Full name of the patient.' },
-                  patientPhone: { type: 'string', description: 'Phone number to reach the patient.' },
-                  reason: { type: 'string', description: 'Reason for the appointment (e.g. "cleaning", "toothache", "crown").' },
-                  preferredDate: { type: 'string', description: 'Preferred date (YYYY-MM-DD or natural language like "next Tuesday").' },
-                  preferredTime: { type: 'string', description: 'Preferred time (e.g. "morning", "2:00 PM").' },
+                  patientName: { type: 'string', description: 'Full name of the patient. MANDATORY — do not use Website Visitor or Unknown.' },
+                  patientPhone: { type: 'string', description: 'Phone number to reach the patient. MANDATORY — must be collected before calling.' },
+                  reason: { type: 'string', description: 'Reason for the appointment. If not provided by patient, use General checkup.' },
+                  preferredDate: { type: 'string', description: 'Preferred date (YYYY-MM-DD or natural language like next Tuesday).' },
+                  preferredTime: { type: 'string', description: 'Preferred time (e.g. morning, 2:00 PM).' },
                   notes: { type: 'string', description: 'Any additional notes or special requests.' },
                 },
-                required: ['patientName', 'patientPhone', 'reason'],
+                required: ['patientName', 'patientPhone'],
               },
             },
           },
@@ -428,9 +431,9 @@ const OPENAPI_SCHEMA = {
         operationId: 'rescheduleAppointment',
         summary: 'Request to reschedule an existing appointment',
         description:
-          'IMPORTANT: Before calling this tool, you MUST ask the patient for their full name and phone number. ' +
-          'Do NOT call this tool without at least the name and phone. ' +
-          'Collect each piece of information one at a time. ' +
+          'CRITICAL: You MUST have the patient full name AND phone number BEFORE calling this tool. ' +
+          'Ask for name first, wait for response. Then ask for phone, wait for response. ' +
+          'Do NOT call this tool if name is Website Visitor or Unknown. Ask for the real name. ' +
           'Creates a callback record so clinic staff can update the appointment.',
         requestBody: {
           required: true,
@@ -464,9 +467,9 @@ const OPENAPI_SCHEMA = {
         operationId: 'cancelAppointment',
         summary: 'Request to cancel an existing appointment',
         description:
-          'IMPORTANT: Before calling this tool, you MUST ask the patient for their full name and phone number. ' +
-          'Do NOT call this tool without at least the name and phone. ' +
-          'Collect each piece of information one at a time. ' +
+          'CRITICAL: You MUST have the patient full name AND phone number BEFORE calling this tool. ' +
+          'Ask for name first, wait for response. Then ask for phone, wait for response. ' +
+          'Do NOT call this tool if name is Website Visitor or Unknown. Ask for the real name. ' +
           'Creates a callback record so clinic staff can cancel the appointment.',
         requestBody: {
           required: true,
