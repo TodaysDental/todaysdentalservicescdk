@@ -138,6 +138,8 @@ const normalizeSchedulePayload = (payload: Record<string, any>, { isCreate = fal
     frequency: input.frequency ?? 'daily',
     time: input.time ?? '',
     queryTemplate: input.queryTemplate ?? input.query_template ?? '',
+    // CSV-based recipients (replaces queryTemplate for email schedules)
+    csvRecipients: Array.isArray(input.csvRecipients) ? input.csvRecipients : [],
     templateMessage: input.templateMessage ?? input.template_message ?? input.template_name ?? '',
     notificationTypes: Array.isArray(input.notificationTypes) ? input.notificationTypes : [],
   };
@@ -265,6 +267,7 @@ async function handleUpdate(id: string | undefined, body: string, event?: APIGat
     '#time = :time',
     '#schedule_time = :schedule_time',
     '#queryTemplate = :queryTemplate',
+    '#csvRecipients = :csvRecipients',
     '#templateMessage = :templateMessage',
     '#notificationTypes = :notificationTypes',
     '#modified_at = :modified_at',
@@ -286,6 +289,7 @@ async function handleUpdate(id: string | undefined, body: string, event?: APIGat
       '#time': 'time',
       '#schedule_time': 'schedule_time',
       '#queryTemplate': 'queryTemplate',
+      '#csvRecipients': 'csvRecipients',
       '#templateMessage': 'templateMessage',
       '#notificationTypes': 'notificationTypes',
       '#modified_at': 'modified_at',
@@ -302,6 +306,7 @@ async function handleUpdate(id: string | undefined, body: string, event?: APIGat
       ':time': normalized.time,
       ':schedule_time': normalized.schedule_time,
       ':queryTemplate': normalized.queryTemplate,
+      ':csvRecipients': normalized.csvRecipients,
       ':templateMessage': normalized.templateMessage,
       ':notificationTypes': normalized.notificationTypes,
       ':modified_at': normalized.modified_at,

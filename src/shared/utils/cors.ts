@@ -43,11 +43,8 @@ const STATIC_ALLOWED_ORIGIN_INPUTS: unknown[] = [
   // Clinic-specific domains
   'https://dentistryatkewgardens.com',
   'https://dr.shamtoub.todaysdentalservices.com',
-  // Local development origins (frontend runs on port 3000 or 5173 via Vite)
-  'http://localhost:3000',
-  'http://localhost:5173',
-  'http://127.0.0.1:3000',
-  'http://127.0.0.1:5173',
+  'https://www.canarsiefamilydentistry.com',
+  'https://canarsiefamilydentistry.com',
   ...(clinicsData as any[]).map(c => c.websiteLink).filter(Boolean),
   ...(clinicsData as any[]).map(c => c.wwwUrl).filter(Boolean),
 ];
@@ -81,11 +78,8 @@ export async function getAllowedOriginsAsync(): Promise<string[]> {
       // Clinic-specific domains
       'https://dentistryatkewgardens.com',
       'https://dr.shamtoub.todaysdentalservices.com',
-      // Local development origins
-      'http://localhost:3000',
-      'http://localhost:5173',
-      'http://127.0.0.1:3000',
-      'http://127.0.0.1:5173',
+      'https://www.canarsiefamilydentistry.com',
+      'https://canarsiefamilydentistry.com',
       ...configs.map((c: ClinicConfig) => c.websiteLink).filter(Boolean),
       ...configs.map((c: ClinicConfig) => (c as any).wwwUrl).filter(Boolean),
     ];
@@ -112,17 +106,8 @@ function getAllowedOrigin(requestOrigin?: string, allowedOrigins: string[] = ALL
     return allowedOrigins[0]; // 'https://todaysdentalinsights.com'
   }
 
-  // Chrome extension / Firefox extension origins (used heavily by the credentialing autofill extension)
-  // Example: chrome-extension://<extensionId>
+  // Chrome extension / Firefox extension origins
   if (origin.startsWith('chrome-extension://') || origin.startsWith('moz-extension://')) {
-    return origin;
-  }
-
-  // Local dev (explicitly allow localhost/127.0.0.1 with any port)
-  if (
-    /^https?:\/\/localhost(?::\d+)?$/i.test(origin) ||
-    /^https?:\/\/127\.0\.0\.1(?::\d+)?$/i.test(origin)
-  ) {
     return origin;
   }
 

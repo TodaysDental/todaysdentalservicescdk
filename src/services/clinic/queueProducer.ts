@@ -13,6 +13,12 @@ const SCHEDULER_QUEUE_URL = process.env.SCHEDULER_QUEUE_URL || '';
 
 type LocalParts = { year: number; month: number; day: number; hour: number; minute: number; week: number };
 
+interface CsvRecipient {
+  email: string;
+  firstName?: string;
+  lastName?: string;
+}
+
 function nowUtc(): Date { return new Date(); }
 
 function getLocalParts(d: Date, timeZone: string): LocalParts {
@@ -187,7 +193,8 @@ async function getClinicTimeZone(clinicId: string): Promise<string> {
 interface ScheduleTask {
   scheduleId: string;
   clinicId: string;
-  queryTemplate: string;
+  queryTemplate?: string;       // for legacy SMS / consent-form schedules
+  csvRecipients?: CsvRecipient[]; // for CSV-based email schedules
   templateMessage: string;
   notificationTypes: string[];
   timeZone: string;
@@ -234,8 +241,13 @@ export const handler = async () => {
 
       const queryName = String(sched.queryTemplate || '').trim();
       const templateName = String(sched.templateMessage || '').trim();
-      
-      if (!queryName || !templateName) {
+      const csvRecipients: CsvRecipient[] = Array.isArray(sched.csvRecipients) ? sched.csvRecipients : [];
+
+      // A schedule must have either csvRecipients OR a queryTemplate, plus a templateMessage
+      const hasCsvRecipients = csvRecipients.length > 0;
+      const hasQueryTemplate = !!queryName;
+
+      if ((!hasCsvRecipients && !hasQueryTemplate) || !templateName) {
         skippedCount++;
         continue;
       }
@@ -254,7 +266,7 @@ export const handler = async () => {
         const task: ScheduleTask = {
           scheduleId: sched.id,
           clinicId,
-          queryTemplate: queryName,
+          ...(hasCsvRecipients ? { csvRecipients } : { queryTemplate: queryName }),
           templateMessage: templateName,
           notificationTypes: Array.isArray(sched.notificationTypes) ? sched.notificationTypes : [],
           timeZone,
