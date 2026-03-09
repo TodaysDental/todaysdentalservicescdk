@@ -23,6 +23,7 @@ import { LeaseManagementStack } from './stacks/lease-management-stack';
 import { SecretsStack } from './stacks/secrets-stack';
 import { ItTicketStack } from './stacks/it-ticket-stack';
 import { ConnectLexAiStack } from './stacks/connect-lex-ai-stack';
+import { AnalyticsStack } from './stacks/analytics-stack';
 import { PushNotificationsStack } from './stacks/push-notifications-stack';
 
 // Import clinic config for AI phone number mapping (used by Connect/Lex stack)
@@ -172,6 +173,13 @@ const CALL_QUEUE_TABLE_NAME = `${CHIME_STACK_NAME}-CallQueueV2`;
 const AGENT_PRESENCE_TABLE_NAME = `${CHIME_STACK_NAME}-AgentPresence`;
 const AGENT_PERFORMANCE_TABLE_NAME = `${CHIME_STACK_NAME}-AgentPerformance`;
 
+// ========================================
+// ANALYTICS STACK CONSTANTS
+// ========================================
+const ANALYTICS_STACK_NAME = 'TodaysDentalInsightsAnalyticsN1';
+const ANALYTICS_TABLE_NAME = `${ANALYTICS_STACK_NAME}-CallAnalyticsS1`;
+const ANALYTICS_DEDUP_TABLE_NAME = `${ANALYTICS_STACK_NAME}-CallAnalytics-dedupV2`;
+
 // AiAgentsStack table names - defined as constants to pass to ChimeStack
 // CRITICAL: These must match the actual table names created in AiAgentsStack
 const AI_AGENTS_VOICE_CONFIG_TABLE_NAME = `${AI_AGENTS_STACK_NAME}-VoiceAgentConfig`;
@@ -298,6 +306,36 @@ communicationsStack.addDependency(coreStack);
 communicationsStack.addDependency(pushNotificationsStack);
 
 // ========================================
+// ANALYTICS STACK (must be before ChimeStack and AdminStack)
+// ========================================
+const ENABLE_VOICE_AI_ANALYTICS = process.env.ENABLE_VOICE_AI_ANALYTICS === 'true';
+
+const analyticsStack = new AnalyticsStack(app, ANALYTICS_STACK_NAME, {
+  env,
+  jwtSecret: coreStack.jwtSecretValue,
+  region: env.region || process.env.AWS_REGION || 'us-east-1',
+  chimeStackName: CHIME_STACK_NAME,
+  callQueueTableName: CALL_QUEUE_TABLE_NAME,
+  agentPresenceTableName: AGENT_PRESENCE_TABLE_NAME,
+  agentPerformanceTableName: AGENT_PERFORMANCE_TABLE_NAME,
+  supervisorEmails: [],
+  // Voice AI integration (Phase 2 — enable after AiAgentsStack is deployed)
+  voiceSessionsTableName: ENABLE_VOICE_AI_ANALYTICS
+    ? cdk.Fn.importValue(`${AI_AGENTS_STACK_NAME}-VoiceSessionsTableName`)
+    : undefined,
+  voiceSessionsTableArn: ENABLE_VOICE_AI_ANALYTICS
+    ? cdk.Fn.importValue(`${AI_AGENTS_STACK_NAME}-VoiceSessionsTableArn`)
+    : undefined,
+  aiAgentsTableName: ENABLE_VOICE_AI_ANALYTICS
+    ? cdk.Fn.importValue(`${AI_AGENTS_STACK_NAME}-AiAgentsTableName`)
+    : undefined,
+  aiAgentsTableArn: ENABLE_VOICE_AI_ANALYTICS
+    ? cdk.Fn.importValue(`${AI_AGENTS_STACK_NAME}-AiAgentsTableArn`)
+    : undefined,
+});
+analyticsStack.addDependency(coreStack);
+
+// ========================================
 // CHIME STACK (Voice/Call infrastructure)
 // ========================================
 const ENABLE_AFTER_HOURS_AI = process.env.ENABLE_AFTER_HOURS_AI !== 'false';
@@ -307,8 +345,8 @@ const chimeStack = new ChimeStack(app, CHIME_STACK_NAME, {
   jwtSecret: coreStack.jwtSecretValue,
   voiceConnectorTerminationCidrs,
   voiceConnectorOriginationRoutes,
-  analyticsTableName: `TodaysDentalInsightsAnalyticsN1-CallAnalyticsN1`,
-  analyticsDedupTableName: `TodaysDentalInsightsAnalyticsN1-CallAnalytics-dedupV2`,
+  analyticsTableName: ANALYTICS_TABLE_NAME,
+  analyticsDedupTableName: ANALYTICS_DEDUP_TABLE_NAME,
   enableCallRecording: true,
   recordingRetentionDays: 2555,
   chimeMediaRegion: CHIME_MEDIA_REGION,
@@ -337,7 +375,7 @@ const adminStack = new AdminStack(app, 'TodaysDentalInsightsAdminN1', {
   favorsTableName: COMM_FAVORS_TABLE_NAME,
   teamsTableName: COMM_TEAMS_TABLE_NAME,
   clinicHoursTableName: `TodaysDentalInsightsClinicHoursN1-ClinicHours`,
-  analyticsTableName: `TodaysDentalInsightsAnalyticsN1-CallAnalyticsN1`,
+  analyticsTableName: ANALYTICS_TABLE_NAME,
   jwtSecretValue: coreStack.jwtSecretValue,
   globalSecretsTableName: secretsStack.globalSecretsTable.tableName,
   clinicConfigTableName: secretsStack.clinicConfigTable.tableName,
@@ -347,7 +385,7 @@ const adminStack = new AdminStack(app, 'TodaysDentalInsightsAdminN1', {
   chatHistoryTableName: CHATBOT_CONVERSATIONS_TABLE_NAME,
   clinicsTableName: chimeStack.clinicsTable.tableName,
   recordingsBucketName: chimeStack.recordingsBucket?.bucketName,
-  transcriptBufferTableName: `TodaysDentalInsightsAnalyticsN1-TranscriptBuffersV2`,
+  transcriptBufferTableName: analyticsStack.transcriptBufferTable.tableName,
   agentActiveFnArn: cdk.Fn.importValue(`${chimeStack.stackName}-AgentActiveArn`),
   agentInactiveFnArn: cdk.Fn.importValue(`${chimeStack.stackName}-AgentInactiveArn`),
   outboundCallFnArn: cdk.Fn.importValue(`${chimeStack.stackName}-OutboundCallArn`),
@@ -415,9 +453,6 @@ clinicImagesStack.addDependency(secretsStack);
 // synth-time cyclic dependency: AiAgents→Chime→Notifications→AiAgents.
 // ChimeStack reads VoiceConfigTableName from AI_AGENTS_VOICE_CONFIG_TABLE_NAME constant
 // at synth time, so aiAgentsStack must deploy first.
-const ENABLE_VOICE_AI_ANALYTICS = process.env.ENABLE_VOICE_AI_ANALYTICS === 'true';
-const ANALYTICS_TABLE_NAME = 'TodaysDentalInsightsAnalyticsN1-CallAnalyticsN1';
-
 const aiAgentsStack = new AiAgentsStack(app, AI_AGENTS_STACK_NAME, {
   env,
   clinicHoursTableName: `TodaysDentalInsightsClinicHoursN1-ClinicHours`,
@@ -515,8 +550,8 @@ const connectLexAiStack = new ConnectLexAiStack(app, 'TodaysDentalInsightsConnec
   scheduledCallsTableArn: aiAgentsStack.scheduledCallsTable.tableArn,
   callAnalyticsTableName: ANALYTICS_TABLE_NAME,
   callAnalyticsTableArn: `arn:aws:dynamodb:${env.region || 'us-east-1'}:${env.account}:table/${ANALYTICS_TABLE_NAME}`,
-  transcriptBufferTableName: `TodaysDentalInsightsAnalyticsN1-TranscriptBuffersV2`,
-  transcriptBufferTableArn: `arn:aws:dynamodb:${env.region || 'us-east-1'}:${env.account}:table/TodaysDentalInsightsAnalyticsN1-TranscriptBuffersV2`,
+  transcriptBufferTableName: analyticsStack.transcriptBufferTable.tableName,
+  transcriptBufferTableArn: `arn:aws:dynamodb:${env.region || 'us-east-1'}:${env.account}:table/${analyticsStack.transcriptBufferTable.tableName}`,
   aiPhoneNumbersJson: JSON.stringify(aiPhoneNumbersMap),
   defaultClinicId: defaultClinicForAi,
   thinkingAudioMode: 'verbal',

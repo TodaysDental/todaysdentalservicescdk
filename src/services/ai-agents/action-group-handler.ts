@@ -84,7 +84,51 @@ interface ActionGroupResponse {
  * every tool call fails with 400 "Missing required fields" because
  * clinicId/patientPhone are undefined.
  */
+/**
+ * Resolve relative date phrases ("tomorrow", "next Monday", "today") into actual
+ * YYYY-MM-DD dates using the session attributes that voice-ai-handler already injects
+ * (todayDate, tomorrowDate, nextWeekDates).
+ * If the phrase cannot be matched it is returned unchanged.
+ */
+function resolveRelativeDate(
+  raw: string | undefined,
+  sessionAttrs: Record<string, string>
+): string | undefined {
+  if (!raw) return raw;
+
+  const normalized = raw.trim().toLowerCase();
+  const today = sessionAttrs.todayDate;        // e.g. "2026-03-06"
+  const tomorrow = sessionAttrs.tomorrowDate;  // e.g. "2026-03-07"
+
+  if (normalized === 'today' && today) return today;
+  if (normalized === 'tomorrow' && tomorrow) return tomorrow;
+
+  // Try to match a weekday name like "next monday", "monday", etc.
+  const weekdays = ['sunday', 'monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday'];
+  let nextWeekDates: Record<string, string> = {};
+  try {
+    nextWeekDates = JSON.parse(sessionAttrs.nextWeekDates || '{}');
+  } catch {
+    nextWeekDates = {};
+  }
+
+  for (const day of weekdays) {
+    if (normalized.includes(day)) {
+      // nextWeekDates keys are full weekday names e.g. "Monday"
+      const capitalized = day.charAt(0).toUpperCase() + day.slice(1);
+      if (nextWeekDates[capitalized]) return nextWeekDates[capitalized];
+    }
+  }
+
+  // Already looks like a date (YYYY-MM-DD or MM/DD/YYYY) — return as-is
+  if (/^\d{4}-\d{2}-\d{2}$/.test(raw) || /^\d{1,2}\/\d{1,2}\/\d{4}$/.test(raw)) return raw;
+
+  // Could not resolve — return original value so it at least gets stored
+  return raw;
+}
+
 function parseParameters(event: ActionGroupEvent): Record<string, string> {
+
   const result: Record<string, string> = {};
 
   // 1. Session attributes as lowest-priority defaults
@@ -237,9 +281,26 @@ async function handleRequestAppointment(
   // CRITICAL FIX: Reject requests with missing patient info.
   // When the AI eagerly calls this tool with empty fields, return a message
   // that instructs it to go back and ask the user for the info.
-  const effectiveName = params.patientName || params.userName;
-  const effectivePhone = patientPhone || params.callerPhone;
-  const effectiveReason = appointmentReason || params.Reason || params.reason;
+  const effectiveName = params.patientName || params.userName || params.name || params.fullName;
+  const effectivePhone = patientPhone || params.callerPhone || params.phone || params.phoneNumber || params.callerNumber;
+  // Accept reason under any of the parameter names Bedrock might use
+  const effectiveReason =
+    appointmentReason ||
+    params.Reason ||
+    params.reason ||
+    params.visitReason ||
+    params.visitType ||
+    params.description ||
+    params.purpose ||
+    params.chiefComplaint ||
+    params.notes ||
+    params.type ||
+    params.message;
+  const rawDate = preferredDate || params.Date || params.date || params.scheduledDate || params.appointmentDate;
+  const effectiveDate = resolveRelativeDate(rawDate, event.sessionAttributes ?? {});
+  const effectiveTime = preferredTime || params.Time || params.time || params.scheduledTime || params.appointmentTime;
+  // Accept any non-empty date/time preference — including "anytime", "flexible", "next week", etc.
+  const hasDateOrTime = !!(effectiveDate || effectiveTime);
 
   const missingFields: string[] = [];
   if (!effectiveName || effectiveName === 'Website Visitor' || effectiveName === 'Unknown') {
@@ -248,9 +309,8 @@ async function handleRequestAppointment(
   if (!effectivePhone) {
     missingFields.push('phone number');
   }
-  if (!effectiveReason) {
-    missingFields.push('reason for the visit');
-  }
+  // Reason is optional — if not provided the AI should have asked, but we default gracefully
+  // Date/time is optional — AI is prompted to ask but not required to block booking
 
   if (missingFields.length > 0) {
     console.log(`[requestAppointment] Missing fields, instructing agent to collect: ${missingFields.join(', ')}`);
@@ -261,6 +321,7 @@ async function handleRequestAppointment(
     }
     if (effectivePhone) alreadyHave.push(`phone="${effectivePhone}"`);
     if (effectiveReason) alreadyHave.push(`reason="${effectiveReason}"`);
+    if (hasDateOrTime) alreadyHave.push(`date/time="${effectiveDate || effectiveTime}"`);
     const haveClause = alreadyHave.length > 0
       ? ` You already have: ${alreadyHave.join(', ')} — do NOT ask for these again.`
       : '';
@@ -277,9 +338,8 @@ async function handleRequestAppointment(
   const now = new Date().toISOString();
   const requestId = uuidv4();
 
-  const effectiveDate = preferredDate || params.Date || params.date || null;
   const preferredSlot =
-    [effectiveDate, preferredTime].filter(Boolean).join(' at ') ||
+    [effectiveDate, effectiveTime].filter(Boolean).join(' at ') ||
     'No preference provided';
 
   const callbackItem = {
@@ -288,14 +348,14 @@ async function handleRequestAppointment(
     name: effectiveName,
     phone: effectivePhone,
     email: patientEmail || undefined,
-    message: `New appointment request. Reason: ${effectiveReason}. Preferred: ${preferredSlot}. New patient: ${isNewPatient || 'unknown'}.`,
+    message: `New appointment request. Reason: ${effectiveReason || 'General checkup'}. Preferred: ${preferredSlot}. New patient: ${isNewPatient || 'unknown'}.`,
     module: 'Operations',
-    notes: `Auto-created by AI Agent — patient requested an appointment via website chat. Please confirm availability and follow up.`,
+    notes: `Auto-created by AI Agent — patient requested an appointment via phone call. Please confirm availability and follow up.`,
     source: 'ai-agent',
     type: 'appointment-request',
-    preferredDate: effectiveDate,
-    preferredTime: preferredTime || null,
-    appointmentReason: effectiveReason,
+    preferredDate: effectiveDate || null,
+    preferredTime: effectiveTime || null,
+    appointmentReason: effectiveReason || 'General checkup',
     isNewPatient: isNewPatient === 'true' || isNewPatient === '1',
     calledBack: 'NO',
     createdAt: now,
@@ -308,8 +368,9 @@ async function handleRequestAppointment(
     success: true,
     requestId,
     message:
-      `Your appointment request has been received! A team member will follow up with you to confirm your appointment. ` +
-      `Preferred date: ${effectiveDate || 'flexible'}. Reason: ${effectiveReason}.`,
+      `Appointment request saved successfully.` +
+      `Tell the patient their request has been received and our team will follow up to confirm. ` +
+      `Do NOT mention any dates, times, or phone numbers in your confirmation to the patient.`,
   });
 }
 
@@ -393,7 +454,9 @@ async function handleRescheduleAppointment(
     success: true,
     requestId,
     message:
-      `Your reschedule request has been received. A team member will call you at ${effectivePhone} to confirm the new appointment time.`,
+      `Reschedule request saved successfully. ` +
+      `Tell the patient their reschedule request has been received and our team will follow up to confirm the new time. ` +
+      `Do NOT mention any dates, times, or phone numbers in your confirmation to the patient.`,
   });
 }
 
@@ -467,8 +530,9 @@ async function handleCancelAppointment(
     success: true,
     requestId,
     message:
-      `Your cancellation request has been received. A team member will process this and send you a confirmation. ` +
-      `If you change your mind, please call us back.`,
+      `Cancellation request saved successfully. ` +
+      `Tell the patient their cancellation request has been received and our team will take care of it. ` +
+      `Do NOT mention any dates, times, or phone numbers in your confirmation to the patient.`,
   });
 }
 
@@ -612,7 +676,7 @@ async function handleRequestCallback(
   return buildResponse(event, 200, {
     success: true,
     requestId,
-    message: `Your request has been recorded. A team member will follow up with you as soon as possible. Thank you!`,
+    message: ` request saved successfully. Tell the patient their request has been received and our team will be in touch. Do NOT mention any dates, times, or phone numbers in your confirmation to the patient.`,
   });
 }
 

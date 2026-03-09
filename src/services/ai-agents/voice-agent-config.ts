@@ -921,6 +921,7 @@ export const DEFAULT_VOICE_SETTINGS: VoiceSettings = {
 
 /**
  * Default filler phrases used while AI is thinking
+ * Warm and varied to avoid repetition on longer calls
  */
 export const DEFAULT_FILLER_PHRASES = [
   "Let me check that for you.",
@@ -944,6 +945,7 @@ export const DEFAULT_OUTBOUND_GREETINGS: Record<string, string> = {
 
 /**
  * Default after-hours greeting
+ * Simple and welcoming — lets the AI introduce itself naturally through conversation
  */
-export const DEFAULT_AFTER_HOURS_GREETING = "Thank you for calling {clinicName}. Our office is currently closed, but I'm ToothFairy, your AI dental assistant. I can help you schedule appointments, answer questions, or take a message. How can I help you today?";
+export const DEFAULT_AFTER_HOURS_GREETING = "Thank you for calling {clinicName}! How can I help you today?";
 

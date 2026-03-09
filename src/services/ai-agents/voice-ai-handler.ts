@@ -70,8 +70,8 @@ const CONFIG = {
   // Goodbye message
   GOODBYE_MESSAGE: "Thank you for calling. Have a great day!",
 
-  // Error message
-  ERROR_MESSAGE: "I apologize, but I'm having trouble processing your request. Please try calling back during office hours or leave a message.",
+  // Error message — empathetic and actionable
+  ERROR_MESSAGE: "I'm sorry about that — seems like we hit a snag. Please try calling back and our team will be happy to help.",
 
   // Analytics retention (90 days TTL)
   ANALYTICS_TTL_DAYS: 90,
@@ -89,6 +89,9 @@ const CONFIG = {
   // FIX: Analytics DLQ retry configuration
   ANALYTICS_MAX_RETRIES: 2,
   ANALYTICS_RETRY_DELAY_MS: 50,
+
+  // Minimum transcript length to send to Bedrock (filters noise/silence)
+  MIN_TRANSCRIPT_LENGTH: 3,
 };
 
 // ========================================================================
@@ -1024,7 +1027,20 @@ function sanitizeForVoice(text: string): string {
 
   let out = text;
 
-  // --- 1. Convert ISO datetime strings e.g. "2026-02-26 09:00:00" or "2026-02-26T09:30:00" ---
+  // --- 0. Strip Bedrock agent tool-invocation preamble text ---
+  // Bedrock sometimes streams the agent's internal tool-call description as plain text
+  // before the actual tool event. These lines should NEVER be spoken aloud.
+  // Examples: "I will call POST /requestAppointment", "Calling action group with...",
+  //           "I have all the information I need, let me book..."
+  //           "I'm going to submit this now with name=John..."
+  out = out.replace(/^(I('ll| will| am going to)|Let me|Now I('ll| will)|I have all|I have collected|I'm going to submit|I'm submitting|Calling action group|POST \/(request|reschedule|cancel|getClinic|requestCallback))[^\n]*/gim, '');
+  // Strip any line that looks like an API path e.g. "POST /requestAppointment" or "GET /getClinicInfo"
+  out = out.replace(/^(GET|POST|PUT|DELETE|PATCH)\s+\/\S+.*/gm, '');
+  // Strip lines that start with technical prefixes from Bedrock traces
+  out = out.replace(/^(Action group|Tool:|Tool input:|Tool result:|Invoking tool|Using tool)[^\n]*/gim, '');
+  // Strip recap/summary lines before tool calls: "Here is what I have so far:", "To summarize:"
+  out = out.replace(/^(Here is (what|the information)|To summarize|In summary|Here'?s what I (have|collected)|Let me (confirm|verify|summarize|now submit|now book))[^\n]*/gim, '');
+
   out = out.replace(
     /\b(\d{4})-(\d{2})-(\d{2})[T ]?(\d{2}):(\d{2})(?::\d{2})?\b/g,
     (_match, year, month, day, hour, minute) => {
@@ -1073,15 +1089,27 @@ function sanitizeForVoice(text: string): string {
     }
   );
 
-  // --- 3. Strip section headers like "=== TITLE ===" or "=== TITLE" ---
+  // --- 3. Humanize phone numbers so Polly reads them naturally ---
+  // +1XXXXXXXXXX or +1 XXX XXX XXXX → "XXX XXX XXXX"
+  out = out.replace(/\+1[\s.-]?(\d{3})[\s.-]?(\d{3})[\s.-]?(\d{4})\b/g, '$1 $2 $3');
+  // Raw 10-digit US numbers: 5551234567 → "555 123 4567"
+  out = out.replace(/\b(\d{3})(\d{3})(\d{4})\b/g, '$1 $2 $3');
+
+  // --- 3b. Replace common HTML entities and symbols for natural speech ---
+  out = out.replace(/&amp;/gi, 'and');
+  out = out.replace(/&/g, 'and');
+  out = out.replace(/%(\d)/g, '$1 percent');
+  out = out.replace(/(\d)%/g, '$1 percent');
+
+  // --- 4. Strip section headers like "=== TITLE ===" or "=== TITLE" ---
   out = out.replace(/^={2,}\s*[^=\n]*={0,}\s*$/gm, '');
   out = out.replace(/={2,}/g, '');
 
-  // --- 4. Strip AWS-style <<...>> delimiters (e.g. <<question_mark>>, <<less_than>>) ---
+  // --- 5. Strip AWS-style <<...>> delimiters (e.g. <<question_mark>>, <<less_than>>) ---
   out = out.replace(/<<[^>]*>>/g, '');
   out = out.replace(/<[^>]+>/g, '');
 
-  // --- 5. Strip all emojis and Unicode pictographs ---
+  // --- 6. Strip all emojis and Unicode pictographs ---
   out = out.replace(/[\u{1F300}-\u{1F9FF}\u{2600}-\u{26FF}\u{2700}-\u{27BF}\u{FE00}-\u{FE0F}\u{1FA00}-\u{1FA9F}\u{200D}]/gu, '');
 
   // --- 6. Strip decorative line separators (───, ═══, ----, ****) ---
@@ -1191,7 +1219,7 @@ async function invokeAiAgentWithStreaming(
 
   const promptSessionAttributes: Record<string, string> = {
     clinicName,
-    callerPhoneNumber: session.callerNumber || '',
+    // NOTE: Do NOT include callerPhoneNumber here — Bedrock reads it back to the caller verbatim
     currentDate: `Today is ${dateContext.dayName}, ${todayFormatted} (${dateContext.today}). Current time: ${dateContext.currentTime} (${dateContext.timezone})`,
     dateContext: `When scheduling appointments, use ${dateContext.today} as today's date. Tomorrow is ${dateContext.tomorrowDate}. Next week dates: ${JSON.stringify(dateContext.nextWeekDates)}`,
   };
@@ -1435,7 +1463,7 @@ async function invokeAiAgent(
 
   const promptSessionAttributes: Record<string, string> = {
     clinicName,
-    callerPhoneNumber: session.callerNumber || '',
+    // NOTE: Do NOT include callerPhoneNumber here — Bedrock reads it back to the caller verbatim
     currentDate: `Today is ${dateContext.dayName}, ${todayFormatted} (${dateContext.today}). Current time: ${dateContext.currentTime} (${dateContext.timezone})`,
     dateContext: `When scheduling appointments, use ${dateContext.today} as today's date. Tomorrow is ${dateContext.tomorrowDate}. Next week dates: ${JSON.stringify(dateContext.nextWeekDates)}`,
   };
@@ -1567,7 +1595,7 @@ export const handler = async (event: VoiceAiEvent): Promise<VoiceAiResponse[]> =
 
           return [{
             action: 'SPEAK',
-            text: "I'm sorry, our AI assistant is not available right now. Please call back during office hours.",
+            text: "I'm sorry, we're unable to assist by phone at the moment. Please call back during office hours and our team will be happy to help. Thank you for calling!",
           }, {
             action: 'HANG_UP',
           }];
@@ -1615,8 +1643,9 @@ export const handler = async (event: VoiceAiEvent): Promise<VoiceAiResponse[]> =
         // 2. AI Transcript Bridge Lambda (via Media Insights Pipeline)
         const { callId, clinicId, transcript, sessionId, aiAgentId } = event;
 
-        if (!transcript) {
-          console.warn('[TRANSCRIPT] Empty transcript received, skipping');
+        if (!transcript || transcript.trim().length < CONFIG.MIN_TRANSCRIPT_LENGTH) {
+          // Transcript is empty, too short, or just noise — keep listening without invoking Bedrock
+          console.warn('[TRANSCRIPT] Transcript too short or empty, skipping Bedrock invocation:', JSON.stringify(transcript));
           return [{ action: 'CONTINUE', sessionId }];
         }
 
@@ -1719,9 +1748,9 @@ export const handler = async (event: VoiceAiEvent): Promise<VoiceAiResponse[]> =
           } else {
             // No fallback available - apologize and offer callback
             console.error(`[TRANSCRIPT] No fallback agent available for clinic ${session.clinicId}`);
-            const apologyMessage = "I apologize, but I'm experiencing technical difficulties. " +
-              "Please call back in a few minutes, or I can have someone from our office call you back. " +
-              "Would you like us to call you back?";
+            const apologyMessage = "I'm so sorry — I seem to be having a technical issue right now. " +
+              "If you share your name and phone number, someone from our team will follow up with you. " +
+              "Would that work for you?";
 
             await updateSessionTranscript(activeSessionId, 'ai', apologyMessage);
             return [{
@@ -1748,6 +1777,9 @@ export const handler = async (event: VoiceAiEvent): Promise<VoiceAiResponse[]> =
         const definitiveGoodbyePatterns = [
           /^(bye|goodbye|good\s*bye|bye\s*bye|bye\s*now)\.?$/i,  // Just "bye" variations alone
           /^(ok\s*)?(thanks?|thank\s*you)[\s,]*(bye|goodbye)?\.?$/i,  // "thanks bye" or just "thanks"
+          /^(ok|okay|alright)[\s,]*(bye|goodbye|thanks?)?\.?$/i,  // "ok bye", "alright", "alright bye"
+          /^(k|kk|kay)[\s]*(bye)?\.?$/i,  // "k", "kk", "k bye"
+          /^(yep|yup|yeah)[\s,]*(bye|goodbye|thanks?)?\.?$/i,  // "yep bye", "yeah thanks"
           /\bthat'?s\s+all\s+(i\s+need(ed)?|for\s+(now|today))\b/i,  // "that's all I needed"
           /\b(have\s+a\s+(good|great|nice)\s+(day|one|evening|night))\s*(bye)?\.?$/i,
           /\bi'?m\s+(all\s+)?done[\s,.]*(thanks?|thank\s*you)?\.?$/i,
@@ -1955,7 +1987,7 @@ export const handler = async (event: VoiceAiEvent): Promise<VoiceAiResponse[]> =
         if (dtmfDigits === '0') {
           return [{
             action: 'SPEAK',
-            text: "I'll connect you to our voicemail. Please leave a message after the tone.",
+            text: "Of course! I'll transfer you to voicemail now. Please leave your name, number, and a brief message.",
             sessionId,
           }, {
             action: 'TRANSFER',
