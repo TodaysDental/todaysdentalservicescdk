@@ -82,12 +82,12 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
     // Get caller context from custom authorizer using shared permissions-helper
     const userPerms = getUserPermissions(event);
     if (!userPerms) {
-      return httpErr(401, 'Unauthorized');
+      return httpErr(401, 'Unauthorized', event.headers?.origin);
     }
 
     // Check if caller has admin privileges using shared helper
     if (!isAdminUser(userPerms.clinicRoles, userPerms.isSuperAdmin, userPerms.isGlobalSuperAdmin)) {
-      return httpErr(403, 'forbidden: admin or super admin required');
+      return httpErr(403, 'forbidden: admin or super admin required', event.headers?.origin);
     }
 
     // For backward compatibility, extract these values
@@ -102,12 +102,12 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
     try {
       validateBody(body);
     } catch (e: any) {
-      return httpErr(400, e?.message || 'invalid body');
+      return httpErr(400, e?.message || 'invalid body', event.headers?.origin);
     }
 
     // Only global super admin can create other global super admins
     if (body.makeGlobalSuperAdmin && !callerIsGlobalSuperAdmin) {
-      return httpErr(403, 'only global super admin can grant Global super admin role');
+      return httpErr(403, 'only global super admin can grant Global super admin role', event.headers?.origin);
     }
 
     // Validate clinic assignments
@@ -118,7 +118,7 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
       if (!callerIsGlobalSuperAdmin && !callerIsSuperAdmin) {
         const unauthorizedClinics = clinicIds.filter(cid => !hasClinicAccess(allowedClinics, cid));
         if (unauthorizedClinics.length > 0) {
-          return httpErr(403, `no admin access for clinics: ${unauthorizedClinics.join(', ')}`);
+          return httpErr(403, `no admin access for clinics: ${unauthorizedClinics.join(', ')}`, event.headers?.origin);
         }
       }
     }
@@ -135,7 +135,7 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
     }));
 
     if (existingUser.Item) {
-      return httpErr(409, `User with email '${username}' already exists. Use the update endpoint to modify existing users.`);
+      return httpErr(409, `User with email '${username}' already exists. Use the update endpoint to modify existing users.`, event.headers?.origin);
     }
 
     // Generate password hash only if password is provided (optional for OTP-only users)
@@ -235,10 +235,10 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
       message: userEmailCredentials
         ? `User created successfully with email ${userEmailCredentials.email}. They can now log in using OTP sent to their email.`
         : 'User created successfully. They can now log in using OTP sent to their email.',
-    });
+    }, event.headers?.origin);
   } catch (err: any) {
     console.error('Registration error:', err);
-    return httpErr(500, err?.message || 'registration failed');
+    return httpErr(500, err?.message || 'registration failed', event.headers?.origin);
   }
 };
 
@@ -390,10 +390,10 @@ function generateTemporaryPassword(): string {
 /**
  * HTTP success response
  */
-function httpOk(data: Record<string, any>) {
+function httpOk(data: Record<string, any>, origin?: string) {
   return {
     statusCode: 200,
-    headers: buildCorsHeaders({ allowMethods: ['OPTIONS', 'POST'] }),
+    headers: buildCorsHeaders({ allowMethods: ['OPTIONS', 'POST'] }, origin),
     body: JSON.stringify({ success: true, ...data }),
   };
 }
@@ -401,10 +401,10 @@ function httpOk(data: Record<string, any>) {
 /**
  * HTTP error response
  */
-function httpErr(code: number, message: string) {
+function httpErr(code: number, message: string, origin?: string) {
   return {
     statusCode: code,
-    headers: buildCorsHeaders({ allowMethods: ['OPTIONS', 'POST'] }),
+    headers: buildCorsHeaders({ allowMethods: ['OPTIONS', 'POST'] }, origin),
     body: JSON.stringify({ success: false, message }),
   };
 }
