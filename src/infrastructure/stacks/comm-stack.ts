@@ -1,9 +1,13 @@
 import { Duration, Stack, StackProps, RemovalPolicy, CfnOutput, Tags, Fn } from 'aws-cdk-lib';
+import * as cdk from 'aws-cdk-lib';
 import { Construct } from 'constructs';
 import * as path from 'path';
 import * as lambda from 'aws-cdk-lib/aws-lambda';
 import * as lambdaNode from 'aws-cdk-lib/aws-lambda-nodejs';
 import * as apigw2 from 'aws-cdk-lib/aws-apigatewayv2';
+import * as route53 from 'aws-cdk-lib/aws-route53';
+import * as route53Targets from 'aws-cdk-lib/aws-route53-targets';
+import * as acm from 'aws-cdk-lib/aws-certificatemanager';
 import * as apigw2Integrations from 'aws-cdk-lib/aws-apigatewayv2-integrations';
 import * as dynamodb from 'aws-cdk-lib/aws-dynamodb';
 import * as iam from 'aws-cdk-lib/aws-iam';
@@ -15,6 +19,7 @@ import * as events from 'aws-cdk-lib/aws-events';
 import * as targets from 'aws-cdk-lib/aws-events-targets';
 import * as cloudfront from 'aws-cdk-lib/aws-cloudfront';
 import * as origins from 'aws-cdk-lib/aws-cloudfront-origins';
+import { getCdkCorsConfig, getCorsErrorHeaders, ALLOWED_ORIGINS_LIST } from '../../shared/utils/cors';
 
 export interface CommStackProps extends StackProps {
   // Authorizer imported via CloudFormation export
@@ -42,7 +47,11 @@ export interface CommStackProps extends StackProps {
    * Send push Lambda function ARN for invoking push notifications
    */
   sendPushFunctionArn?: string;
-  /** Custom domain name token from CoreStack — creates implicit dependency so domain exists first */
+
+  /**
+   * Custom domain name for API Gateway base path mapping
+   * e.g. api.todaysdentalservices.com
+   */
   apiDomainName?: string;
 }
 
@@ -153,8 +162,8 @@ export class CommStack extends Stack {
 
     // 2. Favor Requests Table (Stores request metadata)
     // V5: Added CategoryIndex, CurrentAssigneeIndex, MainGroupChatIndex GSIs
-    this.favorsTable = new dynamodb.Table(this, 'FavorRequestsTableN1', {
-      tableName: `${this.stackName}-FavorRequestsN1`,
+    this.favorsTable = new dynamodb.Table(this, 'FavorRequestsTableS1', {
+      tableName: `${this.stackName}-FavorRequestsS1`,
       partitionKey: { name: 'favorRequestID', type: dynamodb.AttributeType.STRING },
       removalPolicy: RemovalPolicy.RETAIN,
       billingMode: dynamodb.BillingMode.PAY_PER_REQUEST,
@@ -415,7 +424,7 @@ export class CommStack extends Stack {
         {
           allowedHeaders: ['*'],
           allowedMethods: [s3.HttpMethods.PUT, s3.HttpMethods.POST, s3.HttpMethods.GET, s3.HttpMethods.HEAD],
-          allowedOrigins: ['*'], // Restrict this to your frontend domain in production!
+          allowedOrigins: ALLOWED_ORIGINS_LIST,
           exposedHeaders: ['ETag', 'Content-Length', 'Content-Type'],
         },
       ],
@@ -435,7 +444,22 @@ export class CommStack extends Stack {
     // ========================================
     // CLOUDFRONT CDN (for profile images and shared files)
     // ========================================
+    // Look up the existing Hosted Zone for the CDN
+    const cdnHostedZone = route53.HostedZone.fromHostedZoneAttributes(this, 'CdnHostedZone', {
+      zoneName: 'cdn.todaysdentalservices.com',
+      hostedZoneId: 'Z0754951ITBCCEHWL8ID',
+    });
+
+    // Create ACM Certificate for the CDN (must be in us-east-1 for CloudFront)
+    const cdnCertificate = new acm.DnsValidatedCertificate(this, 'CdnCertificate', {
+      domainName: 'cdn.todaysdentalservices.com',
+      hostedZone: cdnHostedZone,
+      region: 'us-east-1', // CloudFront certs MUST be in us-east-1
+    });
+
     this.filesCdn = new cloudfront.Distribution(this, 'FilesCdnDistribution', {
+      domainNames: ['cdn.todaysdentalservices.com'],
+      certificate: cdnCertificate,
       defaultBehavior: {
         origin: origins.S3BucketOrigin.withOriginAccessIdentity(this.fileBucket),
         viewerProtocolPolicy: cloudfront.ViewerProtocolPolicy.REDIRECT_TO_HTTPS,
@@ -452,6 +476,13 @@ export class CommStack extends Stack {
       priceClass: cloudfront.PriceClass.PRICE_CLASS_100,
     });
     applyTags(this.filesCdn, { CDN: 'comm-files' });
+
+    // Create Route53 Alias Record pointing the custom domain to the CloudFront distribution
+    new route53.ARecord(this, 'CdnAliasRecord', {
+      zone: cdnHostedZone,
+      recordName: 'cdn.todaysdentalservices.com',
+      target: route53.RecordTarget.fromAlias(new route53Targets.CloudFrontTarget(this.filesCdn)),
+    });
 
     // ========================================
     // PUSH NOTIFICATIONS (SNS Topic)
@@ -478,7 +509,7 @@ export class CommStack extends Stack {
       CHANNELS_TABLE: this.channelsTable.tableName,
       USER_STARRED_MESSAGES_TABLE: this.userStarredMessagesTable.tableName,
       FILE_BUCKET_NAME: this.fileBucket.bucketName,
-      FILES_CDN_DOMAIN: this.filesCdn.distributionDomainName,
+      FILES_CDN_DOMAIN: 'cdn.todaysdentalservices.com',
       NOTIFICATIONS_TOPIC_ARN: this.notificationsTopic.topicArn,
       ...(props.deviceTokensTableName && { DEVICE_TOKENS_TABLE: props.deviceTokensTableName }),
       ...(props.sendPushFunctionArn && { SEND_PUSH_FUNCTION_ARN: props.sendPushFunctionArn }),
@@ -553,12 +584,10 @@ export class CommStack extends Stack {
     });
     applyTags(defaultFn, { Function: 'ws-default' });
 
-    // Provisioned concurrency to eliminate cold starts on the latency-critical WebSocket handler
-    const defaultFnAlias = new lambda.Alias(this, 'WsDefaultFnLiveAlias', {
-      aliasName: 'live',
-      version: defaultFn.currentVersion,
-      provisionedConcurrentExecutions: 2,
-    });
+    // NOTE: Provisioned concurrency removed temporarily to allow clean deploy
+    // after Lambda Version/Alias stack state was corrupted by failed rollbacks.
+    // Re-add after successful deployment.
+    const defaultFnAlias = defaultFn;
 
     // Grant permissions to the Default Lambda
     this.connectionsTable.grantReadWriteData(defaultFn);
@@ -646,12 +675,8 @@ export class CommStack extends Stack {
     });
     applyTags(restApiHandler, { Function: 'rest-api-handler' });
 
-    // Provisioned concurrency to eliminate cold starts on the REST API handler
-    const restApiAlias = new lambda.Alias(this, 'RestApiHandlerLiveAlias', {
-      aliasName: 'live',
-      version: restApiHandler.currentVersion,
-      provisionedConcurrentExecutions: 2,
-    });
+    // NOTE: Provisioned concurrency removed temporarily (see WsDefaultFn note above).
+    const restApiAlias = restApiHandler;
 
     // Grant permissions to REST API handler
     this.connectionsTable.grantReadData(restApiHandler);
@@ -712,7 +737,7 @@ export class CommStack extends Stack {
       environment: {
         FAVORS_TABLE: this.favorsTable.tableName,
         SES_SOURCE_EMAIL: 'no-reply@todaysdentalservices.com',
-        FRONTEND_URL: 'https://todaysdentalinsights.com',
+        FRONTEND_URL: 'https://todaysdentalservices.com',
       },
     });
     applyTags(deadlineReminderFn, { Function: 'deadline-reminder' });
@@ -754,11 +779,7 @@ export class CommStack extends Stack {
     this.restApi = new apigw.RestApi(this, 'CommRestApi', {
       restApiName: `${this.stackName}-CommRestApi`,
       description: 'REST API for Communication module - Tasks, Meetings, Groups',
-      defaultCorsPreflightOptions: {
-        allowOrigins: apigw.Cors.ALL_ORIGINS,
-        allowMethods: apigw.Cors.ALL_METHODS,
-        allowHeaders: ['Content-Type', 'Authorization', 'X-Amz-Date', 'X-Api-Key', 'X-Amz-Security-Token'],
-      },
+      defaultCorsPreflightOptions: getCdkCorsConfig(),
       deployOptions: {
         stageName: 'prod',
         throttlingRateLimit: 100,
@@ -768,6 +789,28 @@ export class CommStack extends Stack {
         cacheClusterSize: '0.5',
         cacheDataEncrypted: true,
       },
+    });
+
+    const corsErrorHeaders = getCorsErrorHeaders();
+
+    this.restApi.addGatewayResponse('GatewayResponseUnauthorized', {
+      type: apigw.ResponseType.UNAUTHORIZED,
+      responseHeaders: corsErrorHeaders,
+    });
+
+    this.restApi.addGatewayResponse('GatewayResponseAccessDenied', {
+      type: apigw.ResponseType.ACCESS_DENIED,
+      responseHeaders: corsErrorHeaders,
+    });
+
+    this.restApi.addGatewayResponse('GatewayResponseDefault4xx', {
+      type: apigw.ResponseType.DEFAULT_4XX,
+      responseHeaders: corsErrorHeaders,
+    });
+
+    this.restApi.addGatewayResponse('GatewayResponseDefault5xx', {
+      type: apigw.ResponseType.DEFAULT_5XX,
+      responseHeaders: corsErrorHeaders,
     });
 
     // ========================================
@@ -930,11 +973,28 @@ export class CommStack extends Stack {
       },
     });
 
-    new apigw2.WebSocketStage(this, this.stackName + 'ProdStage', {
+    const websocketStage = new apigw2.WebSocketStage(this, this.stackName + 'ProdStage', {
       webSocketApi: this.websocketApi,
       stageName: 'prod',
       autoDeploy: true,
     });
+
+    // ========================================
+    // WEBSOCKET CUSTOM DOMAIN MAPPING
+    // ========================================
+    // Map this WebSocket API to wss://ws.todaysdentalservices.com/comm
+    // The WsDomainName is created and owned by AiAgentsStack — we import its
+    // regionalDomainName and regionalHostedZoneId via CloudFormation exports.
+    const WS_DOMAIN_NAME = 'ws.todaysdentalservices.com';
+
+    const wsApiMapping = new apigw2.CfnApiMapping(this, 'CommWebSocketMapping', {
+      apiId: this.websocketApi.apiId,
+      domainName: WS_DOMAIN_NAME,
+      stage: websocketStage.stageName,
+      apiMappingKey: 'comm',
+    });
+    // Ensure the stage is fully deployed before the mapping is created
+    wsApiMapping.addDependency(websocketStage.node.defaultChild as apigw2.CfnStage);
 
     // Grant API Gateway permission to invoke Lambda handlers
     connectFn.addPermission('ApiGwInvokeConnect', {
@@ -977,13 +1037,17 @@ export class CommStack extends Stack {
     // ========================================
     // CUSTOM DOMAIN MAPPING
     // ========================================
-    // Map REST API to the shared custom domain: api.todaysdentalservices.com/comm
-    new apigw.CfnBasePathMapping(this, 'CommRestApiBasePathMapping', {
+    // The base path mapping api.todaysdentalservices.com/comm → this RestApi.
+    // DeletionPolicy=Retain prevents CloudFormation from deleting it on stack updates.
+    // The mapping already exists on AWS (physical ID: api.todaysdentalservices.com|comm).
+    const basePathMapping = new apigw.CfnBasePathMapping(this, 'CommRestApiBasePathMapping', {
       domainName: props.apiDomainName ?? 'api.todaysdentalservices.com',
       basePath: 'comm',
       restApiId: this.restApi.restApiId,
       stage: this.restApi.deploymentStage.stageName,
     });
+    basePathMapping.cfnOptions.deletionPolicy = cdk.CfnDeletionPolicy.RETAIN;
+    basePathMapping.cfnOptions.updateReplacePolicy = cdk.CfnDeletionPolicy.RETAIN;
 
     // ========================================
     // OUTPUTS
@@ -1001,12 +1065,12 @@ export class CommStack extends Stack {
       exportName: `${this.stackName}-AuditLogsTableName`,
     });
     new CfnOutput(this, 'WebSocketApiUrl', {
-      value: this.websocketApi.apiEndpoint,
-      description: 'The WebSocket API Endpoint',
+      value: 'wss://ws.todaysdentalservices.com/comm',
+      description: 'The WebSocket API custom domain URL (ws.todaysdentalservices.com/comm)',
       exportName: `${this.stackName}-WebSocketApiUrl`,
     });
     new CfnOutput(this, 'RestApiUrl', {
-      value: 'https://api.todaysdentalservices.com/comm/',
+      value: `https://${props.apiDomainName ?? 'api.todaysdentalservices.com'}/comm/`,
       description: 'The REST API Endpoint for Tasks, Meetings, Groups (Custom Domain)',
       exportName: `${this.stackName}-RestApiUrl`,
     });

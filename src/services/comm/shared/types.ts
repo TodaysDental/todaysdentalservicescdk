@@ -11,7 +11,7 @@ export const SYSTEM_MODULES = ['HR', 'Accounting', 'Operations', 'Finance', 'Mar
 export type SystemModule = typeof SYSTEM_MODULES[number];
 
 // ── Task status / priority ──────────────────────────────────────────────────
-export type TaskStatus = 'pending' | 'active' | 'in_progress' | 'completed' | 'rejected' | 'forwarded' | 'deleted';
+export type TaskStatus = 'pending' | 'active' | 'in_progress' | 'completed' | 'resolved' | 'rejected' | 'forwarded' | 'deleted';
 export type TaskPriority = 'Low' | 'Medium' | 'High' | 'Urgent';
 
 // ── Connection / sender ─────────────────────────────────────────────────────
@@ -83,6 +83,7 @@ export interface FavorRequest {
     userID: string;
     requestType: 'General' | 'Assign Task' | 'IT Ticket' | 'Ask a Favor' | 'Other';
     unreadCount: number;
+    unreadCounts?: Record<string, number>;
     initialMessage: string;
     deadline?: string;
     isMainGroupChat?: boolean;
@@ -129,7 +130,7 @@ export interface MessageData {
     senderID: string;
     content: string;
     timestamp: number;
-    type: 'text' | 'file' | 'system' | 'task' | 'poll' | 'voice' | 'gif' | 'sticker';
+    type: 'text' | 'file' | 'system' | 'task' | 'poll' | 'voice' | 'gif' | 'sticker' | 'meeting';
     fileKey?: string;
     fileDetails?: FileDetails;
 

@@ -1795,7 +1795,11 @@ async function startFavorRequest(
             return;
         }
     } else {
-        // Self-assignment is allowed (user can assign tasks to themselves)
+        // Validate receiver exists by checking if they have any connections or user record
+        if (!receiverID || typeof receiverID !== 'string' || receiverID.trim().length === 0) {
+            await sendToClient(apiGwManagement, senderConnectionId, { type: 'error', message: 'Invalid receiver ID.' });
+            return;
+        }
         recipients = [receiverID as string];
     }
 
@@ -2182,6 +2186,14 @@ async function sendMessage(
         return;
     }
 
+    const MAX_MESSAGE_LENGTH = 50_000;
+    if (content && content.length > MAX_MESSAGE_LENGTH) {
+        if (senderConnectionId) {
+            await sendToClient(apiGwManagement, senderConnectionId, { type: 'error', message: `Message exceeds maximum length of ${MAX_MESSAGE_LENGTH} characters.` });
+        }
+        return;
+    }
+
     const timestamp = Date.now();
 
     // 1. Validate and Update Favor Request (optimistic locking/status check)
@@ -2244,8 +2256,8 @@ async function sendMessage(
     }
 
     // Allow messaging for active workflows (pending/active/in_progress/forwarded).
-    // Only block messaging for closed tasks.
-    const isClosed = favor.status === 'completed' || favor.status === 'rejected';
+    // Block messaging for all closed statuses.
+    const isClosed = favor.status === 'completed' || favor.status === 'rejected' || favor.status === 'resolved' || favor.status === 'deleted';
     if (isClosed || recipientIDs.length === 0) {
         console.log(`❌ [sendMessage] BLOCKED: isClosed=${isClosed}, recipientCount=${recipientIDs.length}, status=${favor.status}`);
         if (senderConnectionId) {
@@ -2254,17 +2266,19 @@ async function sendMessage(
         return;
     }
 
-    // 2. Update the favor's last update time AND increment the unread counter 
-    // Increment unread count by the number of recipients.
-    const incrementAmount = recipientIDs.length;
+    // 2. Update the favor's last update time AND increment per-user unread counters
+    const unreadCounts: Record<string, number> = favor.unreadCounts || {};
+    for (const rid of recipientIDs) {
+        unreadCounts[rid] = (unreadCounts[rid] || 0) + 1;
+    }
 
     const updateResult = await ddb.send(new UpdateCommand({
         TableName: FAVORS_TABLE,
         Key: { favorRequestID },
-        UpdateExpression: 'SET updatedAt = :ua ADD unreadCount :incr',
+        UpdateExpression: 'SET updatedAt = :ua, unreadCounts = :uc',
         ExpressionAttributeValues: {
             ':ua': new Date().toISOString(),
-            ':incr': incrementAmount
+            ':uc': unreadCounts,
         },
         ReturnValues: 'ALL_NEW',
     }));
@@ -2400,12 +2414,13 @@ async function markRead(
         return;
     }
 
-    // 3. Reset unreadCount to 0 for the specified request
+    // 3. Reset unreadCount for this specific user only (per-user map)
     try {
         const updateResult = await ddb.send(new UpdateCommand({
             TableName: FAVORS_TABLE,
             Key: { favorRequestID },
-            UpdateExpression: 'SET unreadCount = :zero',
+            UpdateExpression: 'SET unreadCounts.#uid = :zero',
+            ExpressionAttributeNames: { '#uid': callerID },
             ExpressionAttributeValues: {
                 ':zero': 0,
             },
@@ -2485,9 +2500,10 @@ async function resolveRequest(
         return;
     }
 
-    if (favor.status !== 'active') {
+    const closedStatuses = ['completed', 'resolved', 'rejected', 'deleted'];
+    if (closedStatuses.includes(favor.status)) {
         if (senderConnectionId) {
-            await sendToClient(apiGwManagement, senderConnectionId, { type: 'error', message: 'Request is already resolved.' });
+            await sendToClient(apiGwManagement, senderConnectionId, { type: 'error', message: 'Request is already resolved or closed.' });
         }
         return;
     }
@@ -2499,14 +2515,12 @@ async function resolveRequest(
         await ddb.send(new UpdateCommand({
             TableName: FAVORS_TABLE,
             Key: { favorRequestID },
-            // Also reset unread count on resolve and set completedAt
-            UpdateExpression: 'SET #s = :resolved, updatedAt = :ua, completedAt = :ca, unreadCount = :zero',
+            UpdateExpression: 'SET #s = :resolved, updatedAt = :ua, completedAt = :ca',
             ExpressionAttributeNames: { '#s': 'status' },
             ExpressionAttributeValues: {
-                ':resolved': 'resolved',
+                ':resolved': 'completed',
                 ':ua': nowIso,
                 ':ca': nowIso,
-                ':zero': 0, // Reset unread count
             },
         }));
 
@@ -3400,7 +3414,8 @@ async function fetchHistory(
     connectionId: string,
     apiGwManagement: ApiGatewayManagementApiClient
 ): Promise<void> {
-    const { favorRequestID, limit = 100, lastTimestamp } = payload;
+    const { favorRequestID, limit: rawLimit = 100, lastTimestamp } = payload;
+    const limit = Math.min(Number(rawLimit) || 100, 500);
 
     if (!favorRequestID) {
         await sendToClient(apiGwManagement, connectionId, { type: 'error', message: 'Missing favorRequestID for history fetch.' });
@@ -3430,31 +3445,33 @@ async function fetchHistory(
         // 3. Determine the user's clearedAt timestamp (if any)
         const userClearedAt = favor.clearedAt?.[callerID];
 
-        // 4. Query the MessagesTable (PK: favorRequestID, SK: timestamp)
-        //    If user has cleared the chat, only fetch messages after their clearedAt
+        // 4. Build cursor condition: use lastTimestamp for pagination, or clearedAt for initial load
+        const lowerBound = lastTimestamp || userClearedAt;
+
         const queryInput: any = {
             TableName: MESSAGES_TABLE,
-            KeyConditionExpression: userClearedAt
-                ? 'favorRequestID = :id AND #ts > :clearedAt'
+            KeyConditionExpression: lowerBound
+                ? 'favorRequestID = :id AND #ts > :lb'
                 : 'favorRequestID = :id',
-            ExpressionAttributeNames: userClearedAt ? { '#ts': 'timestamp' } : undefined,
-            ExpressionAttributeValues: userClearedAt
-                ? { ':id': favorRequestID, ':clearedAt': userClearedAt }
+            ExpressionAttributeNames: lowerBound ? { '#ts': 'timestamp' } : undefined,
+            ExpressionAttributeValues: lowerBound
+                ? { ':id': favorRequestID, ':lb': lowerBound }
                 : { ':id': favorRequestID },
-            ScanIndexForward: true, // Chronological order (oldest first)
+            ScanIndexForward: true,
             Limit: limit,
         };
-        // Remove undefined keys
         if (!queryInput.ExpressionAttributeNames) delete queryInput.ExpressionAttributeNames;
 
         const historyResult = await ddb.send(new QueryCommand(queryInput));
 
-        // 5. Send history back to the client
+        // 5. Send history back to the client with pagination token
+        const lastEvalKey = historyResult.LastEvaluatedKey;
         await sendToClient(apiGwManagement, connectionId, {
             type: 'favorHistory',
             favorRequestID,
             messages: historyResult.Items || [],
-            // nextToken: historyResult.LastEvaluatedKey // To implement robust pagination
+            hasMore: !!lastEvalKey,
+            nextTimestamp: lastEvalKey ? (lastEvalKey as any).timestamp : undefined,
         });
     } catch (error: any) {
         console.error(`[fetchHistory] Error fetching history for favorRequestID=${favorRequestID}, callerID=${callerID}:`, error);
@@ -4017,8 +4034,8 @@ async function forwardTask(
 ): Promise<void> {
     const { favorRequestID, forwardTo, message, deadline, requireAcceptance = false, notifyOriginalAssignee = true } = payload;
 
-    if (!favorRequestID || !forwardTo) {
-        await sendToClient(apiGwManagement, connectionId, { type: 'error', message: 'Missing favorRequestID or forwardTo.' });
+    if (!favorRequestID || !forwardTo || typeof forwardTo !== 'string' || forwardTo.trim().length === 0) {
+        await sendToClient(apiGwManagement, connectionId, { type: 'error', message: 'Missing or invalid favorRequestID or forwardTo.' });
         return;
     }
 
@@ -4056,17 +4073,22 @@ async function forwardTask(
         ...(requireAcceptance ? {} : { acceptedAt: nowIso }),
     };
 
-    // 4. Update the favor request
-    const existingChain = favor.forwardingChain || [];
-    const updatedChain = [...existingChain, forwardRecord];
+    // 4. Check task is not already closed
+    const closedStatuses = ['completed', 'resolved', 'rejected', 'deleted'];
+    if (closedStatuses.includes(favor.status)) {
+        await sendToClient(apiGwManagement, connectionId, { type: 'error', message: 'Cannot forward a closed task.' });
+        return;
+    }
 
+    // Atomically append to forwardingChain using list_append to avoid race conditions
     await ddb.send(new UpdateCommand({
         TableName: FAVORS_TABLE,
         Key: { favorRequestID },
-        UpdateExpression: 'SET forwardingChain = :chain, currentAssigneeID = :assignee, #s = :status, updatedAt = :ua, requiresAcceptance = :ra, isForwarded = :fw',
+        UpdateExpression: 'SET forwardingChain = list_append(if_not_exists(forwardingChain, :empty), :newRecord), currentAssigneeID = :assignee, #s = :status, updatedAt = :ua, requiresAcceptance = :ra, isForwarded = :fw',
         ExpressionAttributeNames: { '#s': 'status' },
         ExpressionAttributeValues: {
-            ':chain': updatedChain,
+            ':newRecord': [forwardRecord],
+            ':empty': [],
             ':assignee': forwardTo,
             ':status': requireAcceptance ? 'forwarded' : 'active',
             ':ua': nowIso,
@@ -4898,9 +4920,9 @@ async function deleteConversation(
         return;
     }
 
-    // 2. Allow any participant (sender, receiver, or current assignee) to delete
-    const isParticipant = favor.senderID === senderID || favor.receiverID === senderID || favor.currentAssigneeID === senderID;
-    if (!isParticipant) {
+    // 2. Allow any participant (sender, receiver, current assignee, or team member) to delete
+    const participantCheck = await isUserParticipant(favor, senderID);
+    if (!participantCheck) {
         await sendToClient(apiGwManagement, connectionId, { type: 'error', message: 'Unauthorized: You are not a participant of this conversation.' });
         return;
     }
@@ -4914,6 +4936,16 @@ async function deleteConversation(
         favor.requestType === 'Ask a Favor';
 
     if (deleteType === 'forEveryone') {
+        // Only the conversation creator (senderID) or team owner can delete for everyone
+        let canDeleteForEveryone = favor.senderID === senderID;
+        if (!canDeleteForEveryone && favor.teamID) {
+            const team = await getTeamByID(favor.teamID);
+            canDeleteForEveryone = team?.ownerID === senderID || (team?.admins || []).includes(senderID);
+        }
+        if (!canDeleteForEveryone) {
+            await sendToClient(apiGwManagement, connectionId, { type: 'error', message: 'Only the conversation creator or group admin can delete for everyone.' });
+            return;
+        }
         // === PERMANENT DELETE: Set status to 'deleted' — hides for ALL participants ===
         await ddb.send(new UpdateCommand({
             TableName: FAVORS_TABLE,
@@ -4936,52 +4968,25 @@ async function deleteConversation(
         }, { notifyOffline: false });
 
         console.log(`Conversation ${favorRequestID} permanently deleted by ${senderID}`);
-    } else if (isTask) {
-        // === TASK: Soft-delete only (add to deletedBy) — tasks are preserved ===
-        const currentDeletedBy = favor.deletedBy || [];
-        if (!currentDeletedBy.includes(senderID)) {
-            const updatedDeletedBy = [...currentDeletedBy, senderID];
-            await ddb.send(new UpdateCommand({
-                TableName: FAVORS_TABLE,
-                Key: { favorRequestID },
-                UpdateExpression: 'SET deletedBy = :db, updatedAt = :ua',
-                ExpressionAttributeValues: {
-                    ':db': updatedDeletedBy,
-                    ':ua': nowIso,
-                },
-            }));
-        }
-
-        // Notify only the deleting user
-        await sendToClient(apiGwManagement, connectionId, {
-            type: 'conversationDeleted',
-            favorRequestID,
-            deletedBy: senderID,
-            deleteType: 'forMe',
-        });
-
-        console.log(`Task ${favorRequestID} soft-deleted from view by ${senderID}`);
     } else {
-        // === CHAT (non-task): SOFT DELETE — add to deletedBy (same as tasks) ===
-        // Previously this was a hard delete which permanently removed the conversation
-        // for ALL users. Now we use soft-delete so it only hides for the deleting user.
-        console.log(`🗑️ Soft-deleting non-task chat ${favorRequestID} for user ${senderID}`);
-
-        const currentDeletedBy = favor.deletedBy || [];
-        if (!currentDeletedBy.includes(senderID)) {
-            const updatedDeletedBy = [...currentDeletedBy, senderID];
+        // === SOFT DELETE (tasks and chats): Atomically add senderID to deletedBy ===
+        try {
             await ddb.send(new UpdateCommand({
                 TableName: FAVORS_TABLE,
                 Key: { favorRequestID },
-                UpdateExpression: 'SET deletedBy = :db, updatedAt = :ua',
+                UpdateExpression: 'SET deletedBy = list_append(if_not_exists(deletedBy, :empty), :newUser), updatedAt = :ua',
+                ConditionExpression: 'NOT contains(if_not_exists(deletedBy, :empty), :uid)',
                 ExpressionAttributeValues: {
-                    ':db': updatedDeletedBy,
+                    ':newUser': [senderID],
+                    ':empty': [],
+                    ':uid': senderID,
                     ':ua': nowIso,
                 },
             }));
+        } catch (condErr: any) {
+            if (condErr.name !== 'ConditionalCheckFailedException') throw condErr;
         }
 
-        // Notify only the deleting user
         await sendToClient(apiGwManagement, connectionId, {
             type: 'conversationDeleted',
             favorRequestID,
@@ -4989,7 +4994,7 @@ async function deleteConversation(
             deleteType: 'forMe',
         });
 
-        console.log(`🗑️ Chat ${favorRequestID} soft-deleted from view by ${senderID}`);
+        console.log(`Conversation ${favorRequestID} soft-deleted from view by ${senderID}`);
     }
 }
 
@@ -5029,73 +5034,25 @@ async function clearChat(
             return;
         }
 
-        // 2. Verify sender is a participant
-        const isParticipant = favor.senderID === senderID || favor.receiverID === senderID || favor.currentAssigneeID === senderID;
-        if (!isParticipant) {
-            // Also check group membership
-            if (favor.teamID) {
-                const team = await getTeamByID(favor.teamID);
-                if (!team || !team.members.includes(senderID)) {
-                    await sendToClient(apiGwManagement, connectionId, { type: 'error', message: 'Unauthorized.' });
-                    return;
-                }
-            } else {
-                await sendToClient(apiGwManagement, connectionId, { type: 'error', message: 'Unauthorized.' });
-                return;
-            }
+        // 2. Verify sender is a participant (includes group membership check)
+        const participantOk = await isUserParticipant(favor, senderID);
+        if (!participantOk) {
+            await sendToClient(apiGwManagement, connectionId, { type: 'error', message: 'Unauthorized.' });
+            return;
         }
 
         const clearTimestamp = Date.now();
         const nowIso = new Date().toISOString();
 
-        // 3. (Optional) Delete media files from S3
-        if (deleteMedia && FILE_BUCKET_NAME) {
-            try {
-                // Query all file messages in this conversation
-                const msgResult = await ddb.send(new QueryCommand({
-                    TableName: MESSAGES_TABLE,
-                    KeyConditionExpression: 'favorRequestID = :id',
-                    ExpressionAttributeValues: { ':id': favorRequestID },
-                    FilterExpression: '#t = :file',
-                    ExpressionAttributeNames: { '#t': 'type' },
-                    ProjectionExpression: 'fileKey',
-                }));
-
-                const fileKeys = (msgResult.Items || [])
-                    .map((m: any) => m.fileKey)
-                    .filter(Boolean);
-
-                // Delete files from S3 in batches of 10
-                for (let i = 0; i < fileKeys.length; i += 10) {
-                    const batch = fileKeys.slice(i, i + 10);
-                    await Promise.all(
-                        batch.map((key: string) =>
-                            s3.send(new DeleteObjectCommand({
-                                Bucket: FILE_BUCKET_NAME,
-                                Key: key,
-                            })).catch((e: any) => console.warn(`Failed to delete S3 object ${key}:`, e.message))
-                        )
-                    );
-                }
-                console.log(`Deleted ${fileKeys.length} media files for ${favorRequestID}`);
-            } catch (mediaErr: any) {
-                console.warn('Media deletion failed (non-blocking):', mediaErr.message);
-            }
-        }
-
-        // 4. Update clearedAt map on the FavorRequest
-        //    Merge with existing map so other users' clearTimestamps are preserved
-        const existingClearedAt = favor.clearedAt || {};
-        const updatedClearedAt = { ...existingClearedAt, [senderID]: clearTimestamp };
-
+        // 3. Update clearedAt map atomically using DynamoDB path expression
+        //    This avoids read-modify-write race conditions and only affects this user's view
         await ddb.send(new UpdateCommand({
             TableName: FAVORS_TABLE,
             Key: { favorRequestID },
-            UpdateExpression: 'SET clearedAt = :ca, lastMessage = :lm, lastMessageAt = :lma, updatedAt = :ua',
+            UpdateExpression: 'SET clearedAt.#uid = :ts, updatedAt = :ua',
+            ExpressionAttributeNames: { '#uid': senderID },
             ExpressionAttributeValues: {
-                ':ca': updatedClearedAt,
-                ':lm': '',
-                ':lma': nowIso,
+                ':ts': clearTimestamp,
                 ':ua': nowIso,
             },
         }));

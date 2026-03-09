@@ -99,6 +99,7 @@ export async function broadcastToConversation(
     const participants = new Set<string>();
     if (favor.senderID) participants.add(String(favor.senderID));
     if (favor.receiverID) participants.add(String(favor.receiverID));
+    if (favor.currentAssigneeID) participants.add(String(favor.currentAssigneeID));
 
     const teamID = favor.teamID as string | undefined;
     if (teamID && env.TEAMS_TABLE) {
