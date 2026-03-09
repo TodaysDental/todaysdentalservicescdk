@@ -4,6 +4,7 @@ import { v4 as uuidv4 } from 'uuid';
 import { createHash, randomBytes, timingSafeEqual } from 'crypto';
 import { AuditService } from './audit-service';
 import { ddb, env } from './shared';
+import { buildCorsHeadersAsync } from '../../shared/utils/cors';
 
 // Chime meeting manager is lazy-loaded (only needed for meeting join/create, not every request)
 const lazyChimeManager = () => import('./chime-meeting-manager');
@@ -181,15 +182,18 @@ interface MeetingRecord extends Meeting {
     chimeMediaRegion?: string;
 }
 
-// Helper functions
+let _corsHeaders: Record<string, string> = {};
+
+async function initCorsHeaders(origin?: string): Promise<void> {
+    _corsHeaders = await buildCorsHeadersAsync({}, origin);
+}
+
 function response(statusCode: number, body: any, extraHeaders?: Record<string, string>): APIGatewayProxyResult {
     return {
         statusCode,
         headers: {
             'Content-Type': 'application/json',
-            'Access-Control-Allow-Origin': '*',
-            'Access-Control-Allow-Headers': 'Content-Type,Authorization',
-            'Access-Control-Allow-Methods': 'GET,POST,PUT,DELETE,OPTIONS',
+            ..._corsHeaders,
             ...extraHeaders,
         },
         body: JSON.stringify(body),
@@ -197,37 +201,24 @@ function response(statusCode: number, body: any, extraHeaders?: Record<string, s
 }
 
 function getUserIdFromEvent(event: APIGatewayProxyEvent): string | null {
-    // Extract user ID from JWT claims (set by authorizer)
     const authorizer = event.requestContext.authorizer;
 
-    // Log the full authorizer object for debugging
-    console.log('DEBUG: Authorizer object:', JSON.stringify(authorizer, null, 2));
-
     if (!authorizer) {
-        console.error('ERROR: No authorizer in request context');
+        log.error('No authorizer in request context');
         return null;
     }
 
     const claims = authorizer.claims;
-    console.log('DEBUG: Claims from authorizer:', JSON.stringify(claims, null, 2));
 
-    // Try multiple ways to extract user ID
-    // For Lambda authorizer: context values are directly on `authorizer` (no `claims` wrapper)
-    // For Cognito authorizer: claims are at `authorizer.claims`
     const userID = claims?.sub
         || claims?.['cognito:username']
-        || claims?.['sub']
         || authorizer?.principalId
-        || authorizer?.email;  // Lambda authorizer context sets email directly
+        || authorizer?.email;
 
     if (!userID) {
-        console.error('ERROR: Could not extract userID from claims, principalId, or email');
-        console.error('DEBUG: Authorizer keys:', Object.keys(authorizer));
-    } else {
-        console.log('DEBUG: Successfully extracted userID:', userID);
+        log.error('Could not extract userID from authorizer', { authorizerKeys: Object.keys(authorizer) });
     }
 
-    // Normalize to lowercase to prevent case-sensitivity mismatches
     return userID ? String(userID).toLowerCase() : null;
 }
 
@@ -306,15 +297,16 @@ function isUserDirectConversationParticipant(favor: FavorRequest, userID: string
 export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayProxyResult> => {
     const handlerStartTime = Date.now();
     const requestId = event.requestContext.requestId;
-    const { httpMethod, path, pathParameters, queryStringParameters, body } = event;
+    const { httpMethod, pathParameters, queryStringParameters, body } = event;
 
-    // Log full event for debugging
-    console.log('=== INCOMING REQUEST ===');
-    console.log('RequestID:', requestId);
-    console.log('Method:', httpMethod);
-    console.log('Path:', path);
-    console.log('RequestContext:', JSON.stringify(event.requestContext, null, 2));
-    console.log('========================');
+    // Base path mapping (/comm) causes event.path to include the prefix.
+    // Normalize to /api/... so route regexes work regardless of mapping.
+    const path = event.path.replace(/^\/comm/, '');
+
+    const requestOrigin = event.headers?.origin || event.headers?.Origin;
+    await initCorsHeaders(requestOrigin);
+
+    log.info('Incoming request', { requestId, httpMethod, path });
 
     // Public endpoints (no authorizer)
     const isPublicMeetingJoin = path.match(/^\/api\/public\/meetings\/[^/]+\/join$/) && httpMethod === 'POST';
@@ -325,9 +317,7 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
     log.request(event, userID || 'public');
 
     if (!isPublicMeetingJoin && !userID) {
-        console.error('CRITICAL: Failed to extract userID from event');
-        console.error('Full event.requestContext.authorizer:', JSON.stringify(event.requestContext.authorizer, null, 2));
-        log.warn('Authentication failed - no userID extracted', { requestId, path, httpMethod });
+        log.error('Failed to extract userID from event', { requestId, path, httpMethod });
         log.response(401, false, Date.now() - handlerStartTime, { requestId });
         return response(401, { success: false, message: 'Unauthorized - Failed to extract user ID from request' });
     }
@@ -957,23 +947,33 @@ async function deleteConversation(userID: string, favorRequestID: string, params
         return response(404, { success: false, message: 'Conversation not found' });
     }
 
-    // Allow any participant (sender, receiver, or current assignee) to delete
+    // Authorization: check participant (including group membership)
     const isParticipant = favor.senderID === userID || favor.receiverID === userID || favor.currentAssigneeID === userID;
-    if (!isParticipant) {
+    let isTeamMember = false;
+    if (!isParticipant && favor.teamID && TEAMS_TABLE) {
+        const teamResult = await ddb.send(new GetCommand({ TableName: TEAMS_TABLE, Key: { teamID: favor.teamID } }));
+        const team = teamResult.Item as Team | undefined;
+        isTeamMember = !!team?.members?.includes(userID);
+    }
+    if (!isParticipant && !isTeamMember) {
         log.warn('Unauthorized delete attempt', { ...fnCtx, isParticipant: false });
         return response(403, { success: false, message: 'Unauthorized: You are not a participant of this conversation' });
     }
 
     const nowIso = new Date().toISOString();
 
-    // Determine if this is a task conversation (tasks are preserved with soft-delete)
-    const isTask = favor.isTask === true ||
-        favor.requestType === 'Assign Task' ||
-        favor.requestType === 'IT Ticket' ||
-        favor.requestType === 'Ask a Favor';
-
     if (deleteType === 'forEveryone') {
-        // === PERMANENT DELETE: Set status to 'deleted' — hides for ALL participants ===
+        // Only the conversation creator or group admin can delete for everyone
+        let canDeleteForEveryone = favor.senderID === userID;
+        if (!canDeleteForEveryone && favor.teamID && TEAMS_TABLE) {
+            const teamResult = await ddb.send(new GetCommand({ TableName: TEAMS_TABLE, Key: { teamID: favor.teamID } }));
+            const team = teamResult.Item as Team | undefined;
+            canDeleteForEveryone = team?.ownerID === userID || (team?.admins || []).includes(userID);
+        }
+        if (!canDeleteForEveryone) {
+            return response(403, { success: false, message: 'Only the conversation creator or group admin can delete for everyone' });
+        }
+
         const updateStart = Date.now();
         log.dbOperation('UpdateItem', FAVORS_TABLE, { favorRequestID, action: 'permanent-delete' }, fnCtx);
         await ddb.send(new UpdateCommand({
@@ -992,64 +992,28 @@ async function deleteConversation(userID: string, favorRequestID: string, params
             message: 'Conversation permanently deleted for everyone',
             deleted: { conversationID: favorRequestID, deleteType: 'forEveryone' },
         });
-    } else if (isTask) {
-        // === TASK: Soft-delete only (add to deletedBy) — tasks should be preserved ===
-        const currentDeletedBy = favor.deletedBy || [];
-        if (currentDeletedBy.includes(userID)) {
-            return response(200, {
-                success: true,
-                message: 'Task already deleted from your view',
-                deleted: { conversationID: favorRequestID, deleteType: 'forMe' },
-            });
-        }
-        const updatedDeletedBy = [...currentDeletedBy, userID];
-
-        const updateStart = Date.now();
-        log.dbOperation('UpdateItem', FAVORS_TABLE, { favorRequestID, action: 'soft-delete-task', deletedByUser: userID }, fnCtx);
-        await ddb.send(new UpdateCommand({
-            TableName: FAVORS_TABLE,
-            Key: { favorRequestID },
-            UpdateExpression: 'SET deletedBy = :db, updatedAt = :ua',
-            ExpressionAttributeValues: { ':db': updatedDeletedBy, ':ua': nowIso },
-        }));
-        log.dbResult('UpdateItem', FAVORS_TABLE, 1, Date.now() - updateStart, fnCtx);
-
-        log.info('deleteConversation completed (soft-delete task)', { ...fnCtx, deletedByUser: userID, totalDeletedBy: updatedDeletedBy.length, durationMs: Date.now() - fnStart });
-
-        return response(200, {
-            success: true,
-            message: 'Task deleted from your view',
-            deleted: { conversationID: favorRequestID, deleteType: 'forMe' },
-        });
     } else {
-        // === CHAT (non-task): SOFT DELETE — add to deletedBy (same as tasks) ===
-        // Previously this was a hard delete which permanently removed the conversation
-        // for ALL users. Now we use soft-delete so it only hides for the deleting user.
-        log.info('Soft-deleting non-task chat conversation', { ...fnCtx, deletedByUser: userID });
+        // Soft-delete: atomically add userID to deletedBy
+        try {
+            await ddb.send(new UpdateCommand({
+                TableName: FAVORS_TABLE,
+                Key: { favorRequestID },
+                UpdateExpression: 'SET deletedBy = list_append(if_not_exists(deletedBy, :empty), :newUser), updatedAt = :ua',
+                ConditionExpression: 'NOT contains(if_not_exists(deletedBy, :empty), :uid)',
+                ExpressionAttributeValues: { ':newUser': [userID], ':empty': [], ':uid': userID, ':ua': nowIso },
+            }));
+        } catch (condErr: any) {
+            if (condErr.name === 'ConditionalCheckFailedException') {
+                return response(200, { success: true, message: 'Already deleted from your view', deleted: { conversationID: favorRequestID, deleteType: 'forMe' } });
+            }
+            throw condErr;
+        }
 
-        const currentDeletedBy = favor.deletedBy || [];
-        const updatedDeletedBy = currentDeletedBy.includes(userID)
-            ? currentDeletedBy
-            : [...currentDeletedBy, userID];
-
-        const updateStart = Date.now();
-        log.dbOperation('UpdateItem', FAVORS_TABLE, { favorRequestID, action: 'soft-delete-chat', deletedByUser: userID }, fnCtx);
-        await ddb.send(new UpdateCommand({
-            TableName: FAVORS_TABLE,
-            Key: { favorRequestID },
-            UpdateExpression: 'SET deletedBy = :db, updatedAt = :ua',
-            ExpressionAttributeValues: {
-                ':db': updatedDeletedBy,
-                ':ua': nowIso,
-            },
-        }));
-        log.dbResult('UpdateItem', FAVORS_TABLE, 1, Date.now() - updateStart, fnCtx);
-
-        log.info('deleteConversation completed (soft-delete chat)', { ...fnCtx, deletedByUser: userID, totalDeletedBy: updatedDeletedBy.length, durationMs: Date.now() - fnStart });
+        log.info('deleteConversation completed (soft-delete)', { ...fnCtx, deletedByUser: userID, durationMs: Date.now() - fnStart });
 
         return response(200, {
             success: true,
-            message: 'Chat deleted from your view',
+            message: 'Conversation deleted from your view',
             deleted: { conversationID: favorRequestID, deleteType: 'forMe' },
         });
     }
@@ -1233,10 +1197,21 @@ async function findOrCreateConversation(userID: string, body: any, logCtx?: LogC
         };
 
         const dbStart = Date.now();
-        await ddb.send(new PutCommand({
-            TableName: FAVORS_TABLE,
-            Item: newFavor,
-        }));
+        try {
+            await ddb.send(new PutCommand({
+                TableName: FAVORS_TABLE,
+                Item: newFavor,
+                ConditionExpression: 'attribute_not_exists(favorRequestID)',
+            }));
+        } catch (putErr: any) {
+            if (putErr.name === 'ConditionalCheckFailedException') {
+                const existing = await ddb.send(new GetCommand({ TableName: FAVORS_TABLE, Key: { favorRequestID: conversationID } }));
+                if (existing.Item) {
+                    return response(200, { success: true, conversationId: conversationID, conversation: existing.Item, isNew: false });
+                }
+            }
+            throw putErr;
+        }
         log.dbResult('PutItem', FAVORS_TABLE, 1, Date.now() - dbStart, fnCtx);
 
         // If an initial message was provided, save it as the first message
@@ -1686,7 +1661,7 @@ async function getForwardedToMe(userID: string, params: any, logCtx?: LogContext
 async function forwardTask(userID: string, taskID: string, body: any, logCtx?: LogContext): Promise<APIGatewayProxyResult> {
     const fnStart = Date.now();
     const fnCtx = { ...logCtx, function: 'forwardTask', taskID };
-    const { forwardTo, message, deadline, requireAcceptance = false, notifyOriginalAssignee = true } = body;
+    const { forwardTo, message, deadline, requireAcceptance = false } = body;
 
     log.debug('Forward task params', { ...fnCtx, forwardTo, requireAcceptance, hasDeadline: !!deadline });
 
@@ -1709,6 +1684,25 @@ async function forwardTask(userID: string, taskID: string, body: any, logCtx?: L
         return response(404, { success: false, message: 'Task not found' });
     }
 
+    // Authorization: verify caller is a participant
+    const isParticipant = favor.senderID === userID || favor.receiverID === userID || favor.currentAssigneeID === userID;
+    let isTeamMember = false;
+    if (!isParticipant && favor.teamID && TEAMS_TABLE) {
+        const teamResult = await ddb.send(new GetCommand({ TableName: TEAMS_TABLE, Key: { teamID: favor.teamID } }));
+        const team = teamResult.Item as Team | undefined;
+        isTeamMember = !!team?.members?.includes(userID);
+    }
+    if (!isParticipant && !isTeamMember) {
+        log.warn('Unauthorized forward attempt', fnCtx);
+        return response(403, { success: false, message: 'Unauthorized: You are not a participant of this task' });
+    }
+
+    // Block forwarding closed tasks
+    const closedStatuses = ['completed', 'resolved', 'rejected', 'deleted'];
+    if (closedStatuses.includes(favor.status)) {
+        return response(400, { success: false, message: 'Cannot forward a closed task' });
+    }
+
     const forwardID = uuidv4();
     const nowIso = new Date().toISOString();
     const forwardRecord: ForwardRecord = {
@@ -1723,19 +1717,17 @@ async function forwardTask(userID: string, taskID: string, body: any, logCtx?: L
         ...(requireAcceptance ? {} : { acceptedAt: nowIso }),
     };
 
-    const existingChain = favor.forwardingChain || [];
-    const updatedChain = [...existingChain, forwardRecord];
-    log.flowCount('forwardTask', 'chainLength', updatedChain.length, fnCtx);
-
+    // Atomically append to forwardingChain to avoid race conditions
     const updateStart = Date.now();
     log.dbOperation('UpdateItem', FAVORS_TABLE, { favorRequestID: taskID, forwardTo }, fnCtx);
     await ddb.send(new UpdateCommand({
         TableName: FAVORS_TABLE,
         Key: { favorRequestID: taskID },
-        UpdateExpression: 'SET forwardingChain = :chain, currentAssigneeID = :assignee, #s = :status, updatedAt = :ua, requiresAcceptance = :ra',
+        UpdateExpression: 'SET forwardingChain = list_append(if_not_exists(forwardingChain, :empty), :newRecord), currentAssigneeID = :assignee, #s = :status, updatedAt = :ua, requiresAcceptance = :ra',
         ExpressionAttributeNames: { '#s': 'status' },
         ExpressionAttributeValues: {
-            ':chain': updatedChain,
+            ':newRecord': [forwardRecord],
+            ':empty': [],
             ':assignee': forwardTo,
             ':status': requireAcceptance ? 'forwarded' : 'active',
             ':ua': nowIso,
@@ -1845,6 +1837,28 @@ async function updateTaskDeadline(userID: string, taskID: string, body: any, log
     const nowIso = new Date().toISOString();
 
     log.debug('Update task deadline', { ...fnCtx, deadline, hasDeadline: !!deadline });
+
+    // Load task and verify authorization
+    const favorResult = await ddb.send(new GetCommand({
+        TableName: FAVORS_TABLE,
+        Key: { favorRequestID: taskID },
+    }));
+    const favor = favorResult.Item as FavorRequest | undefined;
+    if (!favor) {
+        return response(404, { success: false, message: 'Task not found' });
+    }
+
+    const isParticipant = favor.senderID === userID || favor.receiverID === userID || favor.currentAssigneeID === userID;
+    let isTeamMember = false;
+    if (!isParticipant && favor.teamID && TEAMS_TABLE) {
+        const teamResult = await ddb.send(new GetCommand({ TableName: TEAMS_TABLE, Key: { teamID: favor.teamID } }));
+        const team = teamResult.Item as Team | undefined;
+        isTeamMember = !!team?.members?.includes(userID);
+    }
+    if (!isParticipant && !isTeamMember) {
+        log.warn('Unauthorized deadline update attempt', fnCtx);
+        return response(403, { success: false, message: 'Unauthorized: You are not a participant of this task' });
+    }
 
     const dbStart = Date.now();
     log.dbOperation('UpdateItem', FAVORS_TABLE, { favorRequestID: taskID, action: deadline ? 'SET' : 'REMOVE' }, fnCtx);
@@ -2504,6 +2518,24 @@ async function getMeetings(userID: string, params: any, logCtx?: LogContext): Pr
     let meetings: Meeting[] = [];
 
     if (conversationID) {
+        // Verify user is a participant of this conversation before listing meetings
+        if (FAVORS_TABLE) {
+            const favorResult = await ddb.send(new GetCommand({ TableName: FAVORS_TABLE, Key: { favorRequestID: conversationID } }));
+            const favor = favorResult.Item as FavorRequest | undefined;
+            if (favor) {
+                const isParticipant = favor.senderID === userID || favor.receiverID === userID || favor.currentAssigneeID === userID;
+                let isTeamMember = false;
+                if (!isParticipant && favor.teamID && TEAMS_TABLE) {
+                    const teamResult = await ddb.send(new GetCommand({ TableName: TEAMS_TABLE, Key: { teamID: favor.teamID } }));
+                    const team = teamResult.Item as Team | undefined;
+                    isTeamMember = !!team?.members?.includes(userID);
+                }
+                if (!isParticipant && !isTeamMember) {
+                    return response(403, { success: false, message: 'Unauthorized' });
+                }
+            }
+        }
+
         const dbStart = Date.now();
         log.dbOperation('Query', MEETINGS_TABLE, { index: 'ConversationIndex', conversationID }, fnCtx);
         const result = await ddb.send(new QueryCommand({
@@ -2956,16 +2988,8 @@ async function getGroups(userID: string, params: any, logCtx?: LogContext): Prom
         const teamResults = await Promise.all(teamPromises);
         groups = teamResults.filter((t): t is Team => !!t);
     } else {
-        // Fallback: scan (only if UserTeamsTable is not configured)
-        const dbStart = Date.now();
-        log.dbOperation('Scan', TEAMS_TABLE, { filter: 'contains(members, userID)' }, fnCtx);
-        const result = await ddb.send(new ScanCommand({
-            TableName: TEAMS_TABLE,
-            FilterExpression: 'contains(members, :uid)',
-            ExpressionAttributeValues: { ':uid': userID },
-        }));
-        log.dbResult('Scan', TEAMS_TABLE, result.Items?.length || 0, Date.now() - dbStart, fnCtx);
-        groups = (result.Items || []) as Team[];
+        log.warn('USER_TEAMS_TABLE not configured — cannot list groups without it', fnCtx);
+        return response(200, { success: true, groups: [], total: 0, hasMore: false });
     }
 
     log.flowCount('getGroups', 'rawResults', groups.length, fnCtx);
