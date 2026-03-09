@@ -51,39 +51,10 @@ type RegisterClinic = {
   perClaimsPostedAmount?: number; // Per Claims Posted Amount
   perEobsAttachedAmount?: number; // Per EOB's Attached Amount
   statusDeniedAmount?: number; // Status Denied Amount
-
-  // Open Dental user fields (stored in StaffUser.clinicRoles)
-  UserNum?: number; // Open Dental user number (primary key in userod table)
-  UserName?: string; // Open Dental username
-  userGroupNums?: number[]; // Array of user group numbers the user belongs to
-  EmployeeNum?: number; // FK to employee table
-  employeeName?: string; // Employee name for display
-  ProviderNum?: number; // FK to provider table (if user is a provider)
-  providerName?: string; // Provider name for display
-  ClinicNum?: number; // FK to clinic table in Open Dental
-  emailAddress?: string; // Open Dental email address
-  IsHidden?: boolean; // Whether user is hidden/inactive in Open Dental
-  UserNumCEMT?: number; // Central Enterprise Management Tool user number
-
-  // Legacy aliases (for backward compatibility)
-  openDentalUserNum?: number; // Alias for UserNum
-  openDentalUsername?: string; // Alias for UserName
-  employeeNum?: number; // Alias for EmployeeNum (lowercase)
 };
 
 type StaffClinicDetail = {
   clinicId: string;
-  UserNum?: number;
-  UserName?: string;
-  userGroupNums?: number[];
-  EmployeeNum?: number;
-  employeeName?: string;
-  ProviderNum?: number;
-  providerName?: string;
-  ClinicNum?: number;
-  emailAddress?: string;
-  IsHidden?: boolean;
-  UserNumCEMT?: number;
   hourlyPay?: string | number;
 };
 
@@ -95,7 +66,6 @@ type RegisterBody = {
   clinics: RegisterClinic[]; // Per-clinic role assignments
   makeGlobalSuperAdmin?: boolean;
   staffDetails?: StaffClinicDetail[];
-  openDentalPerClinic?: StaffClinicDetail[];
 };
 
 /**
@@ -221,24 +191,6 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
         perClaimsPostedAmount: c.perClaimsPostedAmount,
         perEobsAttachedAmount: c.perEobsAttachedAmount,
         statusDeniedAmount: c.statusDeniedAmount,
-
-        // Open Dental user fields
-        UserNum: c.UserNum ?? c.openDentalUserNum,
-        UserName: c.UserName ?? c.openDentalUsername,
-        userGroupNums: c.userGroupNums,
-        EmployeeNum: c.EmployeeNum ?? c.employeeNum,
-        employeeName: c.employeeName,
-        ProviderNum: c.ProviderNum,
-        providerName: c.providerName,
-        ClinicNum: c.ClinicNum,
-        emailAddress: c.emailAddress,
-        IsHidden: c.IsHidden,
-        UserNumCEMT: c.UserNumCEMT,
-
-        // Keep legacy aliases for backward compatibility
-        openDentalUserNum: c.UserNum ?? c.openDentalUserNum,
-        openDentalUsername: c.UserName ?? c.openDentalUsername,
-        employeeNum: c.EmployeeNum ?? c.employeeNum,
       }));
 
     // Check if user has SuperAdmin role at any clinic
@@ -268,11 +220,9 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
 
     // Save clinic-specific details to StaffClinicInfo table
     if (STAFF_INFO_TABLE && body.clinics.length > 0) {
-      const detailsToSave = body.openDentalPerClinic && body.openDentalPerClinic.length > 0
-        ? body.openDentalPerClinic
-        : body.staffDetails && body.staffDetails.length > 0
-          ? body.staffDetails
-          : body.clinics;
+      const detailsToSave = body.staffDetails && body.staffDetails.length > 0
+        ? body.staffDetails
+        : body.clinics;
 
       await saveStaffInfoToDynamoDB(username, detailsToSave);
     }

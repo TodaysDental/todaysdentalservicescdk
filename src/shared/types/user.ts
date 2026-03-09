@@ -89,24 +89,6 @@ export interface ClinicRoleAssignment {
   perEobsAttachedAmount?: number; // Per EOB's Attached Amount (Claims role)
   statusDeniedAmount?: number; // Status Denied Amount (Claims role)
   moduleAccess?: ModuleAccess[]; // Optional - granular module permissions per clinic
-
-  // Open Dental user fields
-  UserNum?: number; // Open Dental user number (primary key in userod table)
-  UserName?: string; // Open Dental username
-  userGroupNums?: number[]; // Array of user group numbers the user belongs to
-  EmployeeNum?: number; // FK to employee table
-  employeeName?: string; // Employee name for display
-  ProviderNum?: number; // FK to provider table (if user is a provider)
-  providerName?: string; // Provider name for display
-  ClinicNum?: number; // FK to clinic table in Open Dental
-  emailAddress?: string; // Open Dental email address
-  IsHidden?: boolean; // Whether user is hidden/inactive in Open Dental
-  UserNumCEMT?: number; // Central Enterprise Management Tool user number
-
-  // Legacy aliases (for backward compatibility)
-  openDentalUserNum?: number; // Alias for UserNum
-  openDentalUsername?: string; // Alias for UserName
-  employeeNum?: number; // Alias for EmployeeNum (lowercase)
 }
 
 /**
@@ -140,8 +122,6 @@ export interface StaffUser {
   updatedAt: string;
   // Additional dental staff attributes
   hourlyPay?: string;
-  opendentalUsernum?: string;
-  opendentalUsername?: string;
   // User email credentials (todaysdentalservices.com)
   userEmail?: UserEmailCredentials;
 }
