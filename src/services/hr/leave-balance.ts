@@ -4,11 +4,12 @@
  * For hourly/contract workers - tracks leave history for reporting purposes.
  * No balance limits or accruals - staff can request leave as needed.
  * 
- * Features:
+ * Features::
  * - Leave request history tracking
  * - Leave usage statistics/reports
  * - Shift cancellation on leave approval
- * - Calendar integration for scheduling visibility
+ * - Calendar integration for scheduling visibility..
+ * jb
  * 
  * @module leave-tracking
  */

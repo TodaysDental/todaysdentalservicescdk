@@ -219,7 +219,7 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
     }));
 
     // Save clinic-specific details to StaffClinicInfo table
-    if (STAFF_INFO_TABLE && body.clinics.length > 0) {
+    if (STAFF_INFO_TABLE && body.clinics && body.clinics.length > 0) {
       const detailsToSave = body.staffDetails && body.staffDetails.length > 0
         ? body.staffDetails
         : body.clinics;
