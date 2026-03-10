@@ -169,29 +169,27 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
     }
 
     // Build per-clinic role assignments with module permissions and Open Dental fields
-    const clinicRoles = body.makeGlobalSuperAdmin
-      ? []
-      : body.clinics.map(c => ({
-        clinicId: String(c.clinicId),
-        role: c.role as UserRole,
-        basePay: c.basePay,
-        workLocation: c.workLocation,
-        hourlyPay: c.hourlyPay,
-        moduleAccess: c.moduleAccess?.map(ma => ({
-          module: ma.module,
-          permissions: ma.permissions,
-        })) as ModuleAccess[] | undefined,
+    const clinicRoles = (body.clinics || []).map(c => ({
+      clinicId: String(c.clinicId),
+      role: c.role as UserRole,
+      basePay: c.basePay,
+      workLocation: c.workLocation,
+      hourlyPay: c.hourlyPay,
+      moduleAccess: c.moduleAccess?.map(ma => ({
+        module: ma.module,
+        permissions: ma.permissions,
+      })) as ModuleAccess[] | undefined,
 
-        // Payment Posting role fee fields
-        perClaimFeeOpenDental: c.perClaimFeeOpenDental,
-        perClaimFeePortal: c.perClaimFeePortal,
-        perPreAuthFee: c.perPreAuthFee,
+      // Payment Posting role fee fields
+      perClaimFeeOpenDental: c.perClaimFeeOpenDental,
+      perClaimFeePortal: c.perClaimFeePortal,
+      perPreAuthFee: c.perPreAuthFee,
 
-        // Claims role fee fields
-        perClaimsPostedAmount: c.perClaimsPostedAmount,
-        perEobsAttachedAmount: c.perEobsAttachedAmount,
-        statusDeniedAmount: c.statusDeniedAmount,
-      }));
+      // Claims role fee fields
+      perClaimsPostedAmount: c.perClaimsPostedAmount,
+      perEobsAttachedAmount: c.perEobsAttachedAmount,
+      statusDeniedAmount: c.statusDeniedAmount,
+    }));
 
     // Check if user has SuperAdmin role at any clinic
     const hasSuperAdminRole = clinicRoles.some(cr => cr.role === 'SuperAdmin');
