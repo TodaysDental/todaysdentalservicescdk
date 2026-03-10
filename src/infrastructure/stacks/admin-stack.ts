@@ -255,6 +255,33 @@ export class AdminStack extends Stack {
     clinicCostTable.grantReadWriteData(clinicCostCrudFn);
 
     // ========================================
+    // CLINIC DAILY BUDGETS
+    // ========================================
+    const clinicBudgetTable = new dynamodb.Table(this, 'ClinicDailyBudgetTable', {
+      tableName: 'TodaysDentalInsights-ClinicDailyBudget',
+      partitionKey: { name: 'clinicName', type: dynamodb.AttributeType.STRING },
+      billingMode: dynamodb.BillingMode.PAY_PER_REQUEST,
+      removalPolicy: RemovalPolicy.RETAIN,
+    });
+    applyTags(clinicBudgetTable, { Table: 'clinic-budgets' });
+
+    const clinicBudgetCrudFn = new lambdaNode.NodejsFunction(this, 'ClinicBudgetCrudFn', {
+      entry: path.join(__dirname, '..', '..', 'services', 'clinic', 'budgetCrud.ts'),
+      handler: 'handler',
+      runtime: lambda.Runtime.NODEJS_20_X,
+      memorySize: 256,
+      timeout: Duration.seconds(10),
+      bundling: { format: lambdaNode.OutputFormat.ESM, target: 'node20' },
+      environment: {
+        CLINIC_BUDGET_TABLE: clinicBudgetTable.tableName,
+        CORS_ORIGIN: corsConfig.allowOrigins[0] || '*',
+      },
+    });
+    applyTags(clinicBudgetCrudFn, { Function: 'clinic-budgets-crud' });
+    clinicBudgetTable.grantReadWriteData(clinicBudgetCrudFn);
+
+
+    // ========================================
     // LAMBDA FUNCTIONS
     // ========================================
 
@@ -782,6 +809,32 @@ export class AdminStack extends Stack {
       authorizationType: apigw.AuthorizationType.CUSTOM,
     });
     clinicCostNameRes.addMethod('PUT', proxyIntegration, {
+      authorizer: this.authorizer,
+      authorizationType: apigw.AuthorizationType.CUSTOM,
+    });
+
+    // Map to custom domain with clinic-budget base path
+    new apigw.CfnBasePathMapping(this, 'ClinicBudgetBasePathMapping', {
+      domainName: props.apiDomainName ?? 'api.todaysdentalservices.com',
+      basePath: 'clinic-budget',
+      restApiId: this.api.restApiId,
+      stage: this.api.deploymentStage.stageName,
+    });
+
+    const clinicBudgetsRes = this.api.root.addResource('clinic-budgets');
+    const budgetIntegration = new apigw.LambdaIntegration(clinicBudgetCrudFn);
+
+    clinicBudgetsRes.addMethod('GET', budgetIntegration, {
+      authorizer: this.authorizer,
+      authorizationType: apigw.AuthorizationType.CUSTOM,
+    });
+
+    const clinicBudgetNameRes = clinicBudgetsRes.addResource('{clinicName}');
+    clinicBudgetNameRes.addMethod('GET', budgetIntegration, {
+      authorizer: this.authorizer,
+      authorizationType: apigw.AuthorizationType.CUSTOM,
+    });
+    clinicBudgetNameRes.addMethod('PUT', budgetIntegration, {
       authorizer: this.authorizer,
       authorizationType: apigw.AuthorizationType.CUSTOM,
     });
