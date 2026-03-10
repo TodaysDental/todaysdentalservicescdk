@@ -229,6 +229,32 @@ export class AdminStack extends Stack {
     });
 
     // ========================================
+    // CLINIC COSTS
+    // ========================================
+    const clinicCostTable = new dynamodb.Table(this, 'ClinicCostOfOperationTable', {
+      tableName: 'TodaysDentalInsights-ClinicCostOfOperation',
+      partitionKey: { name: 'clinicName', type: dynamodb.AttributeType.STRING },
+      billingMode: dynamodb.BillingMode.PAY_PER_REQUEST,
+      removalPolicy: RemovalPolicy.RETAIN,
+    });
+    applyTags(clinicCostTable, { Table: 'clinic-costs' });
+
+    const clinicCostCrudFn = new lambdaNode.NodejsFunction(this, 'ClinicCostCrudFn', {
+      entry: path.join(__dirname, '..', '..', 'services', 'clinic', 'costCrud.ts'),
+      handler: 'handler',
+      runtime: lambda.Runtime.NODEJS_20_X,
+      memorySize: 256,
+      timeout: Duration.seconds(10),
+      bundling: { format: lambdaNode.OutputFormat.ESM, target: 'node20' },
+      environment: {
+        CLINIC_COST_TABLE: clinicCostTable.tableName,
+        CORS_ORIGIN: corsConfig.allowOrigins[0] || '*',
+      },
+    });
+    applyTags(clinicCostCrudFn, { Function: 'clinic-costs-crud' });
+    clinicCostTable.grantReadWriteData(clinicCostCrudFn);
+
+    // ========================================
     // LAMBDA FUNCTIONS
     // ========================================
 
@@ -733,6 +759,32 @@ export class AdminStack extends Stack {
     // ========================================
     // API ROUTES
     // ========================================
+
+    // Map to custom domain with clinic-cost base path
+    new apigw.CfnBasePathMapping(this, 'ClinicCostBasePathMapping', {
+      domainName: props.apiDomainName ?? 'api.todaysdentalservices.com',
+      basePath: 'clinic-cost',
+      restApiId: this.api.restApiId,
+      stage: this.api.deploymentStage.stageName,
+    });
+
+    const clinicCostsRes = this.api.root.addResource('clinic-costs');
+    const proxyIntegration = new apigw.LambdaIntegration(clinicCostCrudFn);
+
+    clinicCostsRes.addMethod('GET', proxyIntegration, {
+      authorizer: this.authorizer,
+      authorizationType: apigw.AuthorizationType.CUSTOM,
+    });
+
+    const clinicCostNameRes = clinicCostsRes.addResource('{clinicName}');
+    clinicCostNameRes.addMethod('GET', proxyIntegration, {
+      authorizer: this.authorizer,
+      authorizationType: apigw.AuthorizationType.CUSTOM,
+    });
+    clinicCostNameRes.addMethod('PUT', proxyIntegration, {
+      authorizer: this.authorizer,
+      authorizationType: apigw.AuthorizationType.CUSTOM,
+    });
 
     // User management routes
     const registerRes = this.api.root.addResource('register');
