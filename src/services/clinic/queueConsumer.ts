@@ -34,11 +34,18 @@ const RCS_TEMPLATES_TABLE = process.env.RCS_TEMPLATES_TABLE || '';
 interface ScheduleTask {
   scheduleId: string;
   clinicId: string;
-  queryTemplate: string;
+  queryTemplate?: string;         // for legacy SMS / consent-form schedules
+  csvRecipients?: CsvRecipient[]; // for CSV-based email schedules
   templateMessage: string;
   notificationTypes: string[];
   timeZone: string;
   enqueuedAt: string;
+}
+
+interface CsvRecipient {
+  email: string;
+  firstName?: string;
+  lastName?: string;
 }
 
 interface ClinicCreds {
@@ -1051,10 +1058,94 @@ async function processConsentFormScheduleTask(args: {
   );
 }
 
+/**
+ * Process a CSV-based email schedule.
+ * Recipients come from the schedule record itself (csvRecipients[]).
+ * No OpenDental API or SFTP calls needed.
+ */
+async function processCsvScheduleTask(args: {
+  scheduleId: string;
+  clinicId: string;
+  csvRecipients: CsvRecipient[];
+  templateMessage: string;
+}): Promise<void> {
+  const { scheduleId, clinicId, csvRecipients, templateMessage } = args;
+
+  console.log(`[CSV Schedule] Processing schedule ${scheduleId} for clinic ${clinicId} with ${csvRecipients.length} recipients`);
+
+  // Fetch the email template
+  const template = await fetchTemplateByName(templateMessage);
+  if (!template) {
+    console.warn(`[CSV Schedule] Missing template for schedule ${scheduleId}: templateMessage=${templateMessage}`);
+    return;
+  }
+
+  const subject = String(template.email_subject || template.subject || templateMessage);
+  const htmlBody = String(template.email_body || template.html_body || '');
+
+  if (!htmlBody) {
+    console.warn(`[CSV Schedule] Template has no email body for schedule ${scheduleId}: templateMessage=${templateMessage}`);
+    return;
+  }
+
+  let emailsEnqueued = 0;
+  let skipped = 0;
+  const emailTasksToEnqueue: EmailQueueTask[] = [];
+
+  for (const recipient of csvRecipients) {
+    const email = String(recipient.email || '').trim();
+    if (!email || !email.includes('@')) {
+      skipped++;
+      continue;
+    }
+
+    emailTasksToEnqueue.push({
+      trackingId: '',
+      clinicId,
+      recipientEmail: email,
+      subject,
+      htmlBody,
+      textBody: undefined,
+      templateName: templateMessage,
+      scheduleId,
+    });
+
+    if (emailTasksToEnqueue.length >= SQS_BATCH_SIZE) {
+      await enqueueEmailBatch(emailTasksToEnqueue);
+      emailsEnqueued += emailTasksToEnqueue.length;
+      emailTasksToEnqueue.length = 0;
+    }
+  }
+
+  if (emailTasksToEnqueue.length > 0) {
+    await enqueueEmailBatch(emailTasksToEnqueue);
+    emailsEnqueued += emailTasksToEnqueue.length;
+  }
+
+  await markRanForClinic(scheduleId, clinicId);
+
+  console.log(
+    `[CSV Schedule] Completed schedule ${scheduleId} for clinic ${clinicId}: ` +
+    `${emailsEnqueued} emails enqueued, ${skipped} skipped (no valid email) ` +
+    `from ${csvRecipients.length} recipients`
+  );
+}
+
 async function processScheduleTask(task: ScheduleTask): Promise<void> {
   const { scheduleId, clinicId, queryTemplate, templateMessage, notificationTypes, timeZone } = task;
 
   console.log(`Processing schedule ${scheduleId} for clinic ${clinicId} (${timeZone})`);
+
+  // --- CSV-based recipients branch (no OpenDental/SFTP needed) ---
+  if (Array.isArray(task.csvRecipients) && task.csvRecipients.length > 0) {
+    await processCsvScheduleTask({
+      scheduleId,
+      clinicId,
+      csvRecipients: task.csvRecipients,
+      templateMessage,
+    });
+    return;
+  }
 
   // Determine types once (used for both fetching and sending)
   const normalizedTypes = (notificationTypes || []).map((t) => String(t).toUpperCase());
@@ -1071,7 +1162,7 @@ async function processScheduleTask(task: ScheduleTask): Promise<void> {
     normalizedTypes.includes('AI_VOICE');
 
   // Fetch the SQL query
-  const sql = await fetchQueryByName(queryTemplate);
+  const sql = await fetchQueryByName(queryTemplate || '');
   if (!sql) {
     console.warn(`Missing query for schedule ${scheduleId}: queryTemplate=${queryTemplate}`);
     return;
