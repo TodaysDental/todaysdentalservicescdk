@@ -229,15 +229,15 @@ export class AdminStack extends Stack {
     });
 
     // ========================================
-    // CLINIC COSTS
+    // CLINIC COSTS (import table from ClinicCostStack)
     // ========================================
-    const clinicCostTable = new dynamodb.Table(this, 'ClinicCostOfOperationTable', {
-      tableName: 'TodaysDentalInsights-ClinicCostOfOperation',
-      partitionKey: { name: 'clinicName', type: dynamodb.AttributeType.STRING },
-      billingMode: dynamodb.BillingMode.PAY_PER_REQUEST,
-      removalPolicy: RemovalPolicy.RETAIN,
-    });
-    applyTags(clinicCostTable, { Table: 'clinic-costs' });
+    // The ClinicCostStack owns and seeds this table — we import it here rather than
+    // creating a duplicate empty table.
+    const clinicCostTable = dynamodb.Table.fromTableName(
+      this,
+      'ClinicCostOfOperationTableImport',
+      'TodaysDentalInsightsClinicCostN1-ClinicCostOfOperation'
+    );
 
     const clinicCostCrudFn = new lambdaNode.NodejsFunction(this, 'ClinicCostCrudFn', {
       entry: path.join(__dirname, '..', '..', 'services', 'clinic', 'costCrud.ts'),
@@ -255,15 +255,15 @@ export class AdminStack extends Stack {
     clinicCostTable.grantReadWriteData(clinicCostCrudFn);
 
     // ========================================
-    // CLINIC DAILY BUDGETS
+    // CLINIC DAILY BUDGETS (import table from ClinicBudgetStack)
     // ========================================
-    const clinicBudgetTable = new dynamodb.Table(this, 'ClinicDailyBudgetTable', {
-      tableName: 'TodaysDentalInsights-ClinicDailyBudget',
-      partitionKey: { name: 'clinicName', type: dynamodb.AttributeType.STRING },
-      billingMode: dynamodb.BillingMode.PAY_PER_REQUEST,
-      removalPolicy: RemovalPolicy.RETAIN,
-    });
-    applyTags(clinicBudgetTable, { Table: 'clinic-budgets' });
+    // The ClinicBudgetStack owns and seeds this table — we import it here rather than
+    // creating a duplicate empty table.
+    const clinicBudgetTable = dynamodb.Table.fromTableName(
+      this,
+      'ClinicDailyBudgetTableImport',
+      'TodaysDentalInsightsClinicBudgetN1-ClinicDailyBudget'
+    );
 
     const clinicBudgetCrudFn = new lambdaNode.NodejsFunction(this, 'ClinicBudgetCrudFn', {
       entry: path.join(__dirname, '..', '..', 'services', 'clinic', 'budgetCrud.ts'),
