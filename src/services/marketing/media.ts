@@ -200,13 +200,32 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
       }
 
       // Fetch bytes server-side (no browser CORS limitations)
-      const resp = await axios.get<ArrayBuffer>(url, {
-        responseType: 'arraybuffer',
-        timeout: 15000,
-        maxContentLength: 10 * 1024 * 1024, // 10MB
-        maxBodyLength: 10 * 1024 * 1024,
-        validateStatus: (s) => s >= 200 && s < 300,
-      });
+      let resp;
+      try {
+        resp = await axios.get<ArrayBuffer>(url, {
+          responseType: 'arraybuffer',
+          timeout: 15000,
+          maxContentLength: 10 * 1024 * 1024, // 10MB
+          maxBodyLength: 10 * 1024 * 1024,
+          validateStatus: (s) => s >= 200 && s < 300,
+        });
+      } catch (fetchErr: any) {
+        const upstreamStatus = fetchErr?.response?.status || 0;
+        console.error('[media/import] Failed to fetch source URL:', {
+          url,
+          status: upstreamStatus,
+          message: fetchErr?.message,
+        });
+        return {
+          statusCode: 502,
+          headers: corsHeaders,
+          body: JSON.stringify({
+            success: false,
+            error: `Failed to fetch source URL (${upstreamStatus || 'network error'}): ${fetchErr?.message || 'Unknown error'}`,
+            sourceUrl: url,
+          }),
+        };
+      }
 
       const contentType = String(resp.headers?.['content-type'] || 'application/octet-stream');
       const extension = inferExtensionFromContentType(contentType);
@@ -227,12 +246,39 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
       const publicUrl = `https://${MEDIA_BUCKET}.s3.us-east-1.amazonaws.com/${s3Key}`;
 
       // Upload directly (no presigned URL required)
-      await s3.send(new PutObjectCommand({
-        Bucket: MEDIA_BUCKET,
-        Key: s3Key,
-        Body: buffer,
-        ContentType: contentType,
-      }));
+      try {
+        await s3.send(new PutObjectCommand({
+          Bucket: MEDIA_BUCKET,
+          Key: s3Key,
+          Body: buffer,
+          ContentType: contentType,
+        }));
+      } catch (s3Err: any) {
+        console.error('[media/import] Failed to upload to S3:', {
+          bucket: MEDIA_BUCKET,
+          key: s3Key,
+          message: s3Err?.message,
+        });
+        return {
+          statusCode: 500,
+          headers: corsHeaders,
+          body: JSON.stringify({
+            success: false,
+            error: `Failed to upload to S3: ${s3Err?.message || 'Unknown error'}`,
+          }),
+        };
+      }
+
+      // Generate a presigned GET URL for immediate display (7 days)
+      let signedUrl = publicUrl;
+      try {
+        signedUrl = await getSignedUrl(s3Presign, new GetObjectCommand({
+          Bucket: MEDIA_BUCKET,
+          Key: s3Key,
+        }), { expiresIn: 604800 });
+      } catch {
+        // fallback to publicUrl
+      }
 
       // Save metadata to DynamoDB so it's visible in media library
       await ddb.send(new PutCommand({
@@ -268,6 +314,7 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
             fileName: finalFileName,
             mimeType: contentType,
             publicUrl,
+            signedUrl,
             s3Key,
             clinicIds: clinicId ? [clinicId] : [],
             sourceUrl: url,

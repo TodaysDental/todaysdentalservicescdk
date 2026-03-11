@@ -170,13 +170,26 @@ export class MarketingStack extends Stack {
     // ============================================
     // 2. S3 Bucket for Media Storage
     // ============================================
-    // Bucket already exists in AWS — import it so CDK can grant IAM permissions
-    // without attempting to re-create it (which would fail with a name conflict).
-    this.mediaBucket = s3.Bucket.fromBucketName(
-      this,
-      'MarketingMediaBucket',
-      'todaysdentalinsights-marketing-media',
-    ) as s3.Bucket;
+    // CDK-managed bucket with CORS configured for browser-based pre-signed URL uploads.
+    this.mediaBucket = new s3.Bucket(this, 'MarketingMediaBucketV2', {
+      bucketName: 'tds-marketing-media',
+      removalPolicy: RemovalPolicy.RETAIN,
+      blockPublicAccess: s3.BlockPublicAccess.BLOCK_ALL,
+      cors: [
+        {
+          allowedHeaders: ['*'],
+          allowedMethods: [
+            s3.HttpMethods.GET,
+            s3.HttpMethods.PUT,
+            s3.HttpMethods.POST,
+            s3.HttpMethods.HEAD,
+          ],
+          allowedOrigins: ALLOWED_ORIGINS_LIST,
+          exposedHeaders: ['ETag', 'x-amz-request-id'],
+          maxAge: 3600,
+        },
+      ],
+    });
 
     // ============================================
     // 3. API Gateway
