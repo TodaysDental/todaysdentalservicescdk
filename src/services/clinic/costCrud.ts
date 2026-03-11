@@ -76,11 +76,7 @@ async function getCost(event: APIGatewayProxyEvent, userPerms: UserPermissions, 
         Key: { clinicName: decodedClinicName }
     }));
 
-    if (!resp.Item) {
-        return err(404, `Cost data for clinic '${decodedClinicName}' not found`, event);
-    }
-
-    return ok({ item: resp.Item }, event);
+    return ok({ item: resp.Item ?? null }, event);
 }
 
 /**

@@ -25,6 +25,8 @@ import { ItTicketStack } from './stacks/it-ticket-stack';
 import { ConnectLexAiStack } from './stacks/connect-lex-ai-stack';
 import { AnalyticsStack } from './stacks/analytics-stack';
 import { PushNotificationsStack } from './stacks/push-notifications-stack';
+import { ClinicBudgetStack } from './stacks/clinic-budget-stack';
+import { ClinicCostStack } from './stacks/clinic-cost-stack';
 
 // Import clinic config for AI phone number mapping (used by Connect/Lex stack)
 import clinicConfigData from './configs/clinic-config.json';
@@ -588,3 +590,15 @@ const leaseManagementStack = new LeaseManagementStack(app, 'TodaysDentalInsights
   apiDomainName: coreStack.customDomain.domainName,
 });
 leaseManagementStack.addDependency(coreStack);
+
+// ========================================
+// CLINIC BUDGET STACK
+// ========================================
+const clinicBudgetStack = new ClinicBudgetStack(app, 'TodaysDentalInsightsClinicBudgetN1', { env });
+clinicBudgetStack.addDependency(coreStack); // imports AuthorizerFunctionArnS1
+
+// ========================================
+// CLINIC COST STACK
+// ========================================
+const clinicCostStack = new ClinicCostStack(app, 'TodaysDentalInsightsClinicCostN1', { env });
+clinicCostStack.addDependency(coreStack); // imports AuthorizerFunctionArnS1

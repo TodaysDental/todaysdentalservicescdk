@@ -76,11 +76,7 @@ async function getBudget(event: APIGatewayProxyEvent, userPerms: UserPermissions
         Key: { clinicName: decodedClinicName }
     }));
 
-    if (!resp.Item) {
-        return err(404, `Budget data for clinic '${decodedClinicName}' not found`, event);
-    }
-
-    return ok({ item: resp.Item }, event);
+    return ok({ item: resp.Item ?? null }, event);
 }
 
 /**
