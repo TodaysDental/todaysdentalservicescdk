@@ -271,13 +271,8 @@ export class ClinicCostStack extends Stack {
         // ========================================
         // DOMAIN MAPPING
         // ========================================
-
-        new apigw.CfnBasePathMapping(this, 'ClinicCostApiBasePathMapping', {
-            domainName: 'apig.todaysdentalinsights.com',
-            basePath: 'clinic-cost',
-            restApiId: this.api.restApiId,
-            stage: this.api.deploymentStage.stageName,
-        });
+        // NOTE: The clinic-cost base path mapping is owned by the AdminN1 stack.
+        // Do NOT create a duplicate CfnBasePathMapping here.
 
         // ========================================
         // OUTPUTS
@@ -290,7 +285,7 @@ export class ClinicCostStack extends Stack {
         });
 
         new CfnOutput(this, 'ClinicCostApiUrl', {
-            value: 'https://apig.todaysdentalinsights.com/clinic-cost/',
+            value: 'https://api.todaysdentalservices.com/clinic-cost/',
             description: 'Clinic Cost API Gateway URL',
             exportName: `${Stack.of(this).stackName}-ClinicCostApiUrl`,
         });
