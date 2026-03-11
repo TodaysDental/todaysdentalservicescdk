@@ -45,6 +45,8 @@ const STATIC_ALLOWED_ORIGIN_INPUTS: unknown[] = [
   'https://dr.shamtoub.todaysdentalservices.com',
   'https://www.canarsiefamilydentistry.com',
   'https://canarsiefamilydentistry.com',
+  // Local development
+  'http://localhost:3000',
   ...(clinicsData as any[]).map(c => c.websiteLink).filter(Boolean),
   ...(clinicsData as any[]).map(c => c.wwwUrl).filter(Boolean),
 ];
@@ -80,6 +82,8 @@ export async function getAllowedOriginsAsync(): Promise<string[]> {
       'https://dr.shamtoub.todaysdentalservices.com',
       'https://www.canarsiefamilydentistry.com',
       'https://canarsiefamilydentistry.com',
+      // Local development
+      'http://localhost:3000',
       ...configs.map((c: ClinicConfig) => c.websiteLink).filter(Boolean),
       ...configs.map((c: ClinicConfig) => (c as any).wwwUrl).filter(Boolean),
     ];
