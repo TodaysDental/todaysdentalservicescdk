@@ -198,34 +198,8 @@ export class ClinicBudgetStack extends Stack {
         // ========================================
 
         const initialData = [
-            { clinicName: 'Cayce', dailyBudget: 6570 },
-            { clinicName: 'Lexington', dailyBudget: 3740 },
-            { clinicName: 'Greenville', dailyBudget: 3730 },
-            { clinicName: 'Alexandria', dailyBudget: 1880 },
-            { clinicName: 'West Columbia', dailyBudget: 2820 },
-            { clinicName: 'Saludapointe', dailyBudget: 4420 },
-            { clinicName: 'Bowie', dailyBudget: 2440 },
-            { clinicName: 'Lawrenceville', dailyBudget: 2450 },
-            { clinicName: 'Perrysburg', dailyBudget: 2540 },
-            { clinicName: 'Concord', dailyBudget: 2920 },
-            { clinicName: 'Oregon', dailyBudget: 2630 },
-            { clinicName: 'Powell', dailyBudget: 2740 },
-            { clinicName: 'Edgewater', dailyBudget: 2160 },
-            { clinicName: 'Stillwater', dailyBudget: 6800 },
-            { clinicName: 'New Greenville', dailyBudget: 2730 },
-            { clinicName: 'Louisville', dailyBudget: 41440 },
-            { clinicName: 'New Britain', dailyBudget: 1820 },
-            { clinicName: 'Bloomingdale', dailyBudget: 3107.40 },
-            { clinicName: 'Meadows', dailyBudget: 2410 },
-            { clinicName: 'Winston', dailyBudget: 2300 },
-            { clinicName: 'Austin', dailyBudget: 59560 },
-            { clinicName: 'Vernon Hills', dailyBudget: 2300 },
-            { clinicName: 'San Antonio / RIM Dental', dailyBudget: 3240 },
-            { clinicName: 'Mesquite / Creek Crossing', dailyBudget: 2420 },
-            { clinicName: 'Reno', dailyBudget: 2200 },
-            { clinicName: 'Centennial', dailyBudget: 3500 },
-            { clinicName: 'Pearland', dailyBudget: 6800 },
             { clinicName: 'Dentistry at Kew Gardens', dailyBudget: 0 },
+            { clinicName: 'Canarsie Family Dentistry', dailyBudget: 0 },
         ];
 
         const seederFn = new lambdaNode.NodejsFunction(this, 'ClinicBudgetSeederFn', {

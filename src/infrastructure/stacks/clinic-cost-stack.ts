@@ -198,34 +198,8 @@ export class ClinicCostStack extends Stack {
         // ========================================
 
         const initialData = [
-            { clinicName: 'Cayce', costPerDay: 7299.37 },
-            { clinicName: 'Lexington', costPerDay: 4155.52 },
-            { clinicName: 'Greenville', costPerDay: 4149.97 },
-            { clinicName: 'Alexandria', costPerDay: 2091.44 },
-            { clinicName: 'West Columbia', costPerDay: 3134.86 },
-            { clinicName: 'Saludapointe', costPerDay: 4912.68 },
-            { clinicName: 'Bowie', costPerDay: 2710.88 },
-            { clinicName: 'Lawrenceville', costPerDay: 2719.39 },
-            { clinicName: 'Perrysburg', costPerDay: 2816.72 },
-            { clinicName: 'Concord', costPerDay: 3246.02 },
-            { clinicName: 'Oregon', costPerDay: 2923.71 },
-            { clinicName: 'Powell', costPerDay: 3046.59 },
-            { clinicName: 'Edgewater', costPerDay: 2401.23 },
-            { clinicName: 'Stillwater', costPerDay: 7552.54 },
-            { clinicName: 'New Greenville', costPerDay: 3031.37 },
-            { clinicName: 'Louisville', costPerDay: 46040.81 },
-            { clinicName: 'New Britain', costPerDay: 2022.54 },
-            { clinicName: 'Bloomingdale', costPerDay: 3107.40 },
-            { clinicName: 'Meadows', costPerDay: 2675.44 },
-            { clinicName: 'Winston', costPerDay: 2557.19 },
-            { clinicName: 'Austin', costPerDay: 66176.03 },
-            { clinicName: 'Vernon Hills', costPerDay: 2558.33 },
-            { clinicName: 'San Antonio / RIM Dental', costPerDay: 3601.04 },
-            { clinicName: 'Mesquite / Creek Crossing', costPerDay: 2687.88 },
-            { clinicName: 'Reno', costPerDay: 2441.95 },
-            { clinicName: 'Centennial', costPerDay: 3886.79 },
-            { clinicName: 'Pearland', costPerDay: 7559.22 },
             { clinicName: 'Dentistry at Kew Gardens', costPerDay: 0 },
+            { clinicName: 'Canarsie Family Dentistry', costPerDay: 0 },
         ];
 
         const seederFn = new lambdaNode.NodejsFunction(this, 'ClinicCostSeederFn', {
@@ -252,7 +226,7 @@ export class ClinicCostStack extends Stack {
             serviceToken: seederProvider.serviceToken,
             properties: {
                 // Change this value to trigger re-seeding
-                version: '1.1.0',
+                version: '1.2.0',
             },
         });
 
