@@ -130,7 +130,7 @@ export class ClinicCostStack extends Stack {
         });
 
         // Import the authorizer function ARN from CoreStack's export
-        const authorizerFunctionArn = Fn.importValue('AuthorizerFunctionArnS1');
+        const authorizerFunctionArn = Fn.importValue('AuthorizerFunctionArnN1');
         const authorizerFn = lambda.Function.fromFunctionArn(this, 'ImportedAuthorizerFn', authorizerFunctionArn);
 
         // Create authorizer for this stack's API
