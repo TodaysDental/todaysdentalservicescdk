@@ -269,16 +269,9 @@ export class ClinicBudgetStack extends Stack {
 
         createDynamoThrottleAlarm(this.clinicBudgetTable.tableName, 'ClinicBudgetTable');
 
-        // ========================================
-        // DOMAIN MAPPING
-        // ========================================
-
-        new apigw.CfnBasePathMapping(this, 'ClinicBudgetApiBasePathMapping', {
-            domainName: 'apig.todaysdentalinsights.com',
-            basePath: 'clinic-budget',
-            restApiId: this.api.restApiId,
-            stage: this.api.deploymentStage.stageName,
-        });
+        // NOTE: The clinic-budget base path mapping is owned by the AdminStack
+        // (admin-stack.ts line ~817). Do NOT duplicate it here or CloudFormation
+        // will fail with a ResourceExistenceCheck conflict.
 
         // ========================================
         // OUTPUTS
@@ -291,7 +284,7 @@ export class ClinicBudgetStack extends Stack {
         });
 
         new CfnOutput(this, 'ClinicBudgetApiUrl', {
-            value: 'https://apig.todaysdentalinsights.com/clinic-budget/',
+            value: 'https://api.todaysdentalservices.com/clinic-budget/',
             description: 'Clinic Budget API Gateway URL',
             exportName: `${Stack.of(this).stackName}-ClinicBudgetApiUrl`,
         });
