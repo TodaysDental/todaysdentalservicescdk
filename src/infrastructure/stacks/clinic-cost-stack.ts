@@ -225,6 +225,7 @@ export class ClinicCostStack extends Stack {
             { clinicName: 'Reno', costPerDay: 2441.95 },
             { clinicName: 'Centennial', costPerDay: 3886.79 },
             { clinicName: 'Pearland', costPerDay: 7559.22 },
+            { clinicName: 'Dentistry at Kew Gardens', costPerDay: 0 },
         ];
 
         const seederFn = new lambdaNode.NodejsFunction(this, 'ClinicCostSeederFn', {
@@ -251,7 +252,7 @@ export class ClinicCostStack extends Stack {
             serviceToken: seederProvider.serviceToken,
             properties: {
                 // Change this value to trigger re-seeding
-                version: '1.0.0',
+                version: '1.1.0',
             },
         });
 
