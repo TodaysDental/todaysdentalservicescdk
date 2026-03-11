@@ -100,6 +100,7 @@ export class ClinicCostStack extends Stack {
                 allowOrigins: corsConfig.allowOrigins,
                 allowHeaders: corsConfig.allowHeaders,
                 allowMethods: corsConfig.allowMethods,
+                allowCredentials: true,
             },
             deployOptions: {
                 stageName: 'prod',
