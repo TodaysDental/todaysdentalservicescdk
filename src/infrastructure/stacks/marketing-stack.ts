@@ -10,6 +10,7 @@ import * as iam from 'aws-cdk-lib/aws-iam';
 import * as events from 'aws-cdk-lib/aws-events';
 import * as targets from 'aws-cdk-lib/aws-events-targets';
 import { getCdkCorsConfig, getCorsErrorHeaders, ALLOWED_ORIGINS_LIST } from '../../shared/utils/cors';
+import * as cr from 'aws-cdk-lib/custom-resources';
 
 export interface MarketingStackProps extends StackProps {
   authorizerFunctionArn: string;
@@ -539,7 +540,17 @@ export class MarketingStack extends Stack {
 
     // Media Lambda permissions
     this.marketingMediaTable.grantReadWriteData(mediaFn);
-    this.mediaBucket.grantReadWrite(mediaFn);
+    // Use explicit IAM PolicyStatement instead of grantReadWrite() because
+    // the bucket is imported via fromBucketName(). grantReadWrite() on an
+    // imported bucket only adds an identity policy but cannot add a resource-based
+    // bucket policy — so S3 still denies writes with "no resource-based policy allows".
+    mediaFn.addToRolePolicy(new iam.PolicyStatement({
+      actions: ['s3:GetObject', 's3:PutObject', 's3:DeleteObject', 's3:ListBucket'],
+      resources: [
+        `arn:aws:s3:::${this.mediaBucket.bucketName}`,
+        `arn:aws:s3:::${this.mediaBucket.bucketName}/*`,
+      ],
+    }));
 
     // Webhooks Lambda permissions
     this.marketingProfilesTable.grantReadData(webhooksFn);
@@ -570,7 +581,13 @@ export class MarketingStack extends Stack {
 
     // Templates Lambda permissions
     designTemplatesTable.grantReadWriteData(templatesFn);
-    this.mediaBucket.grantReadWrite(templatesFn);
+    templatesFn.addToRolePolicy(new iam.PolicyStatement({
+      actions: ['s3:GetObject', 's3:PutObject', 's3:DeleteObject', 's3:ListBucket'],
+      resources: [
+        `arn:aws:s3:::${this.mediaBucket.bucketName}`,
+        `arn:aws:s3:::${this.mediaBucket.bucketName}/*`,
+      ],
+    }));
 
     // Ads Lambda permissions
     this.marketingProfilesTable.grantReadData(adsFn);
@@ -586,7 +603,13 @@ export class MarketingStack extends Stack {
     metaAdCampaignsTable.grantReadWriteData(adsFn);
 
     // Image Generator Lambda permissions
-    this.mediaBucket.grantReadWrite(imageGeneratorFn);
+    imageGeneratorFn.addToRolePolicy(new iam.PolicyStatement({
+      actions: ['s3:GetObject', 's3:PutObject', 's3:DeleteObject', 's3:ListBucket'],
+      resources: [
+        `arn:aws:s3:::${this.mediaBucket.bucketName}`,
+        `arn:aws:s3:::${this.mediaBucket.bucketName}/*`,
+      ],
+    }));
 
     // Grant access to Images Stack bucket if specified
     if (props.imagesBucketName) {

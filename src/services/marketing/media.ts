@@ -12,6 +12,14 @@ const ddb = DynamoDBDocumentClient.from(new DynamoDBClient({}), {
   marshallOptions: { removeUndefinedValues: true }
 });
 const s3 = new S3Client({});
+// Separate S3 client for pre-signed URL generation.
+// The default S3 client auto-injects x-amz-checksum-crc32=AAAAAA== (a zeroed placeholder)
+// into pre-signed URLs when the bucket has checksum requirements. When the browser then
+// PUTs a real file, S3 rejects it with 403 because the real CRC32 doesn't match zero.
+// Disabling requestChecksumCalculation removes the checksum from the signed URL entirely.
+const s3Presign = new S3Client({
+  requestChecksumCalculation: 'WHEN_REQUIRED',
+});
 const MEDIA_TABLE = process.env.MARKETING_MEDIA_TABLE!;
 const MEDIA_BUCKET = process.env.MEDIA_BUCKET!;
 const API_KEY = process.env.AYRSHARE_API_KEY!;
@@ -20,8 +28,10 @@ const API_KEY = process.env.AYRSHARE_API_KEY!;
 let allowedHostsCache: Set<string> | null = null;
 async function getAllowedHosts(): Promise<Set<string>> {
   if (allowedHostsCache) return allowedHostsCache;
-  const origins = await getAllowedOriginsAsync();
   const hosts = new Set<string>();
+
+  // 1. Add all CORS-allowed origins
+  const origins = await getAllowedOriginsAsync();
   for (const origin of origins) {
     try {
       const u = new URL(origin);
@@ -30,6 +40,8 @@ async function getAllowedHosts(): Promise<Set<string>> {
       // Ignore invalid origins
     }
   }
+
+  allowedHostsCache = hosts;
   return hosts;
 }
 
@@ -72,7 +84,7 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
       // Determine file type
       const detectedFileType = mimeType.startsWith('video/') ? 'video' : 'image';
       const s3Key = `uploads/${mediaId}/${fileName}`;
-      const publicUrl = `https://${MEDIA_BUCKET}.s3.amazonaws.com/${s3Key}`;
+      const publicUrl = `https://${MEDIA_BUCKET}.s3.us-east-1.amazonaws.com/${s3Key}`;
 
       // Create presigned URL for upload
       const putCommand = new PutObjectCommand({
@@ -81,7 +93,13 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
         ContentType: mimeType
       });
 
-      const presignedUrl = await getSignedUrl(s3, putCommand, { expiresIn: 3600 });
+      const presignedUrl = await getSignedUrl(s3Presign, putCommand, { expiresIn: 3600 });
+
+      // Also generate a presigned GET URL for immediate display (7 days)
+      const signedUrl = await getSignedUrl(s3Presign, new GetObjectCommand({
+        Bucket: MEDIA_BUCKET,
+        Key: s3Key,
+      }), { expiresIn: 604800 }); // 7 days
 
       // Save metadata to DynamoDB
       await ddb.send(new PutCommand({
@@ -116,6 +134,7 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
             fileType: fileType || detectedFileType,
             mimeType,
             publicUrl,
+            signedUrl,      // use this to display the image — publicUrl is private
             uploadUrl: presignedUrl,
             uploadedBy,
             uploadedAt,
@@ -205,7 +224,7 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
         ? `clinic-logos/${safeClinicId}/${finalFileName}`
         : `imports/${mediaId}/${finalFileName}`;
 
-      const publicUrl = `https://${MEDIA_BUCKET}.s3.amazonaws.com/${s3Key}`;
+      const publicUrl = `https://${MEDIA_BUCKET}.s3.us-east-1.amazonaws.com/${s3Key}`;
 
       // Upload directly (no presigned URL required)
       await s3.send(new PutObjectCommand({
@@ -307,6 +326,25 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
       const scanRes = await ddb.send(new ScanCommand(scanParams));
       const media = scanRes.Items || [];
 
+      // Generate fresh presigned GET URLs for all items (7-day expiry)
+      // The bucket has Block Public Access enabled, so direct publicUrls return 403.
+      const mediaWithSignedUrls = await Promise.all(
+        media.map(async (m) => {
+          let signedUrl = m.publicUrl; // fallback
+          if (m.s3Key) {
+            try {
+              signedUrl = await getSignedUrl(s3Presign, new GetObjectCommand({
+                Bucket: MEDIA_BUCKET,
+                Key: m.s3Key,
+              }), { expiresIn: 604800 });
+            } catch {
+              // keep fallback
+            }
+          }
+          return { ...m, signedUrl };
+        })
+      );
+
       let paginationToken = null;
       if (scanRes.LastEvaluatedKey) {
         paginationToken = Buffer.from(JSON.stringify(scanRes.LastEvaluatedKey)).toString('base64');
@@ -321,12 +359,13 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
         headers: corsHeaders,
         body: JSON.stringify({
           success: true,
-          media: media.map(m => ({
+          media: mediaWithSignedUrls.map((m: any) => ({
             mediaId: m.mediaId,
             fileName: m.fileName,
             fileType: m.fileType,
             publicUrl: m.publicUrl,
-            thumbnailUrl: m.thumbnailUrl || m.publicUrl,
+            signedUrl: m.signedUrl,  // use this to display images (bucket is private)
+            thumbnailUrl: m.signedUrl || m.publicUrl,
             dimensions: m.dimensions,
             fileSize: m.fileSize,
             uploadedBy: m.uploadedBy,
@@ -421,8 +460,8 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
         ContentType: fileType
       });
 
-      const uploadUrl = await getSignedUrl(s3, putCommand, { expiresIn: 3600 });
-      const fileUrl = `https://${MEDIA_BUCKET}.s3.amazonaws.com/${key}`;
+      const uploadUrl = await getSignedUrl(s3Presign, putCommand, { expiresIn: 3600 });
+      const fileUrl = `https://${MEDIA_BUCKET}.s3.us-east-1.amazonaws.com/${key}`;
 
       return {
         statusCode: 200,
