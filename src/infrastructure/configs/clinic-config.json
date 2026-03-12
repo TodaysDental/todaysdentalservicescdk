@@ -45,8 +45,8 @@
             }
         },
         "ayrshare": {
-            "enabled": false,
-            "connectedPlatforms": [],
+            "enabled": true,
+            "connectedPlatforms": ["instagram", "twitter"],
             "facebook": {
                 "connected": false,
                 "pageId": "",
