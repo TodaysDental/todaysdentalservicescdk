@@ -1,4 +1,4 @@
-﻿import { DynamoDBClient } from '@aws-sdk/client-dynamodb';
+import { DynamoDBClient } from '@aws-sdk/client-dynamodb';
 import {
   DynamoDBDocumentClient,
   ScanCommand,
@@ -87,14 +87,21 @@ const getCorsHeaders = (event: APIGatewayProxyEvent) => buildCorsHeaders({}, eve
  */
 export const AVAILABLE_MODELS = [
   // ========================================
-  // ðŸ§  ANTHROPIC CLAUDE FAMILY
+  // 🧠 ANTHROPIC CLAUDE FAMILY
   // ========================================
+  {
+    id: 'us.anthropic.claude-sonnet-4-6',
+    name: 'Claude Sonnet 4.6',
+    provider: 'Anthropic',
+    description: 'Latest Sonnet — top-tier reasoning and speed',
+    recommended: true,
+  },
   {
     id: 'us.anthropic.claude-sonnet-4-5-20250929-v1:0',
     name: 'Claude Sonnet 4.5',
     provider: 'Anthropic',
-    description: 'Latest Claude - powerful text generation, reasoning, and summarization',
-    recommended: true,
+    description: 'Powerful text generation, reasoning, and summarization',
+    recommended: false,
   },
   {
     id: 'us.anthropic.claude-sonnet-4-20250514-v1:0',
@@ -104,38 +111,66 @@ export const AVAILABLE_MODELS = [
     recommended: false,
   },
   {
+    id: 'us.anthropic.claude-opus-4-6-v1',
+    name: 'Claude Opus 4.6',
+    provider: 'Anthropic',
+    description: 'Latest Opus — deep reasoning and complex tasks',
+    recommended: false,
+  },
+  {
+    id: 'us.anthropic.claude-opus-4-5-20251101-v1:0',
+    name: 'Claude Opus 4.5',
+    provider: 'Anthropic',
+    description: 'Advanced reasoning with extended thinking',
+    recommended: false,
+  },
+  {
+    id: 'us.anthropic.claude-opus-4-1-20250805-v1:0',
+    name: 'Claude Opus 4.1',
+    provider: 'Anthropic',
+    description: 'Complex problem solving and analysis',
+    recommended: false,
+  },
+  {
     id: 'us.anthropic.claude-opus-4-20250514-v1:0',
     name: 'Claude Opus 4',
     provider: 'Anthropic',
-    description: 'Complex problem solving and deep reasoning',
+    description: 'Complex problem solving and deep reasoning (LEGACY)',
+    recommended: false,
+  },
+  {
+    id: 'us.anthropic.claude-haiku-4-5-20251001-v1:0',
+    name: 'Claude Haiku 4.5',
+    provider: 'Anthropic',
+    description: 'Fast and smart — great for high-volume tasks',
+    recommended: true,
+  },
+  {
+    id: 'us.anthropic.claude-3-5-haiku-20241022-v1:0',
+    name: 'Claude 3.5 Haiku',
+    provider: 'Anthropic',
+    description: 'Fast and efficient (cross-region inference)',
     recommended: false,
   },
   {
     id: 'us.anthropic.claude-3-7-sonnet-20250219-v1:0',
     name: 'Claude 3.7 Sonnet',
     provider: 'Anthropic',
-    description: 'Optimized for broad use with strong capabilities (cross-region)',
+    description: 'Broad capabilities with strong reasoning (LEGACY)',
     recommended: false,
   },
   {
     id: 'us.anthropic.claude-3-5-sonnet-20241022-v2:0',
     name: 'Claude 3.5 Sonnet v2',
     provider: 'Anthropic',
-    description: 'Best balance of intelligence and speed (cross-region inference)',
+    description: 'Balance of intelligence and speed (LEGACY)',
     recommended: false,
-  },
-  {
-    id: 'us.anthropic.claude-3-5-haiku-20241022-v1:0',
-    name: 'Claude 3.5 Haiku',
-    provider: 'Anthropic',
-    description: 'Fast and efficient for simple tasks (cross-region inference)',
-    recommended: true,
   },
   {
     id: 'anthropic.claude-3-sonnet-20240229-v1:0',
     name: 'Claude 3 Sonnet',
     provider: 'Anthropic',
-    description: 'Previous generation - stable and reliable',
+    description: 'Previous generation — stable and reliable (LEGACY)',
     recommended: false,
   },
   {
@@ -146,7 +181,7 @@ export const AVAILABLE_MODELS = [
     recommended: false,
   },
   // ========================================
-  // ðŸ˜ AMAZON NOVA SERIES
+  // 🐘 AMAZON NOVA SERIES
   // ========================================
   {
     id: 'amazon.nova-micro-v1:0',
@@ -274,7 +309,7 @@ export type ModelId = (typeof AVAILABLE_MODELS)[number]['id'];
 // PERFORMANCE: Use Claude 3.5 Haiku with cross-region inference profile for best latency/quality.
 // The 'us.' prefix enables system-defined inference profiles (required for Claude 3.5 models).
 // Alternative: 'amazon.nova-micro-v1:0' for ultra-low latency (but less capable).
-const DEFAULT_VOICE_MODEL_ID: ModelId = 'us.anthropic.claude-3-5-haiku-20241022-v1:0';
+const DEFAULT_VOICE_MODEL_ID: ModelId = 'us.anthropic.claude-haiku-4-5-20251001-v1:0';
 
 /**
  * Normalize model IDs to use cross-region inference profiles where required.

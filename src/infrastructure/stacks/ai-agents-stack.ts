@@ -1,4 +1,4 @@
-import { Duration, Stack, StackProps, CfnOutput, RemovalPolicy, Fn, Tags } from 'aws-cdk-lib';
+import { Duration, Stack, StackProps, CfnOutput, RemovalPolicy, Fn, Tags, CustomResource } from 'aws-cdk-lib';
 import { Construct } from 'constructs';
 import * as path from 'path';
 import * as lambda from 'aws-cdk-lib/aws-lambda';
@@ -926,6 +926,60 @@ export class AiAgentsStack extends Stack {
       ],
       resources: ['*'],
     }));
+
+    // ========================================
+    // AUTO-ENABLE BEDROCK MODELS (Custom Resource)
+    // ========================================
+    // Newer third-party models (Anthropic Claude 3.5+, Meta Llama, etc.) require 
+    // an AWS Marketplace subscription to be activated on first use.
+    // This Custom Resource Lambda invokes each model once during deployment
+    // to trigger the auto-subscription. Zero cost — pay-as-you-go only.
+
+    const enableModelsFn = new lambdaNode.NodejsFunction(this, 'EnableModelsFn', {
+      entry: path.join(__dirname, '..', '..', 'services', 'ai-agents', 'enable-models-handler.ts'),
+      handler: 'handler',
+      runtime: lambda.Runtime.NODEJS_22_X,
+      memorySize: 512,
+      timeout: Duration.minutes(5), // Each model invocation is fast, but we have ~20+ models
+      bundling: { format: lambdaNode.OutputFormat.CJS, target: 'node22' },
+    });
+    applyTags(enableModelsFn, { Function: 'enable-models' });
+
+    // Grant permissions to invoke models and auto-subscribe via Marketplace
+    enableModelsFn.addToRolePolicy(new iam.PolicyStatement({
+      effect: iam.Effect.ALLOW,
+      actions: [
+        'bedrock:InvokeModel',
+        'bedrock:InvokeModelWithResponseStream',
+        'bedrock:GetFoundationModel',
+        'bedrock:ListFoundationModels',
+        'bedrock:GetInferenceProfile',
+        'bedrock:ListInferenceProfiles',
+      ],
+      resources: ['*'],
+    }));
+
+    enableModelsFn.addToRolePolicy(new iam.PolicyStatement({
+      effect: iam.Effect.ALLOW,
+      actions: [
+        'aws-marketplace:Subscribe',
+        'aws-marketplace:Unsubscribe',
+        'aws-marketplace:ViewSubscriptions',
+      ],
+      resources: ['*'],
+    }));
+
+    // Custom Resource triggers the Lambda on each deployment.
+    // The 'modelListHash' property forces re-execution when the model list changes.
+    const modelListHash = Date.now().toString(36); // Changes on every deploy
+    new CustomResource(this, 'EnableModelsCustomResource', {
+      serviceToken: enableModelsFn.functionArn,
+      properties: {
+        // Force re-execution on every deployment
+        modelListHash,
+        region: this.region,
+      },
+    });
 
     // ========================================
     // IAM ROLE FOR EVENTBRIDGE SCHEDULER

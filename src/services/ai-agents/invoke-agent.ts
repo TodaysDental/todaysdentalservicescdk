@@ -356,6 +356,69 @@ interface InvokeResponse {
 // ========================================================================
 
 /**
+ * Sanitize agent response to remove chain-of-thought reasoning.
+ * 
+ * The Bedrock agent sometimes includes internal reasoning before the actual
+ * user-facing response, e.g.:
+ *   "The caller is asking about insurance coverage, so I'll need to gather
+ *    some more information before I can provide a helpful response.
+ *    \"Do you accept Medicaid? That's a great question. May I first get your name?\""
+ * 
+ * This function strips the reasoning and returns only the spoken dialogue.
+ */
+function sanitizeAgentResponse(raw: string): string {
+  if (!raw || raw.trim().length === 0) return raw;
+
+  let cleaned = raw.trim();
+
+  // Strategy 1: If the response contains a quoted block, extract it.
+  // Look for text within double quotes that appears to be the actual response.
+  const quotedMatch = cleaned.match(/"([^"]{10,})"/s);
+  if (quotedMatch && quotedMatch[1]) {
+    // Verify the quoted text looks like a real response (contains a question mark or period)
+    const quoted = quotedMatch[1].trim();
+    if (quoted.includes('?') || quoted.includes('.') || quoted.includes('!')) {
+      return quoted;
+    }
+  }
+
+  // Strategy 2: Remove common chain-of-thought prefixes.
+  // These patterns indicate internal reasoning before the actual response.
+  const thinkingPatterns = [
+    /^(?:The (?:caller|user|patient|customer|visitor) is (?:asking|inquiring|requesting|looking|wondering|seeking)[^.]*\.\s*)/is,
+    /^(?:(?:I|Let me|I'll|I need to|I should|I want to|I'm going to)(?:[^.]*(?:need|gather|collect|get|ask|provide|check|verify|look|find|help|assist))[^.]*\.\s*)/is,
+    /^(?:(?:This|That) (?:is|seems|appears|looks like) [^.]*\.\s*)/is,
+    /^(?:(?:Based on|According to|From|Given|Since|Because|As) [^.]*(?:I'll|I will|let me|I need)[^.]*\.\s*)/is,
+    /^(?:(?:I (?:understand|see|notice|can see|recognize) (?:that )?)[^.]*\.\s*)/is,
+    /^(?:(?:It (?:seems|appears|looks) (?:like |that )?)[^.]*\.\s*)/is,
+    /^(?:(?:So,? |Now,? |Alright,? |Okay,? |Well,? )?(?:I'll need to |I need to |Let me )[^.]*\.\s*)/is,
+    /^(?:(?:Before I can )[^.]*\.\s*)/is,
+  ];
+
+  // Apply patterns iteratively (reasoning can have multiple sentences)
+  let prevLength = -1;
+  let iterations = 0;
+  while (cleaned.length !== prevLength && iterations < 5) {
+    prevLength = cleaned.length;
+    iterations++;
+    for (const pattern of thinkingPatterns) {
+      cleaned = cleaned.replace(pattern, '');
+    }
+    cleaned = cleaned.trim();
+  }
+
+  // If we stripped everything or too much, return the original
+  if (cleaned.length < 10 && raw.trim().length > 20) {
+    return raw.trim();
+  }
+
+  // Clean up leading quotes left over from stripping
+  cleaned = cleaned.replace(/^["']+/, '').replace(/["']+$/, '').trim();
+
+  return cleaned || raw.trim();
+}
+
+/**
  * Check if this is a public (website) request
  */
 function isPublicRequest(event: APIGatewayProxyEvent): boolean {
@@ -691,8 +754,11 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
       await endSession(sessionId);
     }
 
+    // Sanitize: strip chain-of-thought reasoning from agent response
+    const sanitizedResponse = sanitizeAgentResponse(responseText);
+
     const response: InvokeResponse = {
-      response: responseText || 'No response from agent',
+      response: sanitizedResponse || 'No response from agent',
       sessionId,
       agentId: agent.agentId,
       agentName: agent.name,
