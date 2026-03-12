@@ -15,7 +15,6 @@ import {
   isAdminUser,
   getAllowedClinicIds,
   hasClinicAccess,
-  UserPermissions,
 } from '../../shared/utils/permissions-helper';
 
 const ddbClient = new DynamoDBClient({});
@@ -26,7 +25,6 @@ const ddb = DynamoDBDocumentClient.from(ddbClient, {
 });
 
 const STAFF_USER_TABLE = process.env.STAFF_USER_TABLE || 'StaffUser';
-const STAFF_INFO_TABLE = process.env.STAFF_CLINIC_INFO_TABLE;
 
 // Type definitions
 type RegisterModuleAccess = {
@@ -42,20 +40,15 @@ type RegisterClinic = {
   hourlyPay?: number; // Hourly pay rate in dollars
   moduleAccess?: RegisterModuleAccess[]; // Optional - module-level permissions
 
-  // Payment Posting role fee fields
+  // Claims role fee fields
   perClaimFeeOpenDental?: number;
   perClaimFeePortal?: number;
   perPreAuthFee?: number;
 
-  // Claims role fee fields
+  // Payment Posting role fee fields
   perClaimsPostedAmount?: number; // Per Claims Posted Amount
   perEobsAttachedAmount?: number; // Per EOB's Attached Amount
   statusDeniedAmount?: number; // Status Denied Amount
-};
-
-type StaffClinicDetail = {
-  clinicId: string;
-  hourlyPay?: string | number;
 };
 
 type RegisterBody = {
@@ -65,7 +58,6 @@ type RegisterBody = {
   familyName?: string;
   clinics: RegisterClinic[]; // Per-clinic role assignments
   makeGlobalSuperAdmin?: boolean;
-  staffDetails?: StaffClinicDetail[];
 };
 
 /**
@@ -82,12 +74,12 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
     // Get caller context from custom authorizer using shared permissions-helper
     const userPerms = getUserPermissions(event);
     if (!userPerms) {
-      return httpErr(401, 'Unauthorized', event.headers?.origin);
+      return httpErr(401, 'Unauthorized', corsHeaders);
     }
 
     // Check if caller has admin privileges using shared helper
     if (!isAdminUser(userPerms.clinicRoles, userPerms.isSuperAdmin, userPerms.isGlobalSuperAdmin)) {
-      return httpErr(403, 'forbidden: admin or super admin required', event.headers?.origin);
+      return httpErr(403, 'forbidden: admin or super admin required', corsHeaders);
     }
 
     // For backward compatibility, extract these values
@@ -102,12 +94,19 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
     try {
       validateBody(body);
     } catch (e: any) {
-      return httpErr(400, e?.message || 'invalid body', event.headers?.origin);
+      return httpErr(400, e?.message || 'invalid body', corsHeaders);
     }
 
     // Only global super admin can create other global super admins
     if (body.makeGlobalSuperAdmin && !callerIsGlobalSuperAdmin) {
-      return httpErr(403, 'only global super admin can grant Global super admin role', event.headers?.origin);
+      return httpErr(403, 'only global super admin can grant Global super admin role', corsHeaders);
+    }
+
+    // Admins (without SuperAdmin role) cannot assign SuperAdmin role to any clinic
+    const callerHasSuperAdminRole = callerIsGlobalSuperAdmin || callerIsSuperAdmin ||
+      callerClinicRoles.some((cr: any) => cr.role === 'SuperAdmin');
+    if (!callerHasSuperAdminRole && body.clinics?.some(c => c.role === 'SuperAdmin')) {
+      return httpErr(403, 'only super admin or above can assign the SuperAdmin role', corsHeaders);
     }
 
     // Validate clinic assignments
@@ -118,7 +117,7 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
       if (!callerIsGlobalSuperAdmin && !callerIsSuperAdmin) {
         const unauthorizedClinics = clinicIds.filter(cid => !hasClinicAccess(allowedClinics, cid));
         if (unauthorizedClinics.length > 0) {
-          return httpErr(403, `no admin access for clinics: ${unauthorizedClinics.join(', ')}`, event.headers?.origin);
+          return httpErr(403, `no admin access for clinics: ${unauthorizedClinics.join(', ')}`, corsHeaders);
         }
       }
     }
@@ -135,7 +134,7 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
     }));
 
     if (existingUser.Item) {
-      return httpErr(409, `User with email '${username}' already exists. Use the update endpoint to modify existing users.`, event.headers?.origin);
+      return httpErr(409, `User with email '${username}' already exists. Use the update endpoint to modify existing users.`, corsHeaders);
     }
 
     // Generate password hash only if password is provided (optional for OTP-only users)
@@ -168,28 +167,30 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
       // Continue with registration even if email creation fails
     }
 
-    // Build per-clinic role assignments with module permissions and Open Dental fields
-    const clinicRoles = (body.clinics || []).map(c => ({
-      clinicId: String(c.clinicId),
-      role: c.role as UserRole,
-      basePay: c.basePay,
-      workLocation: c.workLocation,
-      hourlyPay: c.hourlyPay,
-      moduleAccess: c.moduleAccess?.map(ma => ({
-        module: ma.module,
-        permissions: ma.permissions,
-      })) as ModuleAccess[] | undefined,
+    // Build per-clinic role assignments with module permissions
+    const clinicRoles = body.makeGlobalSuperAdmin
+      ? []
+      : body.clinics.map(c => ({
+        clinicId: String(c.clinicId),
+        role: c.role as UserRole,
+        basePay: c.basePay,
+        workLocation: c.workLocation,
+        hourlyPay: c.hourlyPay,
+        moduleAccess: c.moduleAccess?.map(ma => ({
+          module: ma.module,
+          permissions: ma.permissions,
+        })) as ModuleAccess[] | undefined,
 
-      // Payment Posting role fee fields
-      perClaimFeeOpenDental: c.perClaimFeeOpenDental,
-      perClaimFeePortal: c.perClaimFeePortal,
-      perPreAuthFee: c.perPreAuthFee,
+        // Claims role fee fields
+        perClaimFeeOpenDental: c.perClaimFeeOpenDental,
+        perClaimFeePortal: c.perClaimFeePortal,
+        perPreAuthFee: c.perPreAuthFee,
 
-      // Claims role fee fields
-      perClaimsPostedAmount: c.perClaimsPostedAmount,
-      perEobsAttachedAmount: c.perEobsAttachedAmount,
-      statusDeniedAmount: c.statusDeniedAmount,
-    }));
+        // Payment Posting role fee fields
+        perClaimsPostedAmount: c.perClaimsPostedAmount,
+        perEobsAttachedAmount: c.perEobsAttachedAmount,
+        statusDeniedAmount: c.statusDeniedAmount,
+      }));
 
     // Check if user has SuperAdmin role at any clinic
     const hasSuperAdminRole = clinicRoles.some(cr => cr.role === 'SuperAdmin');
@@ -216,15 +217,6 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
       Item: newUser,
     }));
 
-    // Save clinic-specific details to StaffClinicInfo table
-    if (STAFF_INFO_TABLE && body.clinics && body.clinics.length > 0) {
-      const detailsToSave = body.staffDetails && body.staffDetails.length > 0
-        ? body.staffDetails
-        : body.clinics;
-
-      await saveStaffInfoToDynamoDB(username, detailsToSave);
-    }
-
     return httpOk({
       username,
       email: username,
@@ -233,52 +225,12 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
       message: userEmailCredentials
         ? `User created successfully with email ${userEmailCredentials.email}. They can now log in using OTP sent to their email.`
         : 'User created successfully. They can now log in using OTP sent to their email.',
-    }, event.headers?.origin);
+    }, corsHeaders);
   } catch (err: any) {
     console.error('Registration error:', err);
-    return httpErr(500, err?.message || 'registration failed', event.headers?.origin);
+    return httpErr(500, err?.message || 'registration failed', corsHeaders);
   }
 };
-
-/**
- * Save staff clinic-specific information to DynamoDB
- */
-async function saveStaffInfoToDynamoDB(
-  email: string,
-  details: (StaffClinicDetail | RegisterClinic)[]
-) {
-  if (!STAFF_INFO_TABLE) {
-    console.warn('STAFF_CLINIC_INFO_TABLE is not configured. Skipping save.');
-    return;
-  }
-
-  for (const detail of details) {
-    if (!detail.clinicId) {
-      console.warn('Skipping staff detail item without a clinicId for user:', email);
-      continue;
-    }
-
-    // Build the item for DynamoDB - spread all fields except 'role'
-    const { role, ...restOfDetail } = detail as any;
-
-    const item = {
-      ...restOfDetail,
-      email: email.toLowerCase(),
-      clinicId: String(detail.clinicId),
-      createdAt: new Date().toISOString(),
-      updatedAt: new Date().toISOString(),
-    };
-
-    try {
-      await ddb.send(new PutCommand({
-        TableName: STAFF_INFO_TABLE,
-        Item: item,
-      }));
-    } catch (err) {
-      console.error(`Failed to save staff info for ${email} at clinic ${detail.clinicId}`, err);
-    }
-  }
-}
 
 /**
  * Parse request body
@@ -369,29 +321,12 @@ function validateBody(body: RegisterBody) {
 }
 
 /**
- * Generate a secure temporary password
- */
-function generateTemporaryPassword(): string {
-  const length = 16;
-  const charset = 'abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789!@#$%^&*';
-  let password = '';
-  const crypto = require('crypto');
-
-  for (let i = 0; i < length; i++) {
-    const randomIndex = crypto.randomInt(0, charset.length);
-    password += charset[randomIndex];
-  }
-
-  return password;
-}
-
-/**
  * HTTP success response
  */
-function httpOk(data: Record<string, any>, origin?: string) {
+function httpOk(data: Record<string, any>, headers?: Record<string, string>) {
   return {
     statusCode: 200,
-    headers: buildCorsHeaders({ allowMethods: ['OPTIONS', 'POST'] }, origin),
+    headers: headers ?? buildCorsHeaders({ allowMethods: ['OPTIONS', 'POST'] }),
     body: JSON.stringify({ success: true, ...data }),
   };
 }
@@ -399,10 +334,10 @@ function httpOk(data: Record<string, any>, origin?: string) {
 /**
  * HTTP error response
  */
-function httpErr(code: number, message: string, origin?: string) {
+function httpErr(code: number, message: string, headers?: Record<string, string>) {
   return {
     statusCode: code,
-    headers: buildCorsHeaders({ allowMethods: ['OPTIONS', 'POST'] }, origin),
+    headers: headers ?? buildCorsHeaders({ allowMethods: ['OPTIONS', 'POST'] }),
     body: JSON.stringify({ success: false, message }),
   };
 }
